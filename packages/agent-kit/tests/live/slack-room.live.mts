@@ -18,7 +18,9 @@
  *     in the mention's thread is posted);
  *   - `chat.update (threaded reply)` (how the framework edits a message it posted);
  *   - `assistant.threads.setStatus (set)` and `(clear)` in that thread, with the same fields the
- *     framework sends (its "Thinking..." line, set and then cleared);
+ *     framework sends (its "Thinking..." line, set and then cleared); this probe sets it on the
+ *     thread of the bot's own message, while the framework sets it on the thread of a person's
+ *     mention, and whether Slack treats these differently is not known;
  *   - `conversations.replies` on that thread (the framework's thread read for shared files);
  *   - `conversations.open` with the owner's user id (the direct-message lookup; it posts nothing);
  *   - `chat.delete (threaded reply)` and `chat.delete (message)`.

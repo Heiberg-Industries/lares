@@ -157,7 +157,7 @@ LIMITS = [
     "it by the rows alone; the stand-in's record of the call carrying the product's marker is what ties the check to the test brief.",
     "What eve does when a real brief meets a Telegram conversation still busy with a test brief is not exercised.",
     "On Slack a direct message and three mentions in a room channel are sent: two from the owner (a plain question, and one where the stand-in forces a call to a tool the room does not have) and one from a second person. "
-    "Only the chief of staff is installed, so the creative role's mention is covered by unit tests only.",
+    "Only a chief-of-staff agent runs in this check, so the creative role's mention is covered by unit tests only.",
     "In the room the stand-in answers the channel lookup, the thread read and the status line as real Slack is BELIEVED to answer them "
     "for the app's permissions (ROOM_BELIEVED in real-install/fake-internet.mjs); nothing about a mention has run on real Slack until "
     "packages/agent-kit/tests/live/slack-room.live.mts has been run by hand and the stand-in corrected to match.",
@@ -167,7 +167,7 @@ LIMITS = [
     "The forced call names a tool the room was not offered, so what answers it is the framework's handling of a call to a tool it did "
     "not offer, not Lares's own room refusal at the approval step and at execution; that refusal is covered by unit tests only.",
     "One refused door turn is exercised: a second person's mention in a room (no model call, no charge, nothing posted; the framework's "
-    "status-line calls are recorded, not judged). A Telegram group and a refusal by Keeper are not, and the sentence a person then sees "
+    "status-line calls are recorded, and only that some Slack call for the mention's thread was made is judged, never what Slack answered). A Telegram group and a refusal by Keeper are not, and the sentence a person then sees "
     "there is covered by unit tests only.",
     "Each door's Connect and Apply restart the agent, which changes the runner's network while the page waits; the probe then tries the step again once the keeper has finished what the dropped attempt started, and the retry presses nothing that is already running or done (the attempts used are recorded under browserAttempts), so a single uninterrupted press is not shown here.",
     "The keeper writes no log line for a door turn's door.open, step claim or step consume; the proof reads the budget rows, the keeper's audit of each Apply and the agent's own log instead.",
@@ -1217,6 +1217,9 @@ def room_mentions(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, 
         # Anything the framework writes into the room: a post, an update, an ephemeral, a delete.
         return [call for call in slack_calls(since) if call.get("channel") == ROOM_CHANNEL and call["method"].startswith("chat.")]
 
+    # The `chat.*` methods that put a new message into a conversation (the others change or remove one).
+    posting = ("chat.postMessage", "chat.postEphemeral", "chat.scheduleMessage", "chat.startStream", "chat.meMessage")
+
     def marked(mark: str, since: int) -> list[dict]:
         return [call for call in fake_calls(fixture)[since:] if call["kind"] == "model" and mark in (call.get("roomMarks") or [])]
 
@@ -1267,7 +1270,7 @@ def room_mentions(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, 
 
     def calls_seen(since: int) -> list[dict]:
         return [{"method": call["method"], "channel": call.get("channel"), "threadTs": call.get("threadTs"), **({"status": call["status"]} if "status" in call else {}),
-                 "text": str(call.get("text", ""))[:300]} for call in slack_calls(since)]
+                 "text": redact(str(call.get("text", ""))[:300])} for call in slack_calls(since)]
 
     if claimer is None:
         check("slack-room-mentions-ran", [f"expected one member budget account, found {len(members)}"])
@@ -1319,16 +1322,19 @@ def room_mentions(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, 
         problems.append("the direct-message turn's prompt holds the room text")
     check("slack-room-owner-mention-offered-only-the-room-list-and-told-it-is-in-a-room", problems)
     replies = [call for call in posts if ROOM_REPLY in str(call.get("text", ""))]
-    in_thread = [call for call in posts if call["method"] == "chat.postMessage" and call.get("threadTs") == owner_ts]
-    elsewhere = [call for call in posts if call["method"] == "chat.postMessage" and call.get("threadTs") != owner_ts]
+    # The reply itself is judged: each call that carries it must be a new post into the mention's thread.
+    replies_outside = [call for call in replies if not (call["method"] in posting and call.get("threadTs") == owner_ts)]
+    elsewhere = [call for call in posts if call["method"] in posting and call.get("threadTs") != owner_ts]
     errors = [call for call in posts if any(words in str(call.get("text", "")) for words in ERROR_COPY)]
     problems = []
     if not replies:
         problems.append(f"no post into {ROOM_CHANNEL} carried {ROOM_REPLY}")
-    if not in_thread:
-        problems.append(f"nothing was posted into {ROOM_CHANNEL} with thread_ts equal to the mention's ts")
+    elif replies_outside:
+        problems.append(f"{len(replies_outside)} call(s) carrying {ROOM_REPLY} are not posts in the mention's thread (ts {owner_ts}): "
+                        f"{[(call['method'], call.get('threadTs')) for call in replies_outside]}")
     if elsewhere:
-        problems.append(f"{len(elsewhere)} post(s) into {ROOM_CHANNEL} are not in the mention's thread (thread_ts {[call.get('threadTs') for call in elsewhere]})")
+        problems.append(f"{len(elsewhere)} post(s) into {ROOM_CHANNEL} are not in the mention's thread (ts {owner_ts}): "
+                        f"{[(call['method'], call.get('threadTs')) for call in elsewhere]}")
     if errors:
         problems.append(f"{len(errors)} post(s) into {ROOM_CHANNEL} carry an error copy, first: {redact(str(errors[0].get('text', '')))[:200]}")
     check("slack-room-reply-posted-in-the-mention-thread", problems)
@@ -1388,8 +1394,9 @@ def room_mentions(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, 
     rows = attempts_since(t0)
     posts = room_posts(since)
     record["stranger"] = {"mentionTs": stranger_ts, "eventStatus": status, "modelCalls": len(calls), "budgetAttemptsSinceMention": len(rows),
-                          "postsIntoTheRoom": [{"method": call["method"], "threadTs": call.get("threadTs"), "text": str(call.get("text", ""))[:300]} for call in posts],
-                          # Recorded, not judged: the framework sets its status line before the door decides (design unknown 2).
+                          "postsIntoTheRoom": [{"method": call["method"], "threadTs": call.get("threadTs"), "text": redact(str(call.get("text", ""))[:300])} for call in posts],
+                          # The framework sets its status line before the door decides (design unknown 2). What Slack
+                          # answers is recorded, not judged; below, only that some call for this thread was made is.
                           "statusLineCalls": [{"method": call["method"], "channel": call.get("channel"), "threadTs": call.get("threadTs"), "status": call.get("status")}
                                               for call in slack_calls(since) if call["method"] == "assistant.threads.setStatus"],
                           "slackCallsSinceMention": calls_seen(since)}
@@ -1397,6 +1404,10 @@ def room_mentions(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, 
     problems = []
     if not 200 <= status < 300:
         problems.append(f"the door answered the mention with HTTP {status}, so the event may never have been read")
+    # Proof of life: the framework calls Slack for the mention's thread (its status line) before and after
+    # the door refuses, so the three "nothing" checks below cannot pass on an event that was never read.
+    if not [call for call in slack_calls(since) if call.get("threadTs") == stranger_ts]:
+        problems.append("no Slack call for the second person's mention was recorded, so the event may never have been read")
     if calls:
         problems.append(f"{len(calls)} model call(s) carried {STRANGER_PROMPT}")
     if rows:
@@ -1764,6 +1775,8 @@ REDACTION_PATTERNS = (
     (re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"), REDACTED),
     (re.compile(r"SCRAM-SHA-256\$[^\s'\"]+"), "SCRAM-SHA-256$" + REDACTED),
     (re.compile(r"\bAGE-SECRET-KEY-[0-9A-Z]+"), REDACTED),
+    (re.compile(r"\bxox[abp]-[\w-]+"), REDACTED),
+    (re.compile(r"\bsk-ant-[\w-]+"), REDACTED),
     (re.compile(r"(?<![\w-])(--?[\w-]*" + SECRET_WORD + r"(?:=|\s+))(?!-)" + SECRET_VALUE, re.IGNORECASE), r"\1" + REDACTED),
     (re.compile(r"(\b[\w.-]*" + SECRET_WORD + r"\w*\s*=\s*)" + SECRET_VALUE, re.IGNORECASE), r"\1" + REDACTED),
 )

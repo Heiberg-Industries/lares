@@ -117,6 +117,9 @@ function serve(fixture) {
         : called?.name === settings.noteTool ? settings.noteReply : settings.toolReply };
     }
     const asked = textOf(last);
+    // A test brief: its prompt starts with the product's own marker block, and is followed by the
+    // brief's real material, which may quote earlier proof prompts. So it is decided first.
+    if (settings.briefMarker && asked.includes(settings.briefMarker)) return { text: settings.briefReply };
     // A mention in a room. The forced call names its tool whether or not it was offered, so the
     // check sees what the conversation does with a call to a tool the room does not have.
     // Once per mention: a second request for the same words that carries no tool result means the
@@ -127,9 +130,6 @@ function serve(fixture) {
       return { tool: settings.roomForceTool, input: settings.roomForceInput };
     }
     if (settings.roomPrompt && asked.includes(settings.roomPrompt)) return { text: settings.roomReply };
-    // A test brief: its prompt starts with the product's own marker block, and is followed by the
-    // brief's real material, which may quote earlier proof prompts. So it is decided first.
-    if (settings.briefMarker && asked.includes(settings.briefMarker)) return { text: settings.briefReply };
     if (asked.includes(settings.approvalPrompt)) {
       return toolNames.includes(settings.approvalTool) ? { tool: settings.approvalTool, input: settings.approvalInput } : { text: "PROOF_NO_USABLE_TOOL" };
     }
