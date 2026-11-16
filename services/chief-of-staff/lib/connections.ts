@@ -85,7 +85,7 @@ export async function readConnections(probes: ConnectionProbes = liveProbes): Pr
  *  missing connection with their own error text, and the persona calls the CRM "real, connected". */
 export function sharedRoomContactsLine(probes: Pick<ConnectionProbes, "env" | "fileExists"> = liveProbes): string {
   return crmConnected(probes.env, probes.fileExists)
-    ? "Your contacts service (the CRM, Twenty) is connected; you can use the contact lookups you have here."
+    ? "Your contacts service (the CRM, Twenty) is connected; you can use the contact lookups you have here. If a lookup fails, say that the contact lookup did not work, and do not repeat a tool's error text."
     : "Your contacts service (the CRM, Twenty) is not connected. If you are asked to look someone up, say that contacts are not connected. Nothing is broken, and do not repeat a tool's error text.";
 }
 

@@ -69,7 +69,8 @@ function contactsConnected(on: boolean): void {
   vi.stubEnv("TWENTY_BASE_URL", on ? "https://contacts.example.invalid" : "");
   vi.stubEnv("TWENTY_KEY_FILE", on ? keyFile : join(tmpdir(), "room-contacts-missing-key"));
 }
-const CONNECTED_LINE = "Your contacts service (the CRM, Twenty) is connected; you can use the contact lookups you have here.";
+const CONNECTED_LINE =
+  "Your contacts service (the CRM, Twenty) is connected; you can use the contact lookups you have here. If a lookup fails, say that the contact lookup did not work, and do not repeat a tool's error text.";
 const NOT_CONNECTED_LINE =
   "Your contacts service (the CRM, Twenty) is not connected. If you are asked to look someone up, say that contacts are not connected. Nothing is broken, and do not repeat a tool's error text.";
 
@@ -85,7 +86,6 @@ describe("chief-of-staff: a conversation started in a shared room", () => {
 
     it(`${name}: no standing facts and no "what was read" row`, async () => {
       // eve's real memo (the function runs), so a resolver that did not return early would read the store.
-      contactsConnected(true);
       expect(await (await resolverOf("standing-facts.ts"))(context(initiator, real))).toBeNull();
       expect(reads.listActiveFacts).not.toHaveBeenCalled();
       expect(reads.recordRead).not.toHaveBeenCalled();
@@ -111,6 +111,7 @@ describe("chief-of-staff: a conversation started in a shared room", () => {
         contactsConnected(on);
         const content = (await (await resolverOf("ac-connections.ts"))(context(initiator, real)))?.content ?? "";
         expect(content).not.toMatch(/google|mail|calendar|notion|vault|atlas|slack|telegram|CONNECTIONS_CANARY|TWENTY_|\/|\.invalid/iu);
+        expect(content).not.toContain("\n");
       }
     });
 
