@@ -19,6 +19,10 @@ leftover from an interrupted creation stops the command and says so.
 `... remove <name>` takes it away again. The key is read here on the host, sent over the same root-only socket, and
 never printed or logged.
 
+`lares provider-key set --key-file <path>` replaces the installation's own model-provider key file in one step,
+keeping its owner and mode, and restarts the model gateway, the only service that reads it. The key is never
+printed or logged.
+
 `lares agent import <dir>` reads the three files of each agent folder here on the host and sends their
 text to the keeper, which creates the agent exactly as a console save does. Nothing is copied into
 /srv/lares/agents by hand.
@@ -58,6 +62,7 @@ POLICY_FILE = "/etc/lares/native-policy.json"
 SERVICE_KEY_FILE = "/etc/lares/secrets/gateway-budget-service-key"
 OPERATOR_FILE = "/etc/lares/operator/database-password"
 STATE_FILE = "/etc/lares/budget-setup.json"
+INSTALLATION_PROVIDER_KEY_FILE = "/etc/lares/secrets/model-provider-key"
 STAGE_PARENT = "/var/lib/lares-budget-setup"
 # Written by update.sh when an update has to stop the agents to upgrade their stores: which
 # release, how far the upgrade got, and which agents it stopped (see update.sh, WORKFLOW_STATE_FILE).
@@ -163,12 +168,13 @@ def is_private_file(info: os.stat_result) -> bool:
             stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
 
 
-def write_atomic(path: Path, data: bytes, mode: int) -> None:
-    """Replace a file in one step, so an interruption leaves the old file or the new one."""
+def write_atomic(path: Path, data: bytes, mode: int, uid: int | None = None, gid: int | None = None) -> None:
+    """Replace a file in one step, so an interruption leaves the old file or the new one. Root's own file
+    unless an owner is given."""
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.partial")
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), mode)
     try:
-        os.fchown(fd, ROOT_UID, ROOT_GID)
+        os.fchown(fd, ROOT_UID if uid is None else uid, ROOT_GID if gid is None else gid)
         os.fchmod(fd, mode)
         with os.fdopen(fd, "wb", closefd=False) as stream:
             stream.write(data)
@@ -1083,6 +1089,36 @@ def agent_provider_key(installation: Installation, options: argparse.Namespace) 
     return 0
 
 
+def installation_provider_key(installation: Installation, options: argparse.Namespace) -> int:
+    """Replace the installation's own provider key, then restart the gateway: the only service that reads it,
+    once, when it starts (images/gateway-runtime/start.sh). Owner only by construction: it needs root on the host."""
+    if not options.key_file:
+        raise Stop("Say where the key is: --key-file <path> (a private file, or - to type or pipe it in). Nothing was changed.")
+    target = installation.at(INSTALLATION_PROVIDER_KEY_FILE)
+    try:
+        info = os.lstat(target)
+    except OSError:
+        raise Stop(f"There is no provider key file at {target} to replace. Is this a finished installation? Nothing was changed.") from None
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise Stop(f"{target} is not a plain file. Nothing was changed.")
+    key = read_provider_key(options.key_file)
+    # The same owner and mode as the file it replaces: the installer's 0440 root:<runtime group>.
+    write_atomic(target, (key + "\n").encode("ascii"), stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid)
+    key = ""
+    say("The installation's provider key is replaced. Its value is not printed, here or anywhere else.")
+    say("Restarting the model gateway, the only service that reads this key. A model call under way at this "
+        "moment is cut off. Nothing else is restarted.")
+    restarted = installation.stack_compose("restart", "lares-gateway")
+    if restarted.returncode != 0:
+        print(restarted.stderr.strip(), file=sys.stderr)
+        raise Stop("The new key is saved, but the model gateway could not be restarted (docker's own message is above), "
+                   "so it still uses the old key. Run: docker compose -f /opt/lares/compose.yaml restart lares-gateway")
+    watch_gateway(installation)
+    say("The model gateway is running again and uses the new key. To check that your model provider accepts it, "
+        "run: sudo lares doctor --test-model")
+    return 0
+
+
 def read_workflow_step(installation: Installation) -> dict[str, Any] | None:
     """The note update.sh leaves when it stops the agents, or None when there is none. A note that
     cannot be read stops this command: it must never be taken for "nothing to do"."""
@@ -1347,6 +1383,8 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     provider_key.add_argument("name")
     provider_key.add_argument("--key-file", help="a private file holding the key; - reads it from standard input")
     commands.add_parser("agent-refresh", help="restart running agents onto this release's software (lares update runs this)")
+    installation_key = commands.add_parser("provider-key-set")
+    installation_key.add_argument("--key-file", help="a private file holding the key; - reads it from standard input")
     return parser.parse_args(argv)
 
 
@@ -1376,6 +1414,8 @@ def main(argv: list[str]) -> int:
                 return agent_import(installation, options)
             if options.command == "agent-provider-key":
                 return agent_provider_key(installation, options)
+            if options.command == "provider-key-set":
+                return installation_provider_key(installation, options)
             return budget_setup(installation, options) if options.command == "setup" else agent_start(installation, options)
         finally:
             os.close(lock)

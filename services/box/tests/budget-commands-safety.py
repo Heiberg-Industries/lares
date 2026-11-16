@@ -1104,6 +1104,72 @@ class BudgetCommandTests(unittest.TestCase):
         self.assertIn("had no key of its own", output)
         self.assertEqual(self.run_command("agent-provider-key", "remove", "assistant", "--key-file", str(self.key_file()))[0], budget.EX_REFUSED)
 
+    # provider-key set: the installation's own key
+
+    def installation_key(self, content: str = "sk-old-installation-key\n", mode: int = 0o440) -> Path:
+        path = self.prefix / "etc/lares/secrets/model-provider-key"
+        if path.exists():
+            path.chmod(0o600)
+            path.unlink()
+        path.write_text(content)
+        path.chmod(mode)
+        return path
+
+    def test_installation_key_set_replaces_the_file_keeps_its_mode_and_restarts_only_the_gateway(self) -> None:
+        target = self.installation_key()
+        before = target.stat()
+        code, output = self.run_command("provider-key-set", "--key-file", str(self.key_file()))
+        self.assertEqual(code, 0, output)
+        after = target.stat()
+        self.assertEqual(target.read_text(), self.SECRET + "\n")
+        self.assertEqual((stat.S_IMODE(after.st_mode), after.st_uid, after.st_gid), (0o440, before.st_uid, before.st_gid))
+        self.assertEqual([name for name in os.listdir(target.parent) if name != "model-provider-key"], [])
+        self.assertNotIn(self.SECRET, output)
+        self.assertNotIn("sk-old-installation-key", output)
+        self.assertIn("The installation's provider key is replaced.", output)
+        self.assertIn("Nothing else is restarted.", output)
+        self.assertIn("sudo lares doctor --test-model", output)
+        compose = [call for call in self.docker_calls() if call[:1] == ["compose"]]
+        self.assertEqual(compose[0], ["compose", "-f", str(self.prefix / "opt/lares/compose.yaml"), "restart", "lares-gateway"])
+        # Nothing else is restarted: the only other calls look at the gateway.
+        self.assertEqual([call for call in self.docker_calls() if "restart" in call or "up" in call], [compose[0]])
+        self.assertEqual(self.keeper.requests, [])
+
+    def test_installation_key_set_reads_standard_input_and_refuses_a_bad_key_before_touching_anything(self) -> None:
+        target = self.installation_key()
+        with mock.patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO((self.SECRET + "\n").encode()))):
+            code, output = self.run_command("provider-key-set", "--key-file", "-")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(target.read_text(), self.SECRET + "\n")
+        self.installation_key()
+        self.log.unlink(missing_ok=True)
+        for arguments in (("--key-file", str(self.key_file(b"sk one\n"))), ("--key-file", str(self.key_file(mode=0o644))), ()):
+            code, output = self.run_command("provider-key-set", *arguments)
+            self.assertEqual(code, budget.EX_REFUSED, arguments)
+            self.assertIn("Nothing was changed.", output)
+        self.assertEqual(target.read_text(), "sk-old-installation-key\n")
+        self.assertEqual(self.docker_calls(), [])
+
+    def test_installation_key_set_refuses_when_there_is_no_installed_key_file(self) -> None:
+        code, output = self.run_command("provider-key-set", "--key-file", str(self.key_file()))
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("There is no provider key file", output)
+        self.assertFalse((self.prefix / "etc/lares/secrets/model-provider-key").exists())
+
+    def test_installation_key_set_says_when_the_gateway_did_not_restart_or_stay_up(self) -> None:
+        target = self.installation_key()
+        os.environ["FAKE_FAIL"] = "restart lares-gateway"
+        code, output = self.run_command("provider-key-set", "--key-file", str(self.key_file()))
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("The new key is saved, but the model gateway could not be restarted", output)
+        self.assertEqual(target.read_text(), self.SECRET + "\n")
+        del os.environ["FAKE_FAIL"]
+        os.environ["FAKE_GATEWAY"] = "false 3"
+        code, output = self.run_command("provider-key-set", "--key-file", str(self.key_file()))
+        self.assertEqual(code, budget.EX_REFUSED)
+        self.assertIn("The gateway did not stay up", output)
+        self.assertNotIn(self.SECRET, output)
+
     def recover_flow(self, check: dict, applied: dict | None = None, answer: str = "recover") -> tuple[int, str]:
         (self.prefix / "var/lib/lares/budget-financial").mkdir(exist_ok=True)
         os.environ["FAKE_RECOVER_CHECK"] = json.dumps(check)

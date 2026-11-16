@@ -35,6 +35,9 @@
 #                                                       make an agent pay with its own model-provider
 #                                                       key (path "-" reads the key from standard input)
 #   lares agent provider-key remove <name>              put the agent back on the installation's key
+#   lares provider-key set --key-file <path>            replace the installation's own model-provider
+#                                                       key (path "-" reads it from standard input) and
+#                                                       restart the model gateway, nothing else
 #
 # Image mode only: nothing here needs Node, pnpm or a checkout. Layout (set by get-lares.sh):
 #   $PREFIX/opt/lares/releases/<name>/   unpacked engine files, one folder per release
@@ -78,6 +81,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares agent refresh
        lares agent provider-key set <name> --key-file <path>
        lares agent provider-key remove <name>
+       lares provider-key set --key-file <path>
 
 <name> is the full release name from the repository's releases folder, for example
 2026-10-19-rc.11. Run as root.
@@ -88,7 +92,7 @@ EOF
 cmd="$1"
 shift
 case "$cmd" in
-  update|rollback|restore|doctor|import-preview|vault|owner-bootstrap|backups|budget|agent) ;;
+  update|rollback|restore|doctor|import-preview|vault|owner-bootstrap|backups|budget|agent|provider-key) ;;
   -h|--help) usage; exit "$EX_USAGE" ;;
   *) printf 'lares: I do not know the command %s.\n' "'$cmd'" >&2; usage; exit "$EX_USAGE" ;;
 esac
@@ -199,6 +203,29 @@ cmd_doctor() {
   [ -f "$database_password_file" ] && read_only_files+=(--ro "$database_password_file")
   [ -f "$installation_env_file" ] && read_only_files+=(--ro "$installation_env_file")
   [ -f "$console_session_secret_file" ] && read_only_files+=(--ro "$console_session_secret_file")
+  # The model test. The built-in gateway's provider settings (not secret) say which provider it pays
+  # and at which address. Only `--test-model` with no gateway of its own also gets the provider key,
+  # to ask that provider whether it accepts the key; a `--key-file` given by hand is mounted as given.
+  local gateway_profile_file="$PREFIX/etc/lares/litellm-config.yaml.profile.json"
+  local provider_key_file="$PREFIX/etc/lares/secrets/model-provider-key"
+  local -a model_args=()
+  local arg previous="" asked_test=0 explicit_gateway=0
+  for arg in "$@"; do
+    case "$arg" in
+      --test-model) asked_test=1 ;;
+      --gateway|--alias|--key-file) explicit_gateway=1 ;;
+    esac
+    case "$previous:$arg" in --key-file:/*) [ ! -f "$arg" ] || read_only_files+=(--ro "$arg") ;; esac
+    previous="$arg"
+  done
+  if [ -f "$gateway_profile_file" ]; then
+    read_only_files+=(--ro "$gateway_profile_file")
+    model_args+=(--gateway-profile-file "$gateway_profile_file")
+    if [ "$asked_test" -eq 1 ] && [ "$explicit_gateway" -eq 0 ] && [ -f "$provider_key_file" ]; then
+      read_only_files+=(--ro "$provider_key_file")
+      model_args+=(--provider-key-file "$provider_key_file")
+    fi
+  fi
   # The application login may not read the migration ledger. Update reads it with this same
   # root-only login, and only when run as root; without it the doctor says to use sudo.
   local operator_password_file="$PREFIX/etc/lares/operator/database-password"
@@ -277,7 +304,7 @@ for line in sys.stdin:
     --env "CONSOLE_SESSION_SECRET_FILE=$console_session_secret_file" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
     --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=lares_app" \
-    bin/doctor.ts --installed-settings-file "$installation_env_file" ${ledger_args[@]+"${ledger_args[@]}"} ${parity_args[@]+"${parity_args[@]}"} "$@" || doctor_status=$?
+    bin/doctor.ts --installed-settings-file "$installation_env_file" ${ledger_args[@]+"${ledger_args[@]}"} ${parity_args[@]+"${parity_args[@]}"} ${model_args[@]+"${model_args[@]}"} "$@" || doctor_status=$?
   [ "$doctor_status" -ne 0 ] && return "$doctor_status"
   return "$ledger_status"
 }
@@ -481,6 +508,12 @@ cmd_agent() {
   budget_commands agent-start "$@"
 }
 
+cmd_provider_key() {
+  [ "${1:-}" = set ] || { printf 'lares: the provider-key command is: lares provider-key set --key-file <path>\n' >&2; usage; exit "$EX_USAGE"; }
+  shift
+  budget_commands provider-key-set "$@"
+}
+
 case "$cmd" in
   update) cmd_update "$@" ;;
   rollback) cmd_rollback "$@" ;;
@@ -492,4 +525,5 @@ case "$cmd" in
   doctor) cmd_doctor "$@" ;;
   budget) cmd_budget "$@" ;;
   agent) cmd_agent "$@" ;;
+  provider-key) cmd_provider_key "$@" ;;
 esac

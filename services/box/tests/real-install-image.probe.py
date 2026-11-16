@@ -2630,6 +2630,43 @@ def main(argv: list[str]) -> int:
             raise RuntimeError("the parity check did not name a hand-set keeper.json key and fail")
         passed("doctor-parity-names-a-hand-set-key-and-fails")
 
+        stage("sudo lares doctor --test-model, a refused key, and lares provider-key set")
+        def provider_key_line(said: str) -> str:
+            lines = [line for line in said.splitlines() if "Model provider key" in line]
+            if len(lines) != 1:
+                raise RuntimeError(f"lares doctor --test-model did not give one provider key line: {lines or 'no such line'}")
+            return lines[0]
+        def models_calls() -> list[bool]:
+            return [bool(call.get("accepted")) for call in fake_calls(fixture) if call["kind"] == "models"]
+        tested = run("lares", "doctor", "--test-model", timeout=180, check=False)
+        line = provider_key_line(tested.stdout + tested.stderr)
+        if tested.returncode != 0 or not line.startswith("PASS") or models_calls() != [True]:
+            raise RuntimeError(f"lares doctor --test-model did not pass on the installed key: {line} {models_calls()}")
+        passed("doctor-test-model-accepts-the-installed-key")
+        wrong_file = home / "wrong-model-key"
+        wrong_file.write_text("sk-ant-api03-" + base64.urlsafe_b64encode(os.urandom(40)).decode().rstrip("=") + "\n")
+        os.chmod(wrong_file, 0o600)
+        key_path = pathlib.Path("/etc/lares/secrets/model-provider-key")
+        key_mode = (key_path.stat().st_uid, key_path.stat().st_gid, key_path.stat().st_mode & 0o777)
+        replaced = run("lares", "provider-key", "set", "--key-file", str(wrong_file), timeout=300, check=False)
+        if replaced.returncode != 0 or "Nothing else is restarted." not in replaced.stdout:
+            raise RuntimeError("lares provider-key set did not replace the key and restart the gateway")
+        if (key_path.stat().st_uid, key_path.stat().st_gid, key_path.stat().st_mode & 0o777) != key_mode:
+            raise RuntimeError("lares provider-key set changed the key file's owner or mode")
+        refused = run("lares", "doctor", "--test-model", timeout=180, check=False)
+        line = provider_key_line(refused.stdout + refused.stderr)
+        if refused.returncode == 0 or not line.startswith("FAIL") or "The provider key was refused" not in line or models_calls()[-1] is not False:
+            raise RuntimeError(f"lares doctor --test-model did not say the replaced key was refused: {line}")
+        passed("doctor-test-model-says-a-refused-key-was-refused")
+        restored = run("lares", "provider-key", "set", "--key-file", str(key_file), timeout=300, check=False)
+        wrong_file.unlink()
+        if restored.returncode != 0 or key_path.read_text().strip() != model_key:
+            raise RuntimeError("lares provider-key set did not put the installed key back")
+        tested = run("lares", "doctor", "--test-model", timeout=180, check=False)
+        if not provider_key_line(tested.stdout + tested.stderr).startswith("PASS"):
+            raise RuntimeError("lares doctor --test-model did not pass again once the key was put back")
+        passed("provider-key-set-replaces-the-key-and-the-gateway-uses-it")
+
         stage("the Notion sync is off, and stays off without an accepted preview")
         services_file = pathlib.Path(json.loads(pathlib.Path("/etc/lares/keeper.json").read_text())["lifecycle"]["services"]["composeFile"])
         if notion_sync_containers() or services_file.exists():

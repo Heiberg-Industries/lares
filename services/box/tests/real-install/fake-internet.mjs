@@ -149,11 +149,24 @@ function serve(fixture) {
     return { text: "PROOF_OK" };
   }
 
+  // As the real provider (measured by services/box/tests/live/provider-models.live.mts and the provider-refusal
+  // probe): any key but the one this stand-in was started with gets HTTP 401 and this JSON body, on every route.
+  const keyRefused = (request) => !request.headers["x-api-key"] || request.headers["x-api-key"] !== settings.providerKey;
+  const refuseKey = (response) => json(response, 401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
+
+  // The free model list `lares doctor --test-model` asks for. It records only whether the key was accepted.
+  function models(request, response) {
+    const accepted = !keyRefused(request);
+    record({ kind: "models", accepted });
+    if (!accepted) return refuseKey(response);
+    return json(response, 200, { data: [{ type: "model", id: "claude-sonnet-4-5", display_name: "Claude Sonnet 4.5", created_at: "2025-09-29T00:00:00Z" }],
+      has_more: false, first_id: "claude-sonnet-4-5", last_id: "claude-sonnet-4-5" });
+  }
+
   function provider(request, response, body) {
     let parsed;
     try { parsed = JSON.parse(body.toString("utf8")); } catch { return json(response, 400, { type: "error", error: { type: "invalid_request_error", message: "not json" } }); }
-    if (!request.headers["x-api-key"] || request.headers["x-api-key"] !== settings.providerKey)
-      return json(response, 401, { type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } });
+    if (keyRefused(request)) return refuseKey(response);
     const answer = decide(parsed);
     const toolCalls = (parsed.messages ?? []).flatMap((message) => Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_use") : []);
     const toolResults = (Array.isArray(parsed.messages?.at(-1)?.content) ? parsed.messages.at(-1).content : []).filter((block) => block.type === "tool_result");
@@ -315,6 +328,7 @@ function serve(fixture) {
       const url = new URL(request.url, `https://${host}`);
       const body = Buffer.concat(chunks);
       if (host === "api.anthropic.com" && url.pathname === "/v1/messages" && request.method === "POST") return provider(request, response, body);
+      if (host === "api.anthropic.com" && url.pathname === "/v1/models" && request.method === "GET") return models(request, response);
       if (host === settings.uptimeHost) { record({ kind: "uptime", path: url.pathname }); return json(response, 200, { ok: true }); }
       if (["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"].includes(host)) return signIn(request, response, url, body);
       if (host === "slack.com" && url.pathname.startsWith("/api/") && request.method === "POST") return slack(request, response, url, body);
@@ -322,5 +336,6 @@ function serve(fixture) {
       record({ kind: "unexpected", host, path: url.pathname, method: request.method });
       return json(response, 404, { type: "error", error: { type: "not_found_error", message: "not found" } });
     });
-  }).listen(443, "0.0.0.0");
+  // `port` is for tests/real-install-stand-in.test.ts only; the image check leaves it out.
+  }).listen(settings.port ?? 443, "0.0.0.0");
 }

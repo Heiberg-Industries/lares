@@ -122,7 +122,8 @@ agents" in section 6.
 They are never environment values. The installer generates these once and never overwrites an
 existing file: `console-session-secret`, `database-password`, `eve-route-password`,
 `gateway-key`, `gateway-master-key` and `token-enc-key`. It writes your model key to
-`model-provider-key`.
+`model-provider-key`, and a later run keeps that file as it is. To replace the key, see "Replace
+the model provider key" in section 6.
 
 Back up `token-enc-key` and `model-provider-key` somewhere safe. If `token-enc-key` is lost,
 every saved sign-in to an outside service becomes unreadable (you would reconnect them).
@@ -326,18 +327,42 @@ To end the session, use **Sign out** at the bottom of the sidebar.
 
 To check the installation from the command line, run `lares doctor`, a read-only check that says in
 plain sentences what is wrong and what to type to fix it (settings, database, migrations, owner,
-backup record, open repairs, gateway):
+backup record, open repairs, model provider key):
 
 ```bash
 lares doctor
 ```
 
 It runs in a short-lived container of the engine image, so it needs nothing installed on the
-server. It changes nothing and makes no network call. Add `--test-model --gateway <url> --alias
-<name> --key-file <path>` to also send one tiny, paid completion through your gateway. The key
-file must be inside `/etc/lares/secrets/`, the only folder the check can see. Exit code 0 means
-nothing failed; 1 means at least one check did. More in
-[`services/box/README.md`](../services/box/README.md#lares-doctor).
+server. It changes nothing and makes no network call unless you add `--test-model`:
+
+```bash
+sudo lares doctor --test-model
+```
+
+With `--test-model`, it asks your model provider whether it accepts this installation's provider
+key. That call is free and does no model work, and when the key is refused the check says so
+plainly. It does not send a test completion: the built-in gateway takes only calls the spending
+limits have approved, and this command cannot ask for that approval. (For a gateway of your own,
+add `--gateway <url> --alias <name> --key-file <path>`, with the key file as a full path, to send
+that gateway one tiny, paid completion instead.) Exit code 0 means nothing failed; 1 means at
+least one check did. More in [`services/box/README.md`](../services/box/README.md#lares-doctor).
+
+### Replace the model provider key
+
+If your model provider key stops working, for example because you deleted it at the provider,
+`sudo lares doctor --test-model` says the provider key was refused. Put the new key in a private
+file (`chmod 600`) and run:
+
+```bash
+sudo lares provider-key set --key-file /root/new-model-key
+```
+
+It replaces `/etc/lares/secrets/model-provider-key` in one step, keeps that file's owner and
+mode, and never prints the key. Then it restarts the model gateway, the only service that reads
+the key; a model call under way at that moment is cut off, and nothing else is restarted. With
+`--key-file -` it reads the key from standard input. Delete your copy of the file afterwards. An
+agent that has a key of its own (`lares agent provider-key set`) keeps using that one.
 
 ### Bring your existing agents
 
