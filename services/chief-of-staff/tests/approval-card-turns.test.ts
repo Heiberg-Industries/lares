@@ -150,18 +150,18 @@ describe("ownerTurnRefusal: web chat's owner may add a deadline; every other tur
 
   it("web chat: a member who is not the owner, a changed owner, or an owner that cannot be read is refused", async () => {
     const m = await load();
-    expect(await m.owner(webOn(WEB("member-other"), "turn_1", WEB("member-other")))).toContain("does not come from this agent's owner");
+    expect(await m.owner(webOn(WEB("member-other"), "turn_1", WEB("member-other")))).toContain("could not be confirmed as coming from this agent's owner");
     // The message is from another member than the one who opened the conversation.
-    expect(await m.owner(webOn(WEB("member-other"), "turn_1"))).toContain("does not come from this agent's owner");
+    expect(await m.owner(webOn(WEB("member-other"), "turn_1"))).toContain("could not be confirmed as coming from this agent's owner");
     owner.value = "member-new-owner";
-    expect(await m.owner(webOn(WEB("member-owner"), "turn_1"))).toContain("does not come from this agent's owner");
+    expect(await m.owner(webOn(WEB("member-owner"), "turn_1"))).toContain("could not be confirmed as coming from this agent's owner");
     owner.value = null;
-    expect(await m.owner(webOn(WEB("member-owner"), "turn_1"))).toContain("does not come from this agent's owner");
+    expect(await m.owner(webOn(WEB("member-owner"), "turn_1"))).toContain("could not be confirmed as coming from this agent's owner");
   });
 
   it("web chat: a turn with no current message, an answer to a card, or a turn that asked a card is refused", async () => {
     const m = await load();
-    expect(await m.owner(webOn(null, "turn_1"))).toContain("does not come from this agent's owner");
+    expect(await m.owner(webOn(null, "turn_1"))).toContain("could not be confirmed as coming from this agent's owner");
     expect(await m.owner(webOn(WEB("member-owner", "resolver"), "turn_1"))).toContain("no new human instruction");
     await m.hook.events["interaction.opened"]!(opened("turn_2", "int_2"), { session: webOn(WEB("member-owner"), "turn_2"), agent: { name: "chief-of-staff" } });
     expect(await m.owner(webOn(WEB("member-owner"), "turn_2"))).toContain("no new human instruction");

@@ -218,7 +218,7 @@ export async function ownerTurnRefusal(
   const auth = session?.auth;
   if (consoleResolverOnly(auth?.current) || turnAskedACard(session)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
   if (consoleAdmission(auth?.current)?.purpose === "human" && await isOwner({ session })) return null;
-  return `${lead} But this web chat message does not come from this agent's owner. Nothing changed.`;
+  return `${lead} But this web chat message could not be confirmed as coming from this agent's owner. Nothing changed.`;
 }
 
 /**

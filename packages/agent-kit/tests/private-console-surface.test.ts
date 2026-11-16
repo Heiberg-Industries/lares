@@ -64,6 +64,8 @@ it('owner-only tools are offered to a chief of staff only when the caller is the
  // Deadlines can be listed and added in web chat; reminders only listed.
  expect(privateRoleInstructions('chief-of-staff')).toContain("list the owner's deadlines to institutions, add a deadline");
  expect(privateRoleInstructions('chief-of-staff')).toContain('list their pending reminders (setting or cancelling a reminder is not available here)');
+ // Restarting a deadline is its reminder ladder, not the reminder tools web chat does not offer.
+ expect(privateRoleInstructions('chief-of-staff')).toContain("restart a stopped deadline's reminder ladder");
 });
 it('a chief of staff may propose a new private note in a private conversation; nothing else changes notes',()=>{
  expect(privateToolAllowed('chief-of-staff','agent-kit__vault_write')).toBe(true);
