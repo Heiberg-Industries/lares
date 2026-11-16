@@ -82,6 +82,8 @@ it('tells the owner how to use the agent in a channel, and promises contacts, de
  expect(creative).toContain('invite the app to that channel and mention it there');
  expect(creative).toContain('A conversation in a channel is stored and learned from the same way a direct message is.');
  expect(creative).toContain('A private channel counts as a channel here too.');
+ expect(creative).toContain('In a channel it answers only the people it answers in a direct message (usually just you); everyone else in the channel can read its answers but cannot ask it anything.');
+ expect(creative).toContain('When you ask it for something it can only do in a direct message, it tells you to write to it there, and anything that needs your approval has to be asked for in a direct message, never in the channel.');
  expect(creative).not.toContain('contacts');expect(creative).not.toContain('deadlines');
  expect(creative).toContain('answers from general knowledge and the public Lares pages.');expect(creative).not.toContain('transport');expect(chief).not.toContain('transport');
 });
