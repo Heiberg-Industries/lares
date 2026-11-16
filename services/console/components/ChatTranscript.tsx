@@ -218,9 +218,10 @@ export function waitingCardsByStep(messages: readonly EveMessage[], expired: Rea
  * An answered card that is still open is waiting for the agent, unless another card asked in the
  * same step still waits for the person (`waiting`, from {@link waitingCardsByStep}): eve runs the
  * step's cards together, so nothing happens with this one until that card is answered too, or a
- * new message cancels it. In a conversation that has ended (`page.ended`) nothing more happens, so
- * that wins; where this page cannot answer or send (`page.answerable` false: the conversation is
- * unavailable here) the card says only that it was answered.
+ * new message cancels it. In a conversation that has ended (`page.ended`) or where this page cannot
+ * answer or send (`page.answerable` false: the conversation is unavailable here), the card says only
+ * that it was answered: the alert below the transcript says why the conversation stopped, and an
+ * ended conversation can still have run the approved action (a refused reconnect also ends it).
  *
  * Whether a person decided is read from the approval's own `outcome`, never from how the call
  * went: `accepted` and `declined` are a decision, and every other ending — withdrawn because a
@@ -234,7 +235,7 @@ export function settledSay(part: ToolPart, waiting: ReadonlyMap<string, number> 
   if (!approval) return null;
   if (approval.status === "open") {
     if (approval.answer === undefined) return null;
-    if (page.ended === true) return "This conversation ended before your answer was used. Nothing ran.";
+    if (page.ended === true) return "You have answered this.";
     if (page.answerable === false) return "You have answered this.";
     const others = waiting.get(stepOf(approval)) ?? 0;
     const other = others === 1 ? "the other card asked with it is answered" : "the other cards asked with it are answered";

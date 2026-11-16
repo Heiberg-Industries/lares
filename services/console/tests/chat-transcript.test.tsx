@@ -488,12 +488,15 @@ describe("the approval card in web chat", () => {
       expect(render([{ id: "m", role: "assistant", parts: [a!, elsewhere] }], { onAnswer: () => {} })).toContain("You have answered this. Waiting for the agent.");
     });
 
-    // An ended conversation: nothing more will happen, so neither "it runs once..." nor "waiting for
-    // the agent" is true. The other card says it is no longer active and has no buttons.
-    it("in a conversation that has ended, the answered card says it was never used and nothing ran", () => {
+    // An ended conversation: neither "it runs once..." nor "waiting for the agent" is true. Whether
+    // the approved action ran is not known here (a refused reconnect also ends the conversation), so
+    // the card says only that it was answered; the alert below says the conversation ended.
+    it("in a conversation that has ended, the answered card says only that it was answered", () => {
       for (const answer of ["approve", "deny"]) {
         const html = render(twoCards(answer), { ended: true, error: "This conversation has ended. Start a new one.", onAnswer: () => {} });
-        expect(html, answer).toContain("This conversation ended before your answer was used. Nothing ran.");
+        expect(html, answer).toContain("You have answered this.");
+        expect(html, answer).toContain("This conversation has ended. Start a new one.");
+        expect(html, answer).not.toMatch(/Nothing ran/);
         expect(html, answer).not.toMatch(/It runs once|goes on once|Waiting for the agent/);
         expect(html, answer).toContain("This card is no longer active. Nothing was approved.");
         expect(html, answer).not.toMatch(/<button/);
