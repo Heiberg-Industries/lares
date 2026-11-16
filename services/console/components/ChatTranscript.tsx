@@ -217,7 +217,10 @@ export function waitingCardsByStep(messages: readonly EveMessage[], expired: Rea
  *
  * An answered card that is still open is waiting for the agent, unless another card asked in the
  * same step still waits for the person (`waiting`, from {@link waitingCardsByStep}): eve runs the
- * step's cards together, so nothing happens with this one until that card is answered too.
+ * step's cards together, so nothing happens with this one until that card is answered too, or a
+ * new message cancels it. In a conversation that has ended (`page.ended`) nothing more happens, so
+ * that wins; where this page cannot answer or send (`page.answerable` false: the conversation is
+ * unavailable here) the card says only that it was answered.
  *
  * Whether a person decided is read from the approval's own `outcome`, never from how the call
  * went: `accepted` and `declined` are a decision, and every other ending — withdrawn because a
@@ -225,15 +228,18 @@ export function waitingCardsByStep(messages: readonly EveMessage[], expired: Rea
  * framework adds — means nobody decided. Those cards are no longer active, and say so; they are
  * never shown as approved and never as still waiting.
  */
-export function settledSay(part: ToolPart, waiting: ReadonlyMap<string, number> = new Map()): string | null {
+export function settledSay(part: ToolPart, waiting: ReadonlyMap<string, number> = new Map(),
+  page: { readonly ended?: boolean; readonly answerable?: boolean } = {}): string | null {
   const approval = approvalOf(part);
   if (!approval) return null;
   if (approval.status === "open") {
     if (approval.answer === undefined) return null;
+    if (page.ended === true) return "This conversation ended before your answer was used. Nothing ran.";
+    if (page.answerable === false) return "You have answered this.";
     const others = waiting.get(stepOf(approval)) ?? 0;
-    const other = others === 1 ? "the other card asked with it" : "the other cards asked with it";
-    if (others > 0 && approval.answer.optionId === APPROVE) return `You approved this. It runs once you answer ${other}.`;
-    if (others > 0 && approval.answer.optionId === DENY) return `You denied this. The agent goes on once you answer ${other}.`;
+    const other = others === 1 ? "the other card asked with it is answered" : "the other cards asked with it are answered";
+    if (others > 0 && approval.answer.optionId === APPROVE) return `You approved this. It runs once ${other} or you send a new message.`;
+    if (others > 0 && approval.answer.optionId === DENY) return `You denied this. The agent goes on once ${other} or you send a new message.`;
     return "You have answered this. Waiting for the agent.";
   }
   if (approval.outcome === "accepted") {
@@ -273,7 +279,7 @@ function ApprovalCard({
   answering: string | null;
   onAnswer?: (interactionId: string, optionId: AnswerOption) => void;
 }) {
-  const settled = settledSay(part, waiting);
+  const settled = settledSay(part, waiting, { ended, answerable: onAnswer !== undefined });
   // A live button only when the card is still open, has not expired, nothing else is in flight,
   // and this transcript was given somewhere to send the answer. Every one of those is a reason a
   // button would do nothing, and a button that does nothing is worse than a sentence.

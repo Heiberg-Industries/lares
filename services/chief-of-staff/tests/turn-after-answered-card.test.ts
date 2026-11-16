@@ -500,7 +500,7 @@ describe("nothing that reaches other people in the reply to an answered request 
   });
 });
 
-// THE BETA CASE: a card waits and the person types a new message instead of answering. eve
+// THE REPORTED CASE: a card waits and the person types a new message instead of answering. eve
 // withdraws every card nobody answered (reason `superseded-by-message`), a card already answered
 // still runs, and the model reads the new message next, in the same turn. The message joins the turn
 // as the same person, so `auth.current` now carries the Keeper receipt the MESSAGE was admitted with;

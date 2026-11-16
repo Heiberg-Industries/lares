@@ -463,15 +463,15 @@ describe("the approval card in web chat", () => {
       expect([a!.interaction!.turnId, a!.interaction!.stepIndex]).toEqual([b!.interaction!.turnId, b!.interaction!.stepIndex]);
     });
 
-    it("an approved card says it runs once the other card is answered, and the other card keeps its buttons", () => {
+    it("an approved card says it runs once the other card is answered or a new message is sent, and the other card keeps its buttons", () => {
       const html = render(twoCards("approve"), { onAnswer: () => {} });
-      expect(html).toContain("You approved this. It runs once you answer the other card asked with it.");
+      expect(html).toContain("You approved this. It runs once the other card asked with it is answered or you send a new message.");
       expect(html).not.toContain("Waiting for the agent");
       expect(html.match(/<button/g)).toHaveLength(2); // the other card's Approve and Deny
     });
 
-    it("a denied card says the agent goes on once the other card is answered", () => {
-      expect(render(twoCards("deny"), { onAnswer: () => {} })).toContain("You denied this. The agent goes on once you answer the other card asked with it.");
+    it("a denied card says the agent goes on once the other card is answered or a new message is sent", () => {
+      expect(render(twoCards("deny"), { onAnswer: () => {} })).toContain("You denied this. The agent goes on once the other card asked with it is answered or you send a new message.");
     });
 
     it("keeps 'Waiting for the agent' when nothing else waits for the person: the other card answered too, or past its lifetime", () => {
@@ -479,13 +479,35 @@ describe("the approval card in web chat", () => {
       const both = { ...b!, interaction: { ...b!.interaction!, answer: { interactionId: "int_B", optionId: "deny" } } } as EveToolPart;
       const html = render([{ id: "m", role: "assistant", parts: [a!, both] }], { onAnswer: () => {} });
       expect(html.split("You have answered this. Waiting for the agent.").length - 1).toBe(2);
-      expect(render(twoCards("approve"), { expired: new Set(["int_B"]) })).toContain("You have answered this. Waiting for the agent.");
+      expect(render(twoCards("approve"), { expired: new Set(["int_B"]), onAnswer: () => {} })).toContain("You have answered this. Waiting for the agent.");
     });
 
     it("counts only cards of the same step: a card from another step changes nothing", () => {
       const [a, b] = parts(twoCards("approve"));
       const elsewhere = { ...b!, interaction: { ...b!.interaction!, stepIndex: b!.interaction!.stepIndex + 1 } } as EveToolPart;
-      expect(render([{ id: "m", role: "assistant", parts: [a!, elsewhere] }])).toContain("You have answered this. Waiting for the agent.");
+      expect(render([{ id: "m", role: "assistant", parts: [a!, elsewhere] }], { onAnswer: () => {} })).toContain("You have answered this. Waiting for the agent.");
+    });
+
+    // An ended conversation: nothing more will happen, so neither "it runs once..." nor "waiting for
+    // the agent" is true. The other card says it is no longer active and has no buttons.
+    it("in a conversation that has ended, the answered card says it was never used and nothing ran", () => {
+      for (const answer of ["approve", "deny"]) {
+        const html = render(twoCards(answer), { ended: true, error: "This conversation has ended. Start a new one.", onAnswer: () => {} });
+        expect(html, answer).toContain("This conversation ended before your answer was used. Nothing ran.");
+        expect(html, answer).not.toMatch(/It runs once|goes on once|Waiting for the agent/);
+        expect(html, answer).toContain("This card is no longer active. Nothing was approved.");
+        expect(html, answer).not.toMatch(/<button/);
+      }
+    });
+
+    // No `onAnswer`: this page cannot answer the other card or send a message (the conversation is
+    // unavailable here), so the card says only what is certain.
+    it("where this page cannot answer or send, the answered card says only that it was answered", () => {
+      for (const answer of ["approve", "deny"]) {
+        const html = render(twoCards(answer), { error: "This conversation is unavailable. Start a new conversation." });
+        expect(html, answer).toContain("You have answered this.");
+        expect(html, answer).not.toMatch(/It runs once|goes on once|Waiting for the agent/);
+      }
     });
   });
 
