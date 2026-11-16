@@ -26,7 +26,6 @@
     "On an agent another member can use, or one that the installation's owner does not own, model calls outside a conversation (scheduled briefs, mail triage, a tool's own model call) are now refused; only an agent that the installation's owner owns and nobody else can use makes them.",
     "The e-mail door is gone. An agent definition that still has an email door is refused, and the agent keeps its last valid definition: delete the door from agent.json, then choose the agent's mailbox on its Access tab.",
     "A chief of staff's Slack app made before this release needs the bot permission im:write added under OAuth & Permissions in Slack, and the app installed to the workspace again; until then its messages that start on a schedule are expected to be refused by Slack.",
-    "A Slack app made before this release needs the bot permission app_mentions:read and the bot event app_mention added in Slack, the app installed to the workspace again and the app invited to the channel, before a mention in a channel is expected to reach the agent.",
     "Only Anthropic models are on the tested path in this release. Setting an OpenAI or other model by hand is not, and chat will be refused.",
     "Selective import from an older installation can only preview; it cannot write anything yet."
   ]

@@ -185,6 +185,9 @@ Three manual runs, all finished with success (listed under "How it was published
   runtime (creative) and real-install. The `real-install` job is the real-install check, which sends
   Slack and Telegram messages and test briefs through the Keeper, with stand-ins for Slack, Telegram,
   the model provider and sign-in.
+  The same job also ran the channel-mention stage and the key-replacement stage (it printed
+  `PASS: provider-key-set-replaces-the-key-and-the-gateway-uses-it`), with stand-ins for Slack and the
+  model provider.
 - The console run (43906523422) passed its typecheck and build-and-push jobs.
 - The sync-jobs run (43906572925) passed its build-and-push job.
 - A security scan ran on each final image before it was published (see below).
