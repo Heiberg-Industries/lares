@@ -37,7 +37,7 @@ export function tracksHome(ctx: TrackContext, expectedHome?: string): VaultTrack
     },
     async read(path) {
       if (!path.startsWith('tracks/')) throw new Error('Track access refused');
-      const folder = path.slice(0, path.lastIndexOf('/'));
+      const slash = path.lastIndexOf('/'), folder = slash < 0 ? '' : path.slice(0, slash);
       if (!(await vaultBrokerListFolder({ ...identity, area: 'shared', ...readHome }, folder)).includes(path)) return undefined;
       const result = await vaultBrokerRequest<{ content: string; contentRevision: string }>('vault.read', { ...identity, operation: 'read', area: 'shared', path, ...readHome });
       markTrackOrigin(ctx, result.content);

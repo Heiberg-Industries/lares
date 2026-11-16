@@ -141,7 +141,7 @@ export function listNotes(root: string, options: NoteReadOptions = {}): string[]
   return files;
 }
 
-/** How many notes one page of a listing holds at most, and how many files a page opens at most. */
+/** How many notes one page of a listing holds at most. */
 export const NOTE_LIST_PAGE = 200;
 
 export interface NotePageRequest {
@@ -170,6 +170,7 @@ export function notePage(paths: readonly string[], request: NotePageRequest): { 
 
 export interface SearchResult {
   hits: string[];
+  /** How many notes were searched: with a reader, only the notes that reader may see. */
   files: number;
 }
 
@@ -236,7 +237,6 @@ export function searchNotes(query: string, root: string, reader?: Reader, option
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter((t) => t.length >= 2);
-  if (tokens.length === 0) return { hits: [], files: files.length };
 
   const scored = files.map((relPath) => {
     let haystack = relPath.toLowerCase();
@@ -247,15 +247,18 @@ export function searchNotes(query: string, root: string, reader?: Reader, option
     return { relPath, present, n: present.length, raw: cached?.raw ?? "" };
   });
 
-  // The scope filter reads `raw` off the SAME cache entry the scorer just populated — no
-  // extra file reads. An unreadable file (raw === "") falls back to the store's default
-  // scope via noteScope(""), same as any note with no frontmatter.
-  const rawByPath = new Map(scored.map((s) => [s.relPath, s.raw]));
-  const visible = (relPaths: string[]): string[] =>
-    reader === undefined ? relPaths : relPaths.filter((p) => visibleTo(rawByPath.get(p) ?? "", reader));
+  // ONLY THE NOTES THIS READER MAY SEE ARE SEARCHED. Hidden notes are dropped before scoring and
+  // counting, not after: filtering only the final hits let a hidden note decide which branch ran
+  // and which word anchored the fallback, so a reader could test whether notes they may not see
+  // contain words they chose, and `files` counted notes they may not see. The filter reads `raw`
+  // off the SAME cache entry the scorer just populated — no extra file reads. An unreadable file
+  // (raw === "") falls back to the store's default scope via noteScope(""), same as any note with
+  // no frontmatter.
+  const seen = reader === undefined ? scored : scored.filter((s) => visibleTo(s.raw, reader));
+  if (tokens.length === 0) return { hits: [], files: seen.length };
 
-  const all = scored.filter((s) => s.n === tokens.length).map((s) => s.relPath);
-  if (all.length > 0) return { hits: visible(all), files: files.length };
+  const all = seen.filter((s) => s.n === tokens.length).map((s) => s.relPath);
+  if (all.length > 0) return { hits: all, files: seen.length };
 
   // Document frequency per token, over path+content. The ANCHOR SET is every token tied for
   // the lowest df — equally distinctive tokens are equally valid anchors, so "vol nuit" over
@@ -263,17 +266,17 @@ export function searchNotes(query: string, root: string, reader?: Reader, option
   // lowest df is ZERO the most distinctive thing asked for appears nowhere, and the fallback
   // returns nothing at all.
   const df = new Map<string, number>(tokens.map((t) => [t, 0]));
-  for (const s of scored) for (const t of s.present) df.set(t, (df.get(t) ?? 0) + 1);
+  for (const s of seen) for (const t of s.present) df.set(t, (df.get(t) ?? 0) + 1);
   const minDf = Math.min(...tokens.map((t) => df.get(t)!));
-  if (minDf === 0) return { hits: [], files: files.length };
+  if (minDf === 0) return { hits: [], files: seen.length };
   const anchors = new Set(tokens.filter((t) => df.get(t) === minDf));
 
-  const hits = scored
+  const hits = seen
     .filter((s) => s.present.some((t) => anchors.has(t)))
     .sort((a, b) => b.n - a.n)
     .slice(0, 20)
     .map((s) => s.relPath);
-  return { hits: visible(hits), files: files.length };
+  return { hits, files: seen.length };
 }
 
 /**

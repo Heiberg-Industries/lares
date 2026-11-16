@@ -354,8 +354,8 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     const kind=area==='private'?'private':'shared',candidates=inventory.areas.filter(a=>a.kind===kind),vault=new PgVaultStore(),matches=[] as {areaId:string;revision:number}[];
     for(const candidate of candidates){if(!turn.areaIds.includes(candidate.areaId))continue;const result=await db.query('SELECT revision FROM vault_areas WHERE id=$1 AND status=\'active\'',[candidate.areaId]);if(result.rows.length!==1)continue;const revision=Number(result.rows[0]!.revision);const binding=await vault.vaultAreaBinding(memberId,{areaId:candidate.areaId,expectedRevision:revision,permission:'use'},{db:db as never,requiredBackingKind:'git'});if(binding)matches.push({areaId:candidate.areaId,revision});}
     if(matches.length!==1||(requestedHome!==undefined&&matches[0]!.areaId!==requestedHome.slice('vault:'.length)))throw new Error('area');const selected=matches[0]!,testPaths=socketOptions.vaultFilesForTests,backings=new Map([[inventory.backing.id,{kind:'git' as const,root:testPaths?.root??'/srv',areas:new Map(inventory.areas.map(a=>[a.areaId,{origin:testPaths?join(testPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]),files=new GuardedVaultFiles(vault,backings),ctx={memberId,areaId:selected.areaId,expectedRevision:selected.revision,db:db as never},reader:Reader={userId:memberId,store:kind==='private'?'brain':'atlas' as StoreName};
-    // A list is one page: at most NOTE_LIST_PAGE files are opened, whatever the area's size, and only the
-    // notes this reader may see are returned. The caller pages on with `nextCursor`.
+    // A list is one page of at most NOTE_LIST_PAGE notes this reader may see. The folder's notes are read to
+    // drop hidden ones before the page is cut, so the cursor counts only visible notes. The caller pages on with `nextCursor`.
     if(operation==='list'){
      const page=await files.listPage(ctx,{folder:folder as string|undefined,cursor:cursor as number|undefined,limit:NOTE_LIST_PAGE},reader);assertLive();
      return {notes:page.paths,...(page.nextCursor!==undefined?{nextCursor:page.nextCursor}:{})};

@@ -30,7 +30,7 @@ async function currentPrivateNote(ctx: NoteContext, path: string): Promise<strin
   const identity = { turnCapability: turn.capability, turnId, sequence, sessionId: session.id, memberId: admission.memberId,
     admissionNonce: admission.admissionNonce, area: 'private' };
   // A missing note and a refused read look the same from a read, so ask the listing first.
-  const folder = path.slice(0, path.lastIndexOf('/'));
+  const slash = path.lastIndexOf('/'), folder = slash < 0 ? '' : path.slice(0, slash);
   if (!(await vaultBrokerListFolder(identity, folder)).includes(path)) return null;
   return (await vaultBrokerRequest<{ content: string }>('vault.read', { ...identity, operation: 'read', path })).content;
 }

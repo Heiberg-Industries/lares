@@ -153,14 +153,16 @@ export class GuardedVaultFiles {
       return {paths,files:paths.length};
     });
   }
-  /** One page of the listing (`notePage`) with only the notes `reader` may see. Every note on the page
-   * is opened under ONE area authorisation, so a page costs the same checks as a single read, and a
-   * page opens at most `request.limit` files whatever the area's size. */
+  /** One page (`notePage`) of the notes in the folder that `reader` may see. Every note in the folder is
+   * read, under ONE area authorisation, to keep only the visible ones BEFORE the page is cut, so the
+   * cursor counts and places only notes the reader can already see: a page never reveals how many
+   * hidden notes there are or where they sort. A full page holds `request.limit` notes; only the last
+   * page is short, and `nextCursor` appears only when more visible notes follow. */
   async listPage(ctx:VaultFilesContext,request:NotePageRequest,reader:Reader):Promise<{paths:string[];nextCursor?:number}> {
     return this.readArea(ctx,root=>{
-      const page=notePage(listNotes(root,{allowEmpty:true,rejectNestedRepositories:true}),request);
-      const paths=page.paths.filter(path=>{const abs=resolveInStore(path,root,{rejectNestedRepositories:true});regular(abs);return visibleTo(readFileSync(abs,'utf8'),reader);});
-      return {paths,...(page.nextCursor!==undefined?{nextCursor:page.nextCursor}:{})};
+      const inFolder=notePage(listNotes(root,{allowEmpty:true,rejectNestedRepositories:true}),{folder:request.folder,limit:Number.MAX_SAFE_INTEGER}).paths;
+      const visible=inFolder.filter(path=>{const abs=resolveInStore(path,root,{rejectNestedRepositories:true});regular(abs);return visibleTo(readFileSync(abs,'utf8'),reader);});
+      return notePage(visible,{cursor:request.cursor,limit:request.limit});
     });
   }
   async count(ctx:VaultFilesContext):Promise<number> {return (await this.list(ctx)).files;}

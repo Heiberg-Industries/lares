@@ -66,8 +66,8 @@ vi.mock('@lares/agent-kit/vault-files', async (importOriginal) => {
     async listPage(ctx: unknown, request: any, reader: any) {
       if (this.delegate) return (this.delegate as any).listPage(ctx, request, reader);
       const { notePage, visibleTo } = await import('../../../packages/agent-kit/src/notes-store.js');
-      const page = notePage(['owner.md', ...ids.trackFiles.keys()], request);
-      return { paths: page.paths.filter(path => visibleTo(ids.trackFiles.get(path)?.content ?? 'private note content', reader)), ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}) };
+      const inFolder = notePage(['owner.md', ...ids.trackFiles.keys()], { folder: request.folder, limit: Number.MAX_SAFE_INTEGER }).paths;
+      return notePage(inFolder.filter(path => visibleTo(ids.trackFiles.get(path)?.content ?? 'private note content', reader)), { cursor: request.cursor, limit: request.limit });
     }
     async search(ctx: unknown, query: string, reader: unknown) { if (this.delegate) return (this.delegate as any).search(ctx, query, reader); return { hits: [], files: 0 }; }
     async listUnder(ctx: unknown, dir: string) { if (this.delegate) return (this.delegate as any).listUnder(ctx, dir); const prefix = dir.replace(/\/+$/, '') + '/'; const paths = [...ids.trackFiles.keys()].filter(p => p.startsWith(prefix)); return { paths, files: paths.length }; }
@@ -553,15 +553,19 @@ it('lists 2,000 notes page by page, one folder, finds a note by search and reads
     admissionNonce, turnId: turn.turnId, sequence: approvalTurnSequence, ...input });
   const timed = async (input: Record<string, unknown>) => { const started = performance.now(); const result = await call(input); return { result, ms: performance.now() - started }; };
 
-  const listed: string[] = [], pageMs: number[] = [];
+  // The cursor counts only notes the reader may see: 1,800 visible notes are exactly 9 full pages, every
+  // page but none of them short, and the cursors are 200, 400, ... 1600 whatever is hidden between them.
+  const listed: string[] = [], pageMs: number[] = [], cursors: number[] = [];
   let cursor: number | undefined, pages = 0;
   do {
     const { result, ms } = await timed({ operation: 'list', area: 'private', ...(cursor !== undefined ? { cursor } : {}) });
     pageMs.push(ms); listed.push(...result.notes); cursor = result.nextCursor; pages++;
-    expect(result.notes.length).toBeLessThanOrEqual(200);
+    if (cursor !== undefined) cursors.push(cursor);
+    expect(result.notes.length).toBe(200);
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(256 * 1024);
   } while (cursor !== undefined && pages < 50);
-  expect(pages).toBe(10);
+  expect(pages).toBe(9);
+  expect(cursors).toEqual([200, 400, 600, 800, 1000, 1200, 1400, 1600]);
   expect(listed.length).toBe(visible.size);
   expect(new Set(listed).size).toBe(listed.length);
   expect([...listed].sort()).toEqual([...visible].sort());
@@ -573,13 +577,17 @@ it('lists 2,000 notes page by page, one folder, finds a note by search and reads
     const { result, ms } = await timed({ operation: 'list', area: 'private', folder: 'people', ...(cursor !== undefined ? { cursor } : {}) });
     folderMs.push(ms); people.push(...result.notes); cursor = result.nextCursor;
   } while (cursor !== undefined && folderMs.length < 10);
-  expect(folderMs.length).toBe(3);
+  // 500 people notes, 100 of them hidden: 400 visible, so 2 full pages.
+  expect(folderMs.length).toBe(2);
+  expect(people).toHaveLength(400);
   expect(people).toEqual([...visible].filter(path => path.startsWith('people/')).sort());
   expect((await call({ operation: 'list', area: 'private', folder: '_meta' })).notes).toEqual([]);
 
   const { result: found, ms: searchMs } = await timed({ operation: 'search', area: 'private', q: 'zanzibarquokka' });
   // note-1237 holds the word too, but it is another member's note: never returned.
   expect(found.hits).toEqual(['daily/2026/note-1234.md']);
+  // The number of notes searched counts only the 1,800 the reader may see.
+  expect(found.files).toBe(1800);
   const { result: broad, ms: broadMs } = await timed({ operation: 'search', area: 'private', q: 'working week' });
   expect(broad.hits.length).toBe(50); expect(broad.more).toBe(true);
   expect(broad.hits.filter((path: string) => hidden.has(path))).toEqual([]);

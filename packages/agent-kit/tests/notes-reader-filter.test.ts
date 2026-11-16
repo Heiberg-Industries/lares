@@ -80,9 +80,28 @@ describe("the reader filter — enforced in the store, below every tool", () => 
       "secret.md",
     ]);
 
-    // Anyone else must not — the fallback branch's visible() call is what drops it, proving
-    // that branch (not just the exact-match one) is filtered.
+    // Anyone else must not. Hidden notes are not searched at all, so for them "prototype"
+    // appears nowhere and the anchored fallback answers nothing.
     expect(searchNotes("gadget prototype", root, { userId: "hedda", store: "brain" }).hits).toEqual([]);
+  });
+
+  it("a hidden note changes neither the hits nor the count for a reader who may not see it", () => {
+    // Two visible notes, one word each, so the query falls back to both. A hidden note holding
+    // BOTH words used to take the exact-match branch, be filtered out, and leave nothing: the
+    // empty answer told the reader that a note they may not see contains those words.
+    const without = mkdtempSync(join(tmpdir(), "scope-vault-oracle-"));
+    writeFileSync(join(without, "a.md"), "---\nscope: org\n---\nacme quarterly notes\n");
+    writeFileSync(join(without, "b.md"), "---\nscope: org\n---\nlayoffs in the industry\n");
+    const withHidden = mkdtempSync(join(tmpdir(), "scope-vault-oracle-"));
+    writeFileSync(join(withHidden, "a.md"), "---\nscope: org\n---\nacme quarterly notes\n");
+    writeFileSync(join(withHidden, "b.md"), "---\nscope: org\n---\nlayoffs in the industry\n");
+    writeFileSync(join(withHidden, "c.md"), "---\nscope: private\nowner: owner-1\n---\nacme layoffs plan\n");
+    const hedda = { userId: "hedda", store: "atlas" } as const;
+    const expected = { hits: ["a.md", "b.md"], files: 2 };
+    expect(searchNotes("acme layoffs", without, hedda)).toEqual(expected);
+    expect(searchNotes("acme layoffs", withHidden, hedda)).toEqual(expected);
+    // The note's owner searches all three and gets the exact match.
+    expect(searchNotes("acme layoffs", withHidden, { userId: "owner-1", store: "atlas" })).toEqual({ hits: ["c.md"], files: 3 });
   });
 
   it("narrowestScope: a derivation inherits the narrowest of its sources", () => {

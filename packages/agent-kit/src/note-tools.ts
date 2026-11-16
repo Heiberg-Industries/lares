@@ -212,7 +212,7 @@ export function searchTool(deps?: NoteToolDeps) {
     description:
       `Search one area of the Vault for notes matching a query. Send natural words, not a ` +
       `regex. Use this to find notes about a subject instead of listing the whole area. ` +
-      `Returns store-relative paths plus that area's total note count — a result ` +
+      `Returns store-relative paths plus the number of notes searched — a result ` +
       `with zero hits and a non-zero count means the query found nothing, not that the ` +
       `area is unavailable. When the result has \`more: true\`, more notes matched than came ` +
       `back: search again with more specific words. ${AREA_INPUT_DOC}`,
@@ -297,9 +297,8 @@ export function listTool(deps?: NoteToolDeps) {
       `This is a directory listing, not a search: to find notes about a subject, use the search ` +
       `tool instead of listing everything. Give \`folder\` (for example "ventures") to list only ` +
       `the notes in that folder and its subfolders. When the result has \`nextCursor\`, more notes ` +
-      `follow: call again with the same area and folder and \`cursor\` set to that value. A page ` +
-      `can hold fewer notes than that and still have more after it. No \`nextCursor\` means the ` +
-      `listing is complete. ${AREA_INPUT_DOC}`,
+      `follow: call again with the same area and folder and \`cursor\` set to that value. No ` +
+      `\`nextCursor\` means the listing is complete. ${AREA_INPUT_DOC}`,
     inputSchema: z.object({
       area: areaInput,
       folder: z
