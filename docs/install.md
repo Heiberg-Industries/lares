@@ -485,6 +485,22 @@ reloads. A door you have not touched reads "Not set up".
 4. When the console shows the message to send, open a direct message with the app in Slack and
    send exactly that (for example `claim 0123...`; "Copy" puts it on your clipboard).
 
+To use the agent in a channel, invite the app to that channel and mention it there. Only people
+this agent is set up to answer can ask it things in a channel, and you are one of them; everyone
+else in the channel can read its answers but cannot ask it anything. In a channel it answers from
+general knowledge and public material (the public Lares pages and public transport plans). A chief
+of staff can also look up your contacts (when contacts are connected), deadlines and reminders
+there, read-only, and everyone in the channel can read what it finds; a creative agent has no such
+lookups. It is not given your mail, calendar, notes or what you asked it to remember. For anything
+else it tells you to write to it in a direct message, and anything that needs your approval has to
+be asked for in a direct message, never in the channel. A conversation in a channel is stored and
+learned from the same way a direct message is.
+
+A Slack app you made before this was added does not hear mentions by itself. In the app's settings
+on Slack, add the bot permission `app_mentions:read` under OAuth & Permissions and the bot event
+`app_mention` under Event Subscriptions, then install the app to your workspace again, then invite
+the app to a channel.
+
 **E-mail** (chief-of-staff agent). The agent works on one of your own Google mailboxes. It sorts
 new mail and writes reply drafts in Gmail; it never sends. With the same permission it reads your
 Drive files when you send it a Docs link, and adds or changes calendar events, each one only after

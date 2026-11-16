@@ -41,7 +41,7 @@ statements are not assumed to carry over). Paths are from the repository root.
 | Who may answer a question | The tap gate lets any allowed person through. After that eve decides. | The owner only (`authorizeSlackAnswer`). | No question card: a question is shown as text and answered as text. | No rule in the kit. |
 | Refusal note | `TAP_REFUSAL` and `TAP_UNRECOGNISED` in `cos/lib/telegram-tap-gate.ts`. | `SLACK_TAP_REFUSAL` and `tellRefusedSlackTapper` in `kit/door-channels.ts`, used by both roles. | Fixed sentences inside `console/lib/chat-proxy.ts`. | For Slack only. The Telegram and Slack sentences differ; the code says so itself. |
 | "Too long" sentences | `onTurnSettled` in `cos/agent/channels/telegram.ts` | `answerFailure` in each role's `agent/channels/slack.ts` (written twice) | `console/lib/limit-reply.ts` | Yes: `kit/conversation-too-long.ts`, chosen in `kit/gateway-budget.ts`. The spending-cap sentence is still a literal in three door files. |
-| Shared-room rule | Not needed: the door admits private chats only (`isAllowedTelegramMessage`). | Applied in `cos/agent/tools/catalogue.ts` and `cos/lib/approvals.ts`. No call site in the creative role. | Not needed: every conversation is private. | Yes, but written for Slack by name: `kit/private-console-surface.ts` (`startedInSharedSlackRoom`, `SHARED_ROOM_REFUSED`). |
+| Shared-room rule | Not needed: the door admits private chats only (`isAllowedTelegramMessage`). | Applied in both roles, in each `agent/tools/catalogue.ts` and `lib/approvals.ts`, and in the instructions each role builds (16 November 2026). | Not needed: every conversation is private. | Yes: `kit/shared-room.ts` holds the rule, one row per door, the list of what a room may use, the room text and the refusal sentence. |
 | Settled card (late or second tap) | The door removes the buttons (`onInteractionSettled`). A tap that still arrives is not checked by Lares. | eve repaints the card. No Lares check. | `cardStillWaiting` and `claimAnswer` in `console/lib/chat-proxy.ts`; the sentence `ANSWER_NOT_USED` in `console/lib/chat-session.ts`. | No. Only web chat has a guard, and part of it is a list held in the console's memory. |
 | Reply to an answered request | `cos/lib/approval-card-turns.ts`, the same at every door of that role. | The same file for the chief-of-staff role. The creative role has no such rule. | The same file for the chief-of-staff role. | No, it is local to one role. The two sentences for a refused reply are shared (`kit/approval-reply-sentence.ts`). |
 | Approval records | `kit/approval-ledger.ts` (table `approval_asks`), written by `kit/approval-record-hook.ts`. | The same. | The same, plus the exact-approval columns (`kit/approval-execution.ts`). | Yes. The table has no column for the door a card was posted on or for the card address (its `answered_via` column says only how a card was answered), and it lists approvals only, not questions. |
@@ -195,7 +195,8 @@ Shared:
   lists question cards as well as approvals. This needs a migration, and the migration needs the
   manual image-probe run before it reaches main.
 - `startedInSharedSlackRoom` in `private-console-surface.ts` no longer reads Slack's own channel
-  ids by name. How a door tells the layer that a conversation is shared is open question 5.
+  ids by name. Done (16 November 2026): the rule is in `kit/shared-room.ts` and reads one row per
+  door (open question 5).
 - `patches/eve.patch` gains the delivery-step addition of rule 2.
 
 **Accepted costs.**
@@ -248,6 +249,24 @@ when the layer is built.
    conversation is private. That is not one of the five things an adapter provides (rule 5).
    Does it travel with the verified sender identity, as it does on Slack today, or is it a
    sixth item?
+
+   **Answered on 16 November 2026: it travels with the verified sender identity, and the kit reads
+   it through one row per door** (`packages/agent-kit/src/shared-room.ts`). A door without a row,
+   or a door conversation with no initiator, counts as a shared room, so a new door starts out
+   safe. The same change switched on mentions in Slack channels, with these decisions:
+   1. In a channel the agent may use public material and read-only looks at contacts, deadlines
+      and reminders. It may not use mail, calendar, notes or memory.
+   2. A channel shows no approval card. Anything that needs approval is asked for in a direct
+      message.
+   3. A channel conversation is stored and learned from like a direct message.
+   4. Both roles (chief of staff and creative) answer mentions. The creative role has none of the
+      three looks, so it uses public material only.
+   5. In a channel the chief of staff is told only whether contacts are connected, and nothing
+      else about what is connected.
+   6. The clock the agent is told in a channel is unchanged.
+
+   Slack's manifest asks for `app_mentions:read` and the bot event `app_mention` for both roles,
+   and for no permission to read a channel's other messages.
 6. **"Too long" sentences.** The kit has five, because each names that door's own way to start
    over (rule 6). Rule 9 says a new door adds no sentence. Does a new door reuse one general
    sentence, or may it add its variant to the kit?

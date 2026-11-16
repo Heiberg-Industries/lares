@@ -67,6 +67,20 @@ it('tells the owner the one message to send in Slack',()=>{
  const html=renderToStaticMarkup(DoorSetup(props));
  expect(html).toContain(`claim ${'B'.repeat(24)}`);expect(html).toContain('bot in Team');expect(html).toContain('Copy manifest');
 });
+it('tells the owner how to use the agent in a channel, and promises contacts, deadlines and reminders only to the chief of staff',()=>{
+ mocks.states[STATE.rows]=[row('slack')];
+ const chief=renderToStaticMarkup(DoorSetup(cos));
+ expect(chief).toContain('invite the app to that channel and mention it there');
+ expect(chief).toContain('Only people this agent is set up to answer can ask it things in a channel, and you are one of them');
+ expect(chief).toContain('look up your contacts (when contacts are connected), deadlines and reminders there, read-only');
+ expect(chief).toContain('It is not given your mail, calendar, notes or what you asked it to remember.');
+ expect(chief).toContain('has to be asked for in a direct message, never in the channel.');
+ mocks.setters=[];mocks.states[STATE.rows]=[row('slack')];
+ const creative=renderToStaticMarkup(DoorSetup(props));
+ expect(creative).toContain('invite the app to that channel and mention it there');
+ expect(creative).not.toContain('contacts');expect(creative).not.toContain('deadlines');
+ expect(creative).toContain('(the public Lares pages and public transport plans).');
+});
 it('connects Telegram from the token alone: save, check, enable, apply, register, then issue the link',async()=>{
  const order:string[]=[];
  mocks.status.mockImplementation(async()=>{order.push('status');return ok([row('telegram',{configured:true,enabled:order.includes('enable'),pending:!order.includes('apply')})]);});
