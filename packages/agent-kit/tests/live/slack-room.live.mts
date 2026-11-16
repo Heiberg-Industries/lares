@@ -52,7 +52,7 @@
  *
  * LAST RUN: 16 November 2026. The app held exactly the bot permissions `chat:write`, `im:history`,
  * `im:write` and `app_mentions:read`, in a public channel. The probe itself does not call eve; the
- * eve pinned in this branch is 1.0.0-rc.10. The SUMMARY line, verbatim:
+ * eve pinned in the repository that day was 1.0.0-rc.10. The SUMMARY line, verbatim:
  *   SUMMARY {"probe":"slack-room","results":{"auth.test":"ok","conversations.info":"missing_scope","chat.postMessage (message)":"ok","chat.postMessage (threaded reply)":"ok","chat.update (threaded reply)":"ok","assistant.threads.setStatus (set)":"ok","assistant.threads.setStatus (clear)":"ok","conversations.replies":"missing_scope","conversations.open":"ok","chat.delete (threaded reply)":"ok","chat.delete (message)":"ok"},"needed":{"conversations.info":"channels:read,groups:read,mpim:read,im:read","conversations.replies":"channels:history"},"scopes":["chat:write","im:write","app_mentions:read","im:history"],"messagesLeftInChannel":0}
  * An earlier run the same day, in the same channel, with wider permissions (among them
  * `channels:read`, `channels:history` and `assistant:write`) got `ok` for `conversations.info`,

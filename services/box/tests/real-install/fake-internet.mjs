@@ -237,8 +237,9 @@ function serve(fixture) {
     // sets it. Live probe steps `assistant.threads.setStatus (set)` and `(clear)`.
     "assistant.threads.setStatus": { ok: true },
   };
-  // Seen the same day: with `channels:read`, `channels:history` and `assistant:write` among the
-  // app's permissions, all three answer `ok`.
+  // Seen in the earlier run that day, with `channels:read`, `channels:history` and `assistant:write`
+  // among the app's permissions: `conversations.info`, `conversations.replies` and the status line
+  // all answered `ok`.
   // Seen for a room too, and answered by the general `chat.*` answer below: a post, a threaded
   // reply, an update and a delete by a bot that is a member of the channel succeed with `chat:write`.
   // Live probe steps `chat.postMessage (message)`, `chat.postMessage (threaded reply)`,
