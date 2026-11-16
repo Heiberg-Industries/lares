@@ -7,8 +7,7 @@
  * Used by the door's route tests and by the room checks, so the identity those checks read is the
  * one the framework builds, not one written by hand.
  *
- * The test file that imports this one must mock the database pool (`@lares/agent-kit/db`), as the
- * door's tests do.
+ * In this role the door reads no database on this path; the chief of staff copy needs the pool mocked.
  */
 import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

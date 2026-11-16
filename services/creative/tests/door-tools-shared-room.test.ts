@@ -175,10 +175,11 @@ describe("a conversation started by the owner's mention, on the identity eve bui
     vi.restoreAllMocks();
   });
 
-  it("matches the hand-made room identity in every field the room rule and the approvals read", () => {
+  it("has what the room rule and the approvals read: the Slack authenticator, a person, the owner's user id and the channel id", () => {
     expect(built.authenticator).toBe(ROOM.authenticator);
     expect(built.principalType).toBe(ROOM.principalType);
-    for (const field of ["user_id", "author_type"]) expect(built.attributes[field], field).toBe((ROOM.attributes as Record<string, unknown>)[field] ?? "user");
+    expect(built.attributes["user_id"]).toBe(ROOM.attributes.user_id);
+    expect(built.attributes["author_type"]).toBe("user");
     expect(built.attributes["channel_id"]).toBe("C0EXAMPLE");
     expect(startedIn({ session: { auth: { initiator: built, current: built } } })).toBe("shared-room");
   });

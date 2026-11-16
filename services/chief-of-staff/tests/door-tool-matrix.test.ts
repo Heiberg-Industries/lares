@@ -14,7 +14,9 @@
 //   Real: each door's own admission code (`agent/channels/*.ts`), the tool resolver
 //   (`agent/tools/catalogue.ts`), the private-surface rules, the approval policies and the
 //   execution guard (`lib/approvals.ts`). Each conversation below starts from a fake door message
-//   handed to that door's own code; the session it returns is what the tools are asked with.
+//   handed to that door's own code, except the shared-room column, which starts from a signed
+//   `app_mention` pushed through the Slack door's real route (`helpers/slack-mention.ts`); the
+//   session it returns is what the tools are asked with.
 //   Stand-ins: there is no database, no network and no chat platform. The few database answers
 //   these paths need are fixed in `fake` below (who owns the agent, that both chat doors are
 //   connected, the approval card table, and "the console vouches for this member"). The checks
@@ -599,8 +601,8 @@ describe("the door opens a turn for the people it admits", () => {
     expect(auth).toMatchObject({ authenticator: "slack-webhook", attributes: { user_id: SLACK_OWNER, channel_id: "C0SHAREDROOM" } });
   });
 
-  // The hand-made message above stands for a mention in the cells and tests that still use it
-  // (`roomOwner` and the like). This holds it to what eve builds: in every field the room rule, the
+  // The hand-made room message above is still used by the test before this one; `roomOwner`
+  // further down is a separate hand-written identity this test does not cover. This holds it to what eve builds: in every field the room rule, the
   // approvals and the model-authority check read, the two identities are the same.
   it("Slack · owner · mention in a shared channel: the hand-made identity matches the one eve builds", async () => {
     const handMade = (await knockOnSlack(slackMessage({ user: SLACK_OWNER, room: true })))!;
