@@ -18,8 +18,8 @@
  * belief about two DIFFERENT measurements that were never the same live gateway: 400 was
  * measured against a real gateway on 2026-09-01 (the per-user spend-cap measurements); 429
  * was read out of LiteLLM's own source on 2026-09-18 (`litellm/exceptions.py`,
- * `litellm/proxy/auth/auth_exception_handler.py`) — a real gateway has not yet been asked
- * directly whether it answers 400 or 429 since that source was read. This file is what
+ * `litellm/proxy/auth/auth_exception_handler.py`). The probe has since answered it: 429 on
+ * 2026-09-21 and 422 on 2026-11-16 (see the run notes below). This file is what
  * actually asks, the next time someone can run it.
  *
  * WHAT THIS DOES, in order:

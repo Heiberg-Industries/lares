@@ -63,8 +63,9 @@
  *
  * **What breaks silently if LiteLLM changes:** rename the type, or reword the sentence, and
  * every door falls back to the generic failure text — legible-but-wrong, never a wrong action.
- * The same happens when LiteLLM moves the status to one not in `LITELLM_BUDGET_EXCEEDED_STATUSES`
- * (it did, to 422, by 2026-11-16).
+ * A status not in `LITELLM_BUDGET_EXCEEDED_STATUSES` (LiteLLM moved to 422 by 2026-11-16) makes
+ * `isBudgetExceeded` reject a raw body or AI SDK error that carries it. The doors are not affected:
+ * eve 1.0's failure event carries no status, so they recognise the refusal by its sentence alone.
  * Re-run a throwaway-key proof against the live gateway (or the live probe below) to re-measure; that
  * transcript is the acceptance bar for this file, not the fixtures below (which are copied
  * from it, plus a 429 fixture shaped from LiteLLM's source and a 422 fixture shaped from the
