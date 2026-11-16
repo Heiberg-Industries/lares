@@ -1,6 +1,6 @@
 /**
  * tests/live/litellm-budget-refusal.live.mts — the LIVE probe for `../../src/gateway-budget.ts`
- * (budget refusal recognised by type, on HTTP 400 and 429).
+ * (budget refusal recognised by type; the module accepts HTTP 400, 422 and 429).
  *
  * NOT part of `pnpm test`, and not run in CI — it needs a real
  * gateway and a real admin (master) key, neither of which are reachable from here. Run it by
@@ -18,8 +18,8 @@
  * belief about two DIFFERENT measurements that were never the same live gateway: 400 was
  * measured against a real gateway on 2026-09-01 (the per-user spend-cap measurements); 429
  * was read out of LiteLLM's own source on 2026-09-18 (`litellm/exceptions.py`,
- * `litellm/proxy/auth/auth_exception_handler.py`) — a real gateway has not yet been asked
- * directly whether it answers 400 or 429 since that source was read. This file is what
+ * `litellm/proxy/auth/auth_exception_handler.py`). The probe has since answered it: 429 on
+ * 2026-09-21 and 422 on 2026-11-16 (see the run notes below). This file is what
  * actually asks, the next time someone can run it.
  *
  * WHAT THIS DOES, in order:
@@ -41,6 +41,12 @@
  * NEVER PRINTS THE MASTER KEY OR THE MINTED KEY. `redact()` masks both wherever they appear in
  * a string, masks any `sk-...`-shaped token, and masks the value of any field whose NAME
  * conventionally carries a secret — the same approach `litellm-key-info.live.mts` uses.
+ *
+ * RUN 2026-11-16 (newer than the LAST RUN below), LiteLLM **v1.104.2**. **FAIL.** Refused on
+ * call 6 with **HTTP 422**, `error.type: "budget_exceeded"`, `error.code: "422"`, message
+ * beginning `"Budget has been exceeded! Key=..."`. `isBudgetExceeded()` did NOT recognise it:
+ * the module then accepted only 400 and 429. 422 has since been added to
+ * `LITELLM_BUDGET_EXCEEDED_STATUSES`; this probe has not been re-run since that change.
  *
  * LAST RUN: **2026-09-21**, LiteLLM **v1.101.0**, alias `lares-brain` -> `claude-opus-5`,
  * throwaway key minted at `max_budget: 0.001`. **PASS.**

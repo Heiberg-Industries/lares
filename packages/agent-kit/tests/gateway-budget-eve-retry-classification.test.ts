@@ -68,6 +68,11 @@ describe("eve's own retry classification of a budget refusal (documented, not fi
     expect(classify(budgetRefusalApiCallError(400))).toBe("terminal");
   });
 
+  it("a 422 budget refusal classifies as terminal — the status the live probe measured on 2026-11-16", async () => {
+    const classify = await loadInstalledClassifier();
+    expect(classify(budgetRefusalApiCallError(422))).toBe("terminal");
+  });
+
   it("a 429 budget refusal classifies as retry — current LiteLLM's status makes eve retry a capped call", async () => {
     const classify = await loadInstalledClassifier();
     expect(classify(budgetRefusalApiCallError(429))).toBe("retry");
