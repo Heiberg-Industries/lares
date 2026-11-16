@@ -112,6 +112,49 @@ describe("the execution guard", () => {
   });
 });
 
+describe("deadlines and reminders in web chat", () => {
+  const DEADLINES = ["deadline_list", "deadline_add", "deadline_reset", "deadline_dismiss", "remind_list"];
+  // These ask a card that has no exact web chat card behind it, or touch memory web chat does not have.
+  const NOT_HERE = ["remind_set", "remind_cancel", "deadline_done", "deadline_mint_statutory", "remember"];
+  const slackRoom = { authenticator: "slack-webhook", principalType: "user", principalId: "U0OWNER", attributes: { user_id: "U0OWNER", channel_id: "C0ROOM" } };
+  const roomCtx = { session: { id: "room-x", turn: { id: "t1", sequence: 1 }, auth: { current: slackRoom, initiator: slackRoom } } };
+  const slackDm = { ...slackRoom, attributes: { user_id: "U0OWNER", channel_id: "D0OWNER" } };
+  const dmCtx = { session: { id: "dm-x", turn: { id: "t1", sequence: 1 }, auth: { current: slackDm, initiator: slackDm } } };
+
+  it("offers the owner the deadline tools and the reminder list, and nothing that sets or cancels a reminder", async () => {
+    const tools = await resolve(ctxFor("member-owner"));
+    for (const n of DEADLINES) expect(tools, n).toHaveProperty(n);
+    for (const n of NOT_HERE) expect(tools, n).not.toHaveProperty(n);
+  });
+
+  it("offers a non-owner member none of them, and refuses a call from one before it runs", async () => {
+    const tools = await resolve(ctxFor("member-other"));
+    for (const n of DEADLINES) {
+      expect(tools, n).not.toHaveProperty(n);
+      await expect(guardCatalogueExecution(ctxFor("member-other"), n, {}), n).rejects.toThrow("Conversation authority");
+    }
+    await expect(catalogueApprovalRequest("deadline_dismiss", ctxFor("member-other"), () => "user-approval")).rejects.toThrow("Conversation authority");
+  });
+
+  it("a shared room keeps only the two read-only lists, and refuses the writes in words for the room", async () => {
+    const tools = await resolve(roomCtx);
+    expect(tools).toHaveProperty("deadline_list");
+    expect(tools).toHaveProperty("remind_list");
+    for (const n of ["deadline_add", "deadline_reset", "deadline_dismiss"]) {
+      expect(tools, n).not.toHaveProperty(n);
+      await expect(guardCatalogueExecution(roomCtx, n, {}), n).rejects.toThrow("not available in a shared room");
+    }
+    expect(fake.owner).not.toHaveBeenCalled();
+  });
+
+  it("a Slack direct message keeps every deadline and reminder tool it had, with no web chat owner lookup", async () => {
+    const tools = await resolve(dmCtx);
+    for (const n of [...DEADLINES, "remind_set", "remind_cancel", "deadline_done", "deadline_mint_statutory"]) expect(tools, n).toHaveProperty(n);
+    await expect(guardCatalogueExecution(dmCtx, "deadline_add", {})).resolves.toBeUndefined();
+    expect(fake.owner).not.toHaveBeenCalled();
+  });
+});
+
 describe("callerIsAgentOwner", () => {
   const lookup = (owner: string | null) => async () => owner;
   it("is true only for the human who opened the session and owns the agent", async () => {

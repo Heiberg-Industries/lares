@@ -196,6 +196,32 @@ export function humanTurnRefusal(
 }
 
 /**
+ * `humanTurnRefusal`, plus the one turn it cannot judge: a verified web chat (private console) turn.
+ *
+ * A web chat turn carries the console's member admission, not a door's `user_id`, so the door
+ * allow-list above can never match it and every web chat turn would be refused. For that turn, and
+ * only that one, the owner is decided by the SAME proof the owner-only web chat tools are re-checked
+ * with when they run (`assertPrivateConsoleTool` below, `callerIsAgentOwner`): the member pinned when
+ * the conversation began is the agent's current owner. On top of that, `auth.current` must itself be
+ * that member's human admission, because only the current message can say something (a turn with no
+ * current identity, or an answer to a card, is refused as above). Async because the owner is read
+ * from the database. Every other turn (Slack, Telegram, a schedule, no identity) is judged by
+ * `humanTurnRefusal` alone, exactly as before, and the owner lookup is never made for it.
+ */
+export async function ownerTurnRefusal(
+  session: { auth?: SessionAuthLike | null; turn?: { id?: unknown } | null } | null | undefined,
+  lead: string,
+  env: NodeJS.ProcessEnv = process.env,
+  isOwner: (ctx: unknown) => Promise<boolean> = callerIsAgentOwner,
+): Promise<string | null> {
+  if (!isPrivateConsoleContext({ session })) return humanTurnRefusal(session, lead, env);
+  const auth = session?.auth;
+  if (consoleResolverOnly(auth?.current) || turnAskedACard(session)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
+  if (consoleAdmission(auth?.current)?.purpose === "human" && await isOwner({ session })) return null;
+  return `${lead} But this web chat message could not be confirmed as coming from this agent's owner. Nothing changed.`;
+}
+
+/**
  * Re-checks WHO approved, which the framework does not.
  *
  * eve's own Slack docs: "Built-in HITL buttons are handled before `onInteraction`, and the

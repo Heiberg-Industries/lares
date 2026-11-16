@@ -178,6 +178,7 @@ import { offeredBy, ownResolverFiles } from "../../../packages/agent-kit/tests/h
 import { frameworkMentionAuth } from "./helpers/slack-mention.js";
 import { approverFrom, assertApprover, catalogueApprovalResponse, humanTurnRefusal } from "../lib/approvals.js";
 import { calendarApprovalAdapter } from "../lib/calendar-approval.js";
+import { deadlineApprovalAdapter } from "../lib/deadlines-store.js";
 import { tracksApprovalAdapter } from "../lib/tracks-approval.js";
 import { vaultNoteApprovalAdapter } from "../lib/vault-note-write.js";
 
@@ -243,14 +244,16 @@ const TABLE: readonly Row[] = [
   ["memory_used",                         R,       H,       R,       H,       H],
   ["memory_proposals",                    R,       H,       R,       H,       H],
   ["memory_resolve_proposal",             C,       H,       C,       H,       H],
-  // Deadlines, reminders, obligations
-  ["deadline_list",                       R,       R,       R,       H,       H],
-  ["deadline_add",                        R,       H,       R,       H,       H],
-  ["deadline_reset",                      R,       H,       R,       H,       H],
+  // Deadlines, reminders, obligations. Web chat's owner may list, add, restart and dismiss
+  // deadlines and list reminders; setting or cancelling a reminder, closing a deadline and minting
+  // a year of them have no exact web chat card, so they are not offered there.
+  ["deadline_list",                       R,       R,       R,       R,       H],
+  ["deadline_add",                        R,       H,       R,       R,       H],
+  ["deadline_reset",                      R,       H,       R,       R,       H],
   ["deadline_done",                       C,       H,       C,       H,       H],
-  ["deadline_dismiss",                    C,       H,       C,       H,       H],
+  ["deadline_dismiss",                    C,       H,       C,       C,       H],
   ["deadline_mint_statutory",             C,       H,       C,       H,       H],
-  ["remind_list",                         R,       R,       R,       H,       H],
+  ["remind_list",                         R,       R,       R,       R,       H],
   ["remind_set",                          C,       H,       C,       H,       H],
   ["remind_cancel",                       C,       H,       C,       H,       H],
   ["obligation_dismiss",                  R,       H,       R,       H,       H],
@@ -525,6 +528,9 @@ beforeAll(() => {
   vi.spyOn(tracksApprovalAdapter, "readTarget").mockImplementation(async (_db, _input, memberId) =>
     ({ kind: "track", id: "tracks/example-track/track.md", ownerMemberId: memberId, fingerprint: hash("e") }));
   vi.spyOn(tracksApprovalAdapter, "readPolicyHash").mockResolvedValue(hash("f"));
+  vi.spyOn(deadlineApprovalAdapter, "readTarget").mockImplementation(async (_db, _input, memberId) =>
+    ({ kind: "deadline", id: "deadline-example", ownerMemberId: memberId, fingerprint: hash("0") }));
+  vi.spyOn(deadlineApprovalAdapter, "readPolicyHash").mockResolvedValue(hash("1"));
 });
 afterAll(() => {
   setBoardDeps(null);

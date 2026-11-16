@@ -5,12 +5,13 @@
 // UNGATED IS NOT UNATTRIBUTED, the same rule `remember.ts`'s header states
 // and `deadline_add.ts` carries: "harmless" is measured against a HUMAN asking. Restarting a
 // ladder on a scheduled turn is a phone that rings again because a model re-read a brief, so
-// `humanTurnRefusal` requires an allowlisted human on this turn before anything moves.
+// `ownerTurnRefusal` requires an allowlisted human on this turn before anything moves (in web
+// chat: the agent's owner, see `lib/approvals.ts`).
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { getPool } from "@lares/agent-kit/db";
-import { humanTurnRefusal } from "../lib/approvals.js";
+import { ownerTurnRefusal } from "../lib/approvals.js";
 import { resetRung } from "../lib/deadlines-store.js";
 import { ownerId } from "../lib/principals.js";
 
@@ -22,7 +23,7 @@ export default defineTool({
     "An unknown id changes nothing; the result says so.",
   inputSchema: z.object({ id: z.string() }),
   async execute({ id }, ctx) {
-    const notHim = humanTurnRefusal(
+    const notHim = await ownerTurnRefusal(
       ctx.session,
       "A ladder starts chasing again because the owner asked for it on this turn.",
     );

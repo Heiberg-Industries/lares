@@ -8,8 +8,9 @@
 // the rule: the morning brief runs as the APP principal with no human on the turn,
 // and its own deadline block prints `deadline_add fromThreadId …` beside every
 // candidate. A model reading its own brief could therefore add rows nobody asked for, and stamp
-// the candidate resolved on the way past. `humanTurnRefusal` requires an allowlisted HUMAN on
-// `ctx.session.auth.current` (the same check every gated tool here makes), and the brief's
+// the candidate resolved on the way past. `ownerTurnRefusal` requires an allowlisted HUMAN on
+// `ctx.session.auth.current` (the same check every gated tool here makes; in web chat, the
+// agent's owner, see `lib/approvals.ts`), and the brief's
 // REPORT ONLY line names this tool too, so the model is told as well as blocked.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -17,7 +18,7 @@ import { z } from "zod";
 import { getPool } from "@lares/agent-kit/db";
 import { daysToDue } from "@lares/agent-kit/deadlines";
 import { ownerDay } from "@lares/agent-kit/proactivity";
-import { humanTurnRefusal } from "../lib/approvals.js";
+import { ownerTurnRefusal } from "../lib/approvals.js";
 import { createDeadline, resolveCandidate } from "../lib/deadlines-store.js";
 import { ownerId } from "../lib/principals.js";
 import { ownerTz } from "../lib/owner-clock.js";
@@ -59,7 +60,7 @@ export default defineTool({
   }),
   async execute({ entity, title, dueDate, source, recurrence, consequence, evidenceRule, fromThreadId, vendor, amount, currency }, ctx) {
     // WHO is asking, before WHAT is due: a deadline nobody asked for is a line in every brief.
-    const notHim = humanTurnRefusal(
+    const notHim = await ownerTurnRefusal(
       ctx.session,
       "A deadline is added because the owner asked for it on this turn.",
     );
