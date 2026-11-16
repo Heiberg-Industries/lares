@@ -7,7 +7,8 @@ runs `lares owner-bootstrap`, `lares budget setup`, creates and adopts an agent 
 real pages, sets the member limit there, runs `lares agent start`, holds a chat where a tool runs,
 an approval card is answered and the conversation carries on, edits the started agent's description on
 its page, then connects a Slack and a Telegram door on that page as the install guide orders it (the agent
-already started) and sends one message through each, presses "Send a test brief" for each door on that page
+already started) and sends one message through each, mentions the agent in a Slack room (the owner twice,
+a second person once), presses "Send a test brief" for each door on that page
 and follows each brief into its chat and onto the owner's bill, sets up `lares backups`, then runs a
 real `lares update` to a second build, runs `lares doctor`, simulates a reboot and waits for the agent to come back by itself. Up to there nothing writes to the
 database or edits an installation file the installer owns. It finishes by restoring a backup whose agent store the release before this
@@ -81,6 +82,30 @@ DOOR_REPLY = "PROOF_DOOR_REPLY"
 DOOR_PERSON = {"slack": "U0PROOFOWNER", "telegram": "700000001"}
 DOOR_CHAT = {"slack": "D0PROOF", "telegram": "700000001"}
 CLAIM_REPLY = "Connected. Once setup finishes applying"
+# A shared Slack channel ("room") the app was invited to, the bot's own user id (as the stand-in's
+# auth.test answers it), and a second person in the room who is not the door's owner.
+ROOM_CHANNEL = "C0PROOFROOM"
+BOT_USER = "U0PROOFBOT"
+STRANGER = "U0PROOFSTRANGER"
+# What the stand-in model answers to each mention. Every marker matches PROOF_ROOM_[A-Z_]+, which
+# the stand-in records per call wherever it appears in the conversation.
+ROOM_PROMPT, ROOM_REPLY = "PROOF_ROOM_TURN", "PROOF_ROOM_REPLY"
+ROOM_FORCE_PROMPT = "PROOF_ROOM_FORCE"
+ROOM_FORCE_TOOL = "remember"
+ROOM_FORCE_FACT = "PROOF_ROOM_FACT"
+ROOM_FORCE_INPUT = {"fact": f"{ROOM_FORCE_FACT} I always take the bus.", "category": "preference"}
+ROOM_FORCE_ERROR_REPLY, ROOM_FORCE_RESULT_REPLY, ROOM_FORCE_LOST_REPLY = "PROOF_ROOM_TOOL_ERROR", "PROOF_ROOM_TOOL_RESULT", "PROOF_ROOM_CALL_LOST"
+STRANGER_PROMPT = "PROOF_ROOM_STRANGER"
+# The kit's one shared-room rule (the names a room may use, and what a room is told), and the
+# heading the chief of staff's standing-facts block starts with: read from the files the images were
+# built from, so this check never types the product's words a second time.
+SHARED_ROOM_MODULE = REPO / "packages/agent-kit/src/shared-room.ts"
+STANDING_FACTS_MODULE = REPO / "services/chief-of-staff/lib/standing-facts.ts"
+# eve's own tools, which the kit's rule says are not decided per door (`shared-room.ts`'s header):
+# `ask_question` and `todo`, and everything in eve's own `eve__` namespace, which no authored tool,
+# skill or connection may use (eve's docs/concepts/built-in-tools.md).
+EVE_OWN_TOOLS = ("ask_question", "todo")
+EVE_NAMESPACE = "eve__"
 # A door's Connect and Apply restart the agent, which changes the runner's network while the page waits;
 # in an earlier run each needed its last of three attempts.
 DOOR_STEP_ATTEMPTS = 6
@@ -131,8 +156,20 @@ LIMITS = [
     "another owner job on that model in the same minutes (a real brief or a digest) cannot be told apart from "
     "it by the rows alone; the stand-in's record of the call carrying the product's marker is what ties the check to the test brief.",
     "What eve does when a real brief meets a Telegram conversation still busy with a test brief is not exercised.",
-    "Only a direct message is sent on Slack; a turn started by mentioning the agent in a room is not exercised.",
-    "No refused door turn is exercised (another person, a Telegram group, a refusal by Keeper); the sentence a person then sees is covered by unit tests only.",
+    "On Slack a direct message and three mentions in a room channel are sent: two from the owner (a plain question, and one where the stand-in forces a call to a tool the room does not have) and one from a second person. "
+    "Only a chief-of-staff agent runs in this check, so the creative role's mention is covered by unit tests only.",
+    "In the room the stand-in answers the channel lookup, the thread read and the status line as real Slack answered them for the app's "
+    "permissions on 16 November 2026, in a public channel (ROOM_SEEN in real-install/fake-internet.mjs, from the hand-run "
+    "packages/agent-kit/tests/live/slack-room.live.mts); a private channel, and the status line on the thread of a person's mention "
+    "rather than of the bot's own message, have not been seen on real Slack.",
+    "The room's prompt is judged by two yes/no answers the stand-in records: whether it holds the kit's room text, and whether it holds "
+    "the standing-facts heading. No standing fact is stored in this run, so the heading's absence does not show a stored fact being left "
+    "out of a room; the unit tests show that.",
+    "The forced call names a tool the room was not offered, so what answers it is the framework's handling of a call to a tool it did "
+    "not offer, not Lares's own room refusal at the approval step and at execution; that refusal is covered by unit tests only.",
+    "One refused door turn is exercised: a second person's mention in a room (no model call, no charge, nothing posted; the framework's "
+    "status-line calls are recorded, and only that some Slack call for the mention's thread was made is judged, never what Slack answered). A Telegram group and a refusal by Keeper are not, and the sentence a person then sees "
+    "there is covered by unit tests only.",
     "Each door's Connect and Apply restart the agent, which changes the runner's network while the page waits; the probe then tries the step again once the keeper has finished what the dropped attempt started, and the retry presses nothing that is already running or done (the attempts used are recorded under browserAttempts), so a single uninterrupted press is not shown here.",
     "The keeper writes no log line for a door turn's door.open, step claim or step consume; the proof reads the budget rows, the keeper's audit of each Apply and the agent's own log instead.",
 ]
@@ -435,7 +472,8 @@ def host_address() -> str:
     return output("hostname", "-I").split()[0]
 
 
-def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixture_image: str, key_value: str, brief_marker: str) -> pathlib.Path:
+def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixture_image: str, key_value: str, brief_marker: str,
+                       room_text: str, facts_heading: str) -> pathlib.Path:
     fixture = work / "fake"
     fixture.mkdir()
     shutil.copy(HERE / "fake-internet.mjs", fixture / "fake-internet.mjs")
@@ -453,6 +491,9 @@ def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixtur
         "notePrompt": "PROOF_ASK_NOTE", "noteTool": NOTE_TOOL, "noteInput": NOTE_INPUT, "noteReply": NOTE_REPLY,
         "doorPrompt": DOOR_PROMPT, "doorReply": DOOR_REPLY,
         "briefMarker": brief_marker, "briefReply": BRIEF_REPLY,
+        "roomPrompt": ROOM_PROMPT, "roomReply": ROOM_REPLY, "roomForcePrompt": ROOM_FORCE_PROMPT, "roomForceTool": ROOM_FORCE_TOOL,
+        "roomForceInput": ROOM_FORCE_INPUT, "roomForceErrorReply": ROOM_FORCE_ERROR_REPLY, "roomForceResultReply": ROOM_FORCE_RESULT_REPLY,
+        "roomForceLostReply": ROOM_FORCE_LOST_REPLY, "roomInstructions": room_text, "standingFactsHeading": facts_heading,
     }))
     run("docker", "run", "-d", "--name", "proof-fake", "--restart", "unless-stopped", "--user", "0:0", "--entrypoint", "node",
         "-v", f"{fixture}:/fixture", fixture_image, "/fixture/fake-internet.mjs", "serve", "/fixture")
@@ -541,6 +582,51 @@ def product_constant(name: str) -> str:
         rest = rest[found.end():]
         if found.group(2) == ";":
             return "".join(parts)
+
+
+SINGLE_QUOTED = re.compile(r"'([^'\\\n]*)'")
+
+
+def shared_room_rule() -> tuple[set[str], str]:
+    """The kit's room rule as packages/agent-kit/src/shared-room.ts holds it: the names on
+    SHARED_ROOM_ALLOWED, and the text SHARED_ROOM_INSTRUCTIONS joins (its last sentence built from
+    SHARED_ROOM_REFUSED). Only the shapes that file uses today are read: single-quoted literals, one
+    per line, a `//` comment after each name, and one template literal naming SHARED_ROOM_REFUSED.
+    Any other shape stops the probe at its first stage rather than check against the wrong words."""
+    where = SHARED_ROOM_MODULE.relative_to(REPO)
+    source = SHARED_ROOM_MODULE.read_text()
+    allowed = re.search(r"^export const SHARED_ROOM_ALLOWED\b[^=]*=\s*new Set\(\[(.*?)\]\);", source, re.MULTILINE | re.DOTALL)
+    refused = re.search(r"^export const SHARED_ROOM_REFUSED = '([^'\\\n]*)';$", source, re.MULTILINE)
+    text = re.search(r"^export const SHARED_ROOM_INSTRUCTIONS = \[(.*?)\]\.join\(' '\);", source, re.MULTILINE | re.DOTALL)
+    if not allowed or not refused or not text:
+        raise RuntimeError(f"{where} no longer has SHARED_ROOM_ALLOWED, SHARED_ROOM_REFUSED and SHARED_ROOM_INSTRUCTIONS in the shapes this check reads")
+    body = "\n".join(line.split("//")[0] for line in allowed.group(1).splitlines())
+    names = SINGLE_QUOTED.findall(body)
+    if not names or SINGLE_QUOTED.sub("", body).replace(",", "").strip() or not all(re.fullmatch(r"[a-z0-9_-]+", name) for name in names):
+        raise RuntimeError(f"SHARED_ROOM_ALLOWED in {where} is not a list of plain names")
+    parts: list[str] = []
+    rest = text.group(1)
+    while rest.strip():
+        found = re.match(r"\s*(?:'([^'\\\n]*)'|`([^`\\\n]*)`)\s*,?", rest)
+        if not found:
+            raise RuntimeError(f"SHARED_ROOM_INSTRUCTIONS in {where} is not a list of plain sentences")
+        part = found.group(1) if found.group(1) is not None else found.group(2).replace("${SHARED_ROOM_REFUSED}", refused.group(1))
+        if "${" in part:
+            raise RuntimeError(f"SHARED_ROOM_INSTRUCTIONS in {where} uses a value this check does not read")
+        parts.append(part)
+        rest = rest[found.end():]
+    joined = " ".join(parts)
+    if not joined.endswith(refused.group(1)):
+        raise RuntimeError(f"SHARED_ROOM_INSTRUCTIONS in {where} no longer ends with SHARED_ROOM_REFUSED")
+    return set(names), joined
+
+
+def standing_facts_heading() -> str:
+    """The first line of the chief of staff's standing-facts block (FACTS_CORE_HEADER), as the file holds it."""
+    found = re.search(r'^const FACTS_CORE_HEADER = \[\s*\n\s*"([^"\\\n]+)",', STANDING_FACTS_MODULE.read_text(), re.MULTILINE)
+    if not found or not found.group(1).startswith("## "):
+        raise RuntimeError(f"{STANDING_FACTS_MODULE.relative_to(REPO)} no longer starts FACTS_CORE_HEADER with a plain heading line")
+    return found.group(1)
 
 
 # --- the owner's steps ---------------------------------------------------------------------------
@@ -710,19 +796,30 @@ def write_private(path: pathlib.Path, text: str | bytes) -> None:
     os.chmod(path, 0o600)
 
 
-def send_door_message(kind: str, text: str, work: pathlib.Path, fixture: pathlib.Path, door_values: dict) -> int:
+def send_door_message(kind: str, text: str, work: pathlib.Path, fixture: pathlib.Path, door_values: dict,
+                      mention: dict | None = None) -> int:
     """POSTs one message to the door's public address the way the platform does, and returns the final
     HTTP status. Only a 404 (changes still pending) or a 502 (the agent restarting) is sent again, with
     a fresh id and timestamp, for up to two minutes; nothing is sent again after a 2xx. Nothing about the
-    request is printed: it carries the Slack signature or the Telegram secret."""
+    request is printed: it carries the Slack signature or the Telegram secret.
+
+    With `mention` ({"user", "ts"}), the Slack message is an `app_mention` in ROOM_CHANNEL from that
+    person with that ts (kept on a resend, so the check knows the thread a reply belongs in), shaped as
+    Slack's own example of the event: no `channel_type`, and the envelope's `authorizations` naming the bot."""
     url = f"https://{DOMAIN}/api/doors/{AGENT}/{kind}/events"
     body_file, header_file = work / f"door-{kind}-body.json", work / f"door-{kind}-headers"
     deadline = time.monotonic() + 120
     while True:
-        if kind == "slack":
+        if kind == "slack" and mention:
+            event = {"type": "event_callback", "team_id": "T0PROOF", "api_app_id": "A0PROOF", "event_id": f"Ev0PROOF{uuid.uuid4().hex[:12].upper()}",
+                     "event_time": int(time.time()), "authorizations": [{"team_id": "T0PROOF", "user_id": BOT_USER, "is_bot": True}],
+                     "event": {"type": "app_mention", "channel": ROOM_CHANNEL, "user": mention["user"], "text": text, "ts": mention["ts"],
+                               "event_ts": mention["ts"], "team": "T0PROOF"}}
+        elif kind == "slack":
             event = {"type": "event_callback", "team_id": "T0PROOF", "api_app_id": "A0PROOF", "event_id": f"Ev0PROOF{uuid.uuid4().hex[:12].upper()}",
                      "event": {"type": "message", "channel": DOOR_CHAT["slack"], "channel_type": "im", "user": DOOR_PERSON["slack"], "text": text,
                                "ts": f"{time.time():.6f}"}}
+        if kind == "slack":
             raw = json.dumps(event).encode()
             stamp = str(int(time.time()))
             signature = hmac.new(door_values["slackSigningSecret"].encode(), b"v0:" + stamp.encode() + b":" + raw, hashlib.sha256).hexdigest()
@@ -1090,6 +1187,244 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
         passed(f"{kind}-no-error-copy-posted")
 
 
+# --- mentions in a shared Slack channel -------------------------------------------------------------
+
+def room_mentions(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, release: dict, room_allowed: set[str], deferred: list[str]) -> None:
+    """Three mentions of the agent in ROOM_CHANNEL, on the Slack door the stage before claimed and applied:
+    the owner asks a plain question, the owner asks where the stand-in forces a call to `remember` (a tool
+    the room is not given), and a second person asks. What each must come to is checked from the stand-in's
+    record, the budget rows and the standing-facts table; each fault names what was seen and is reported at
+    the end, like the door turns'. The stand-in answers the room's Slack lookups as real Slack answered the
+    live probe on 16 November 2026 (`ROOM_SEEN` in real-install/fake-internet.mjs)."""
+    record: dict = {"checks": {}, "channel": ROOM_CHANNEL, "roomAllowList": sorted(room_allowed)}
+    proof["roomMentions"] = record
+    members = read_only_query("SELECT coalesce(live_member_id, '') FROM budget_accounts WHERE kind = 'member' ORDER BY id", release).splitlines()
+    claimer = members[0] if len(members) == 1 else None
+
+    def check(name: str, problems: list[str]) -> None:
+        record["checks"][name] = not problems
+        proof["checks"][name] = not problems
+        save_proof()
+        if problems:
+            print(f"FAIL (reported at the end): {name}: {'; '.join(problems)}", flush=True)
+            deferred.append(f"{name}: " + "; ".join(problems))
+        else:
+            print(f"PASS: {name}", flush=True)
+
+    def slack_calls(since: int) -> list[dict]:
+        return [call for call in fake_calls(fixture)[since:] if call["kind"] == "slack"]
+
+    def room_posts(since: int) -> list[dict]:
+        # Anything the framework writes into the room: a post, an update, an ephemeral, a delete.
+        return [call for call in slack_calls(since) if call.get("channel") == ROOM_CHANNEL and call["method"].startswith("chat.")]
+
+    # The `chat.*` methods that put a new message into a conversation (the others change or remove one).
+    posting = ("chat.postMessage", "chat.postEphemeral", "chat.scheduleMessage", "chat.startStream", "chat.meMessage")
+
+    def marked(mark: str, since: int) -> list[dict]:
+        return [call for call in fake_calls(fixture)[since:] if call["kind"] == "model" and mark in (call.get("roomMarks") or [])]
+
+    def offered(calls: list[dict]) -> list[str]:
+        return sorted({name for call in calls for name in call.get("tools") or []})
+
+    def outside_room(names: list[str]) -> list[str]:
+        return [name for name in names if name not in room_allowed and name not in EVE_OWN_TOOLS and not name.startswith(EVE_NAMESPACE)]
+
+    def attempts_since(t0: str) -> list[dict]:
+        # Schedules may add owner-job rows in the same minutes; those never count.
+        rows = json.loads(read_only_query(
+            "SELECT coalesce(json_agg(json_build_object('state', a.state, 'kind', a.authority_reference->>'kind', 'door', a.authority_reference#>>'{binding,door}', "
+            f"'liveMember', a.live_member_id) ORDER BY a.created_at, a.id), '[]') FROM budget_attempts a WHERE a.created_at >= '{t0}'::timestamptz", release))
+        return [row for row in rows if row["kind"] != "owner-job"]
+
+    def who(value: str | None) -> str | None:
+        return None if value is None else "the claimer" if value == claimer else "another member"
+
+    def facts(where: str) -> int | None:
+        try:
+            return int(read_only_query(f"SELECT count(*) FROM standing_facts{where}", release) or 0)
+        except (RuntimeError, ValueError):
+            return None
+
+    def wait_for_post(since: int, words: tuple[str, ...], seconds: int = 120) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if any(any(word in str(call.get("text", "")) for word in words) for call in room_posts(since)):
+                break
+            time.sleep(3)
+        time.sleep(10)
+
+    def wait_for_charge(t0: str) -> list[dict]:
+        deadline = time.monotonic() + 60
+        rows = attempts_since(t0)
+        while not (rows and all(row["state"] == "settled" for row in rows)) and time.monotonic() < deadline:
+            time.sleep(3)
+            rows = attempts_since(t0)
+        return rows
+
+    def charge_problems(rows: list[dict]) -> list[str]:
+        if not rows:
+            return ["no budget attempt other than owner jobs was made since the mention"]
+        wrong = [row for row in rows if not (row["state"] == "settled" and row["kind"] == "door" and row["door"] == "slack" and claimer and row["liveMember"] == claimer)]
+        return [f"the attempts since the mention are not all settled as a slack door turn charged to the claimer: "
+                f"{[(row['state'], row['kind'], row['door'], who(row['liveMember'])) for row in wrong]}"] if wrong else []
+
+    def calls_seen(since: int) -> list[dict]:
+        return [{"method": call["method"], "channel": call.get("channel"), "threadTs": call.get("threadTs"), **({"status": call["status"]} if "status" in call else {}),
+                 "text": redact(str(call.get("text", ""))[:300])} for call in slack_calls(since)]
+
+    if claimer is None:
+        check("slack-room-mentions-ran", [f"expected one member budget account, found {len(members)}"])
+        return
+    settled_agent("slack-room", record, release, keeper_audit_mark(release))
+    first_since = len(fake_calls(fixture))
+
+    # 1-3. The owner's plain question.
+    t0 = read_only_query("SELECT now()", release)
+    since = len(fake_calls(fixture))
+    owner_ts = f"{time.time():.6f}"
+    record["owner"] = {"mentionTs": owner_ts,
+                       "eventStatus": send_door_message("slack", f"<@{BOT_USER}> {ROOM_PROMPT}: please answer", work, fixture, door_values,
+                                                        mention={"user": DOOR_PERSON["slack"], "ts": owner_ts})}
+    save_proof()
+    wait_for_post(since, (ROOM_REPLY,))
+    rows = wait_for_charge(t0)
+    every = marked(ROOM_PROMPT, since)
+    # The conversation's own calls offer tools; a call offered none (a side call that only reads the
+    # words, if there is one) is counted, and still held to the standing-facts rule below.
+    calls = [call for call in every if call.get("tools")]
+    direct = [call for call in fake_calls(fixture) if call["kind"] == "model" and call.get("doorTurn") == f"{DOOR_PROMPT} slack"]
+    room_names, direct_names = offered(calls), offered(direct)
+    posts = room_posts(since)
+    record["owner"].update({
+        "modelCalls": len(every), "modelCallsOfferedNoTool": len(every) - len(calls),
+        "toolsOffered": room_names, "toolsOfferedOutsideTheRoomList": outside_room(room_names),
+        "system": [call.get("system") for call in every],
+        "directMessageTurn": {"modelCalls": len(direct), "toolsOffered": direct_names, "toolsNotOnTheRoomList": [name for name in direct_names if name not in room_allowed],
+                              "system": [call.get("system") for call in direct]},
+        "budgetAttemptsSinceMention": [{"state": row["state"], "kind": row["kind"], "door": row["door"], "chargedTo": who(row["liveMember"])} for row in rows],
+        "slackCallsSinceMention": calls_seen(since),
+    })
+    save_proof()
+    problems = []
+    if not calls:
+        problems.append(f"no model call that was offered tools carried {ROOM_PROMPT} ({len(every)} offered none; event HTTP {record['owner']['eventStatus']})")
+    if outside_room(room_names):
+        problems.append(f"the room's model calls were offered tools that are not on the room list: {outside_room(room_names)}")
+    if not direct:
+        problems.append("the direct-message turn's model calls were not found in the stand-in's record")
+    elif not [name for name in direct_names if name not in room_allowed]:
+        problems.append(f"the direct-message turn was offered nothing that is not on the room list, so the comparison shows nothing: {direct_names}")
+    if calls and not all((call.get("system") or {}).get("roomInstructions") for call in calls):
+        problems.append(f"not every room model call's prompt holds the kit's room text: {[call.get('system') for call in calls]}")
+    if any((call.get("system") or {}).get("standingFacts") for call in every):
+        problems.append("a room model call's prompt holds the standing-facts heading")
+    if any((call.get("system") or {}).get("roomInstructions") for call in direct):
+        problems.append("the direct-message turn's prompt holds the room text")
+    check("slack-room-owner-mention-offered-only-the-room-list-and-told-it-is-in-a-room", problems)
+    replies = [call for call in posts if ROOM_REPLY in str(call.get("text", ""))]
+    # The reply itself is judged: each call that carries it must be a new post into the mention's thread.
+    replies_outside = [call for call in replies if not (call["method"] in posting and call.get("threadTs") == owner_ts)]
+    elsewhere = [call for call in posts if call["method"] in posting and call.get("threadTs") != owner_ts]
+    errors = [call for call in posts if any(words in str(call.get("text", "")) for words in ERROR_COPY)]
+    problems = []
+    if not replies:
+        problems.append(f"no post into {ROOM_CHANNEL} carried {ROOM_REPLY}")
+    elif replies_outside:
+        problems.append(f"{len(replies_outside)} call(s) carrying {ROOM_REPLY} are not posts in the mention's thread (ts {owner_ts}): "
+                        f"{[(call['method'], call.get('threadTs')) for call in replies_outside]}")
+    if elsewhere:
+        problems.append(f"{len(elsewhere)} post(s) into {ROOM_CHANNEL} are not in the mention's thread (ts {owner_ts}): "
+                        f"{[(call['method'], call.get('threadTs')) for call in elsewhere]}")
+    if errors:
+        problems.append(f"{len(errors)} post(s) into {ROOM_CHANNEL} carry an error copy, first: {redact(str(errors[0].get('text', '')))[:200]}")
+    check("slack-room-reply-posted-in-the-mention-thread", problems)
+    check("slack-room-owner-mention-settled-and-charged", charge_problems(rows))
+
+    # 4. The owner asks again; the stand-in calls `remember`, which the room is not given.
+    facts_before, marked_before = facts(""), facts(f" WHERE fact LIKE '%{ROOM_FORCE_FACT}%'")
+    since = len(fake_calls(fixture))
+    t0 = read_only_query("SELECT now()", release)
+    force_ts = f"{time.time():.6f}"
+    record["forcedCall"] = {"mentionTs": force_ts,
+                            "eventStatus": send_door_message("slack", f"<@{BOT_USER}> {ROOM_FORCE_PROMPT}: please remember that I always take the bus",
+                                                             work, fixture, door_values, mention={"user": DOOR_PERSON["slack"], "ts": force_ts})}
+    save_proof()
+    wait_for_post(since, (ROOM_FORCE_ERROR_REPLY, ROOM_FORCE_RESULT_REPLY, ROOM_FORCE_LOST_REPLY))
+    rows = wait_for_charge(t0)
+    calls = marked(ROOM_FORCE_PROMPT, since)
+    forced = [call for call in calls if call["answer"].get("tool") == ROOM_FORCE_TOOL]
+    after = [call for call in calls if call["toolResults"]]
+    names = offered(calls)
+    facts_after, marked_after = facts(""), facts(f" WHERE fact LIKE '%{ROOM_FORCE_FACT}%'")
+    words = [word for word in (ROOM_FORCE_ERROR_REPLY, ROOM_FORCE_RESULT_REPLY, ROOM_FORCE_LOST_REPLY) if any(word in str(call.get("text", "")) for call in room_posts(since))]
+    record["forcedCall"].update({
+        "modelCalls": len(calls), "callsAnsweredWithTheForcedTool": len(forced), "toolsOffered": names,
+        "toolResultsAfterTheCall": [result for call in after for result in call["toolResults"]],
+        "standingFacts": {"before": facts_before, "after": facts_after, "withTheMarkerBefore": marked_before, "withTheMarkerAfter": marked_after},
+        "replyWordsPosted": words,
+        "budgetAttemptsSinceMention": [{"state": row["state"], "kind": row["kind"], "door": row["door"], "chargedTo": who(row["liveMember"])} for row in rows],
+        "slackCallsSinceMention": calls_seen(since),
+    })
+    save_proof()
+    problems = []
+    if not forced:
+        problems.append(f"no model call carrying {ROOM_FORCE_PROMPT} was answered with a call to {ROOM_FORCE_TOOL} (event HTTP {record['forcedCall']['eventStatus']})")
+    if outside_room(names):
+        problems.append(f"the conversation was offered tools that are not on the room list: {outside_room(names)}")
+    if not after:
+        problems.append("no later model call of that conversation carried a tool result")
+    elif not all(result["isError"] for call in after for result in call["toolResults"]):
+        problems.append(f"the next model call carried a tool result that is not an error: {[result for call in after for result in call['toolResults']]}")
+    if None in (facts_before, facts_after, marked_after):
+        problems.append("the standing-facts table could not be read")
+    elif facts_after != facts_before or marked_after != 0:
+        problems.append(f"the standing-facts table changed: {facts_before} rows before, {facts_after} after, {marked_after} carrying {ROOM_FORCE_FACT}")
+    if words != [ROOM_FORCE_ERROR_REPLY]:
+        problems.append(f"the reply posted into {ROOM_CHANNEL} carried {words or 'none of the stand-in answers'}, not only {ROOM_FORCE_ERROR_REPLY}")
+    check("slack-room-forced-call-to-a-tool-the-room-lacks-wrote-nothing-and-came-back-as-an-error", problems)
+
+    # 5. A second person in the room asks.
+    since = len(fake_calls(fixture))
+    t0 = read_only_query("SELECT now()", release)
+    stranger_ts = f"{time.time():.6f}"
+    status = send_door_message("slack", f"<@{BOT_USER}> {STRANGER_PROMPT}: please answer", work, fixture, door_values,
+                               mention={"user": STRANGER, "ts": stranger_ts})
+    time.sleep(30)
+    calls = marked(STRANGER_PROMPT, since)
+    rows = attempts_since(t0)
+    posts = room_posts(since)
+    record["stranger"] = {"mentionTs": stranger_ts, "eventStatus": status, "modelCalls": len(calls), "budgetAttemptsSinceMention": len(rows),
+                          "postsIntoTheRoom": [{"method": call["method"], "threadTs": call.get("threadTs"), "text": redact(str(call.get("text", ""))[:300])} for call in posts],
+                          # The framework sets its status line before the door decides (design unknown 2). What Slack
+                          # answers is recorded, not judged; below, only that some call for this thread was made is.
+                          "statusLineCalls": [{"method": call["method"], "channel": call.get("channel"), "threadTs": call.get("threadTs"), "status": call.get("status")}
+                                              for call in slack_calls(since) if call["method"] == "assistant.threads.setStatus"],
+                          "slackCallsSinceMention": calls_seen(since)}
+    save_proof()
+    problems = []
+    if not 200 <= status < 300:
+        problems.append(f"the door answered the mention with HTTP {status}, so the event may never have been read")
+    # Proof of life: the framework calls Slack for the mention's thread (its status line) before and after
+    # the door refuses, so the three "nothing" checks below cannot pass on an event that was never read.
+    if not [call for call in slack_calls(since) if call.get("threadTs") == stranger_ts]:
+        problems.append("no Slack call for the second person's mention was recorded, so the event may never have been read")
+    if calls:
+        problems.append(f"{len(calls)} model call(s) carried {STRANGER_PROMPT}")
+    if rows:
+        problems.append(f"{len(rows)} budget attempt(s) other than owner jobs were made since the mention: {[(row['state'], row['kind'], row['door'], who(row['liveMember'])) for row in rows]}")
+    if posts:
+        problems.append(f"{len(posts)} call(s) wrote into {ROOM_CHANNEL}: {[call['method'] for call in posts]}")
+    check("slack-room-stranger-mention-reached-no-model-charged-nothing-and-posted-nothing", problems)
+
+    record["agentAtTheEnd"] = agent_log_tail()
+    record["allSlackCallsInTheStage"] = calls_seen(first_since)
+    save_proof()
+    print(f"the room mentions, as recorded:\n{json.dumps({key: value for key, value in record.items() if key != 'agentAtTheEnd'}, indent=2)}", flush=True)
+    # The containers are replaced later in the run (update, reboot, restore), so their logs from these turns are kept now.
+    save_container_logs("after-room-mentions", fixture)
+
+
 # --- a test brief into each door, asked on the console ----------------------------------------------
 
 # The item key a real morning brief's ledger row carries (`morning-brief/<owner day>T<hour>`). A test brief
@@ -1358,6 +1693,29 @@ def diagnostics(fixture: pathlib.Path | None) -> None:
     if fixture and (fixture / "calls.jsonl").exists():
         print("\n--- stand-in calls ---", flush=True)
         print((fixture / "calls.jsonl").read_text()[-8000:], flush=True)
+    save_container_logs("at-failure", fixture)
+
+
+def save_container_logs(label: str, fixture: pathlib.Path | None) -> None:
+    """Every container's last 2000 log lines and the stand-in's record, redacted, into the proof's own folder,
+    which the workflow keeps as the run's artifact: a red run can then be read without running it again.
+    Best effort: a failure here is printed and never hides the fault being reported."""
+    if not proof_path:
+        return
+    folder = proof_path.parent / "container-logs" / label
+    try:
+        remember_secrets()
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in run("docker", "ps", "-a", "--format", "{{.Names}}", check=False, show=False).stdout.split():
+            if "buildkit" in name or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                continue
+            logs = run("docker", "logs", "--tail", "2000", name, check=False, show=False)
+            (folder / f"{name}.log").write_text(redact(logs.stdout + logs.stderr))
+        if fixture and (fixture / "calls.jsonl").exists():
+            (folder / "stand-in-calls.jsonl").write_text(redact((fixture / "calls.jsonl").read_text()))
+        print(f"container logs saved into the proof folder under container-logs/{label}", flush=True)
+    except Exception as error:  # Never in the way of the failure being reported.
+        print(f"could not save the container logs ({label}): {error}", flush=True)
 
 
 def match_fresh_server_folders() -> None:
@@ -1418,6 +1776,8 @@ REDACTION_PATTERNS = (
     (re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+"), REDACTED),
     (re.compile(r"SCRAM-SHA-256\$[^\s'\"]+"), "SCRAM-SHA-256$" + REDACTED),
     (re.compile(r"\bAGE-SECRET-KEY-[0-9A-Z]+"), REDACTED),
+    (re.compile(r"\bxox[abp]-[\w-]+"), REDACTED),
+    (re.compile(r"\bsk-ant-[\w-]+"), REDACTED),
     (re.compile(r"(?<![\w-])(--?[\w-]*" + SECRET_WORD + r"(?:=|\s+))(?!-)" + SECRET_VALUE, re.IGNORECASE), r"\1" + REDACTED),
     (re.compile(r"(\b[\w.-]*" + SECRET_WORD + r"\w*\s*=\s*)" + SECRET_VALUE, re.IGNORECASE), r"\1" + REDACTED),
 )
@@ -1923,7 +2283,10 @@ def main(argv: list[str]) -> int:
         brief_marker, brief_type = product_constant("TEST_BRIEF_PROMPT_MARKER"), product_constant("TEST_BRIEF_WORKFLOW_TYPE")
         if not brief_marker.strip() or not re.fullmatch(r"[a-z][a-z-]{1,40}", brief_type):
             raise RuntimeError(f"the test brief's marker or workflow type in {TEST_BRIEF_MODULE.relative_to(REPO)} is not usable here")
-        fixture = start_fake_internet(work, tls, console, model_key, brief_marker)
+        # The kit's room rule and the standing-facts heading, as the product holds them: the stand-in
+        # answers the room's yes/no questions about the prompt with them.
+        room_allowed, room_text = shared_room_rule()
+        fixture = start_fake_internet(work, tls, console, model_key, brief_marker, room_text, standing_facts_heading())
         start_registry(work, tls)
         write_hosts(bridge_address("proof-fake"))
         wait_for_registry(tls)
@@ -2139,6 +2502,9 @@ def main(argv: list[str]) -> int:
         stage("a Slack and a Telegram message reach the model through Keeper")
         for kind in ("slack", "telegram"):
             door_turn(kind, work, fixture, settings_file, tls, door_values, door_codes, release, deferred)
+
+        stage("mentions in a shared Slack channel: the owner twice, a second person once")
+        room_mentions(work, fixture, door_values, release, room_allowed, deferred)
 
         # Before backups and the update: the update restarts the agent, and a test brief needs it still.
         stage("a test brief into Slack and into Telegram, asked on the agent's page")

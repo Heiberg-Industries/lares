@@ -91,9 +91,16 @@ function serve(fixture) {
     return json(response, 404, { error: "not_found" });
   }
 
+  // The room mentions whose forced tool call has been answered once (see `decide`).
+  const forcedOnce = new Set();
   // Text of a message's blocks, whichever of the two shapes the provider API allows it arrived in.
   const textOf = (message) => typeof message?.content === "string" ? message.content
     : (message?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("\n");
+
+  // The system prompt's text, whichever of the two shapes it arrived in. Read only for the yes/no
+  // answers recorded below; never recorded itself.
+  const systemOf = (body) => typeof body.system === "string" ? body.system
+    : Array.isArray(body.system) ? body.system.filter((block) => block?.type === "text").map((block) => block.text).join("\n") : "";
 
   function decide(body) {
     const messages = body.messages ?? [];
@@ -103,6 +110,9 @@ function serve(fixture) {
     const everything = messages.map(textOf).join("\n");
     if (blocks.some((block) => block.type === "tool_result")) {
       const called = messages.flatMap((message) => Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_use") : []).at(-1);
+      // The room's forced call: say in the reply whether it came back as an error or as a result.
+      if (settings.roomForceTool && called?.name === settings.roomForceTool && everything.includes(settings.roomForcePrompt))
+        return { text: blocks.filter((block) => block.type === "tool_result").every((block) => block.is_error) ? settings.roomForceErrorReply : settings.roomForceResultReply };
       return { text: called?.name === settings.approvalTool ? settings.approvalReply
         : called?.name === settings.noteTool ? settings.noteReply : settings.toolReply };
     }
@@ -110,6 +120,16 @@ function serve(fixture) {
     // A test brief: its prompt starts with the product's own marker block, and is followed by the
     // brief's real material, which may quote earlier proof prompts. So it is decided first.
     if (settings.briefMarker && asked.includes(settings.briefMarker)) return { text: settings.briefReply };
+    // A mention in a room. The forced call names its tool whether or not it was offered, so the
+    // check sees what the conversation does with a call to a tool the room does not have.
+    // Once per mention: a second request for the same words that carries no tool result means the
+    // call was dropped from the history, which is answered in words instead of a call loop.
+    if (settings.roomForcePrompt && asked.includes(settings.roomForcePrompt)) {
+      if (forcedOnce.has(asked)) return { text: settings.roomForceLostReply };
+      forcedOnce.add(asked);
+      return { tool: settings.roomForceTool, input: settings.roomForceInput };
+    }
+    if (settings.roomPrompt && asked.includes(settings.roomPrompt)) return { text: settings.roomReply };
     if (asked.includes(settings.approvalPrompt)) {
       return toolNames.includes(settings.approvalTool) ? { tool: settings.approvalTool, input: settings.approvalInput } : { text: "PROOF_NO_USABLE_TOOL" };
     }
@@ -145,6 +165,12 @@ function serve(fixture) {
       // for a red run's triage, whether it sits anywhere else in the request.
       briefTurn: Boolean(settings.briefMarker) && textOf(parsed.messages?.at(-1)).includes(settings.briefMarker),
       briefMarkerAnywhere: Boolean(settings.briefMarker) && JSON.stringify([parsed.system ?? null, parsed.messages ?? []]).includes(JSON.stringify(settings.briefMarker).slice(1, -1)),
+      // The room markers anywhere in the conversation, so a call that only carries a tool result is still tied to its mention.
+      roomMarks: [...new Set((parsed.messages ?? []).map(textOf).join("\n").match(/PROOF_ROOM_[A-Z_]+/g) ?? [])],
+      // Two yes/no answers about the system prompt, never the prompt: the room's own text, and the
+      // heading of the standing-facts block.
+      system: { roomInstructions: Boolean(settings.roomInstructions) && systemOf(parsed).includes(settings.roomInstructions),
+                standingFacts: Boolean(settings.standingFactsHeading) && systemOf(parsed).includes(settings.standingFactsHeading) },
       returnedCallers: toolCalls.map((block) => block.caller ?? null), answer });
     const id = `msg_01${randomBytes(11).toString("hex")}`;
     const usage = { input_tokens: 120, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 18, service_tier: "standard" };
@@ -193,15 +219,45 @@ function serve(fixture) {
     : Object.entries(value).flatMap(([key, inner]) => typeof inner === "string" ? (["text", "markdown_text"].includes(key) ? [inner] : []) : textsIn(inner));
   const firstText = (body) => (typeof body.text === "string" ? body.text : typeof body.markdown_text === "string" ? body.markdown_text : textsIn(body).join(" ")).slice(0, 300);
 
+  // What Slack answers in a room channel (any id that does not start with `D`) for the app the
+  // console makes once mentions are on: bot scopes `chat:write`, `im:history`, `im:write` and
+  // `app_mentions:read`, no `channels:read`, `groups:read`, `channels:history` or `groups:history`.
+  // SEEN ON REAL SLACK on 16 November 2026, with an app holding exactly those four permissions, in a
+  // public channel: packages/agent-kit/tests/live/slack-room.live.mts, whose LAST RUN line holds the
+  // run's SUMMARY. Each answer names that probe's step. Nothing here has been seen in a private
+  // channel. Slack's `provided` field was not seen (the probe does not print it) and nothing reads
+  // it, so the refusals leave it out.
+  const ROOM_SEEN = {
+    // Seen: refused for the missing permission. Live probe step `conversations.info`.
+    "conversations.info": { ok: false, error: "missing_scope", needed: "channels:read,groups:read,mpim:read,im:read" },
+    // Seen: refused for the missing permission. Live probe step `conversations.replies`.
+    "conversations.replies": { ok: false, error: "missing_scope", needed: "channels:history" },
+    // Seen: accepted without `assistant:write`, set and then cleared, on the thread of the bot's own
+    // message. Not seen: the status line on the thread of a person's mention, where the framework
+    // sets it. Live probe steps `assistant.threads.setStatus (set)` and `(clear)`.
+    "assistant.threads.setStatus": { ok: true },
+  };
+  // Seen in the earlier run that day, with `channels:read`, `channels:history` and `assistant:write`
+  // among the app's permissions: `conversations.info`, `conversations.replies` and the status line
+  // all answered `ok`.
+  // Seen for a room too, and answered by the general `chat.*` answer below: a post, a threaded
+  // reply, an update and a delete by a bot that is a member of the channel succeed with `chat:write`.
+  // Live probe steps `chat.postMessage (message)`, `chat.postMessage (threaded reply)`,
+  // `chat.update (threaded reply)` and `chat.delete`. The stand-in answers every other `chat.*`
+  // method the same way; the live probe does not ask Slack about those.
+
   let slackSequence = 0;
-  // Slack's Web API at https://slack.com/api/<method>. Recorded: the method, the conversation and the
-  // text; never the authorization header, a token field or a raw body.
+  // Slack's Web API at https://slack.com/api/<method>. Recorded: the method, the conversation, the
+  // thread, the status line and the text; never the authorization header, a token field or a raw body.
   function slack(request, response, url, body) {
     const method = url.pathname.replace(/^\/api\//, "");
     const fields = parseBody(request, body);
     const channel = typeof fields.channel === "string" ? fields.channel : typeof fields.channel_id === "string" ? fields.channel_id : null;
-    record({ kind: "slack", method, channel, text: firstText(fields) });
+    record({ kind: "slack", method, channel, threadTs: typeof fields.thread_ts === "string" ? fields.thread_ts : null,
+      ...(typeof fields.status === "string" ? { status: fields.status.slice(0, 100) } : {}), text: firstText(fields) });
     const ts = `${Math.floor(Date.now() / 1000)}.${String(++slackSequence).padStart(6, "0")}`;
+    const room = typeof channel === "string" && !channel.startsWith("D");
+    if (room && Object.hasOwn(ROOM_SEEN, method)) return json(response, 200, ROOM_SEEN[method]);
     if (method === "auth.test")
       return json(response, 200, { ok: true, url: "https://proof.invalid/", team: "Proof Workspace", user: "proof_door_bot", team_id: "T0PROOF", user_id: "U0PROOFBOT", bot_id: "B0PROOF" });
     if (method === "conversations.open") return json(response, 200, { ok: true, channel: { id: "D0PROOF" } });
