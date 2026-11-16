@@ -71,7 +71,7 @@ it('tells the owner how to use the agent in a channel, and promises contacts, de
  mocks.states[STATE.rows]=[row('slack')];
  const chief=renderToStaticMarkup(DoorSetup(cos));
  expect(chief).toContain('invite the app to that channel and mention it there');
- expect(chief).toContain('Only people this agent is set up to answer can ask it things in a channel, and you are one of them');
+ expect(chief).toContain('In a channel it answers only the people it answers in a direct message (usually just you); everyone else in the channel can read its answers but cannot ask it anything.');
  expect(chief).toContain('look up your contacts (when contacts are connected), deadlines and reminders there, read-only');
  expect(chief).toContain('It is not given your mail, calendar, notes or what you asked it to remember.');
  expect(chief).toContain('When you ask it for something it can only do in a direct message, it tells you to write to it there, and anything that needs your approval has to be asked for in a direct message, never in the channel.');
