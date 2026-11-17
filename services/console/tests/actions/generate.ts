@@ -269,7 +269,7 @@ function analyseBody(file: string, fn: FnNode): Analysis {
   if (fn.body) visit(fn.body, false);
 
   const levelOf = (r: Ref): "member" | "owner" => r.special === "lookup" ? "member" : r.callee!.level as "member" | "owner";
-  let level: 0 | 1 | 2 = 0, throws = false, passthroughNullable = false, gateNullable = false;
+  let level = 0 as 0 | 1 | 2, throws = false, passthroughNullable = false, gateNullable = false;
   const via = new Set<string>();
   const consumedOwnerChecks = new Set<ts.Node>();
   const enforced = new Set<Ref>();
