@@ -841,6 +841,12 @@ describe("door notes go to keeper through the door pass", () => {
       expect(outcome.reason).toBe(DOOR_NOTE_SAVE_NOT_POSSIBLE);
       expect(DOOR_VAULT_SENTENCES.has(outcome.reason!)).toBe(true);
     });
+
+    it(`${door(key).title}: even a save that reached execution says the one sentence and never touches the local folder`, async () => {
+      const { session } = await observe(key);
+      const tools = await resolveCatalogue(session) as unknown as Record<string, { execute(input: unknown, ctx: unknown): Promise<unknown> }>;
+      await expect(tools["agent-kit__vault_write"]!.execute({ area: "private", title: "Oslo", body: "Trip" }, session)).rejects.toThrow(DOOR_NOTE_SAVE_NOT_POSSIBLE);
+    });
   }
 
   it("Slack · owner · mention in a shared channel: no note tool is shown, none is called, and no pass is asked for", async () => {

@@ -3,7 +3,7 @@ import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
 import { thisAgent } from '../../lib/definition.js';
-import { ensureDoorVaultTurn } from '../lib/door-vault-pass.js';
+import { abandonDoorVaultOpening, ensureDoorVaultTurn } from '../lib/door-vault-pass.js';
 import { doorVaultRoute } from '@lares/agent-kit/door-vault-turn';
 import { clearSessionVaultTurnCapabilities, closeVaultTurn, isVaultTurnActive, markVaultTurnActive, markVaultTurnClosed, setVaultTurnCapability, vaultTurnCapability } from '../lib/vault-turn.js';
 
@@ -22,6 +22,7 @@ function coords(event:unknown,ctx:Context){
 async function close(event:unknown,raw:HookContext){
  const ctx=raw as Context,own=managedIdentity(process.env),sessionId=ctx.session?.id,turnId=(event as {data?:{turnId?:unknown}}|undefined)?.data?.turnId;
  if(!own||typeof sessionId!=='string'||typeof turnId!=='string')return;
+ abandonDoorVaultOpening(sessionId,turnId,own.incarnation);
  for(const held of closeVaultTurn(sessionId,turnId,own.incarnation)){
   await vaultBrokerRequest(held.door?'door.turn.close':'turn.close',{turnCapability:held.capability,turnId:held.turnId,sequence:held.sequence}).catch(()=>{});
  }

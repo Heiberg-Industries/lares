@@ -3,6 +3,7 @@ import { DOORS, claimEnvNames, isKnownDoor } from '../src/door-kinds.js';
 import { doorVaultPoint, doorVaultRead, doorVaultRoute, onManagedDoor, openDoorVaultTurn } from '../src/door-vault-turn.js';
 import { DOOR_VAULT_SENTENCES, DOOR_NOTE_READ_FAILED } from '../src/door-vault-sentences.js';
 import { doorVaultReadOffered, managedDoorToolHidden, privateOnlyTool } from '../src/private-console-surface.js';
+import { PRIVATE_CHAT_AUTHENTICATORS } from '../src/shared-room.js';
 import { isValidDoorClaim } from '../src/door-claim.js';
 
 const broker = vi.hoisted(() => ({ calls: [] as Array<{ op: string; input: Record<string, unknown> }>, answer: undefined as undefined | ((op: string) => unknown) }));
@@ -115,7 +116,15 @@ describe('the route, over every door in the table', () => {
   it('is closed for a door that is not in the table', () => {
     const stranger = { authenticator: 'carrier-pigeon-webhook', principalType: 'user', attributes: { user_id: SENDER, chat_type: 'private', channel_id: 'D0DIRECT', author_type: 'user' } };
     expect(doorVaultRoute(ctxOf(stranger))).toBeUndefined();
-    expect(onManagedDoor(ctxOf(stranger))).toBe(false);
+    // No note route, but still a door: the agent's own files hold no private notes there, so its refusals apply.
+    expect(onManagedDoor(ctxOf(stranger))).toBe(true);
+    expect(onManagedDoor(ctxOf({ authenticator: 'local-dev', attributes: {} }))).toBe(true);
+    // Web chat and a schedule are not doors.
+    expect(onManagedDoor(ctxOf({ authenticator: 'lares-console', attributes: {} }))).toBe(false);
+    expect(onManagedDoor(ctxOf({ authenticator: 'app', principalType: 'runtime', attributes: {} }))).toBe(false);
+  });
+  it('lists the same doors in the door table and in the private-chat table', () => {
+    expect([...PRIVATE_CHAT_AUTHENTICATORS].sort()).toEqual(Object.keys(DOORS).sort());
   });
   it('is closed without a placed turn', () => {
     expect(doorVaultPoint(ctxOf(identity(kinds[0]!, 'privateChat'), undefined, {}))).toBeUndefined();

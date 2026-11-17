@@ -36,6 +36,9 @@ const PRIVATE_CHAT_WHEN: Readonly<Record<string, (attributes: Readonly<Record<st
   'telegram-webhook': (a) => a['chat_type'] === 'private',
 };
 
+/** The authenticators that have a private-chat row. `door-kinds.ts` must list exactly these doors (a test holds the two together). */
+export const PRIVATE_CHAT_AUTHENTICATORS: readonly string[] = Object.keys(PRIVATE_CHAT_WHEN);
+
 /** The conversations that are not a door: web chat (the console's member stamp, or the route
  *  password alone) and a conversation a schedule started. Every other authenticator is a door.
  *  eve's `local-dev` (its development server's own sign-in) is left a door on purpose: eve grants

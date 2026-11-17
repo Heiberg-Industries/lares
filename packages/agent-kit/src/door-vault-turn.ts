@@ -15,7 +15,6 @@
  */
 import { managedIdentity } from './door-authority.js';
 import { claimedSender } from './door-model-authority.js';
-import { doorRowOf } from './door-kinds.js';
 import { chatKindOf, startedIn } from './shared-room.js';
 import { vaultBrokerRequest } from './vault-broker-client.js';
 import { DOOR_NOTE_READ_FAILED } from './door-vault-sentences.js';
@@ -30,9 +29,11 @@ const TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const CAPABILITY = /^[A-Za-z0-9_-]{43}$/;
 
 /** Whether this conversation is on a door of a runtime Keeper manages, whoever is speaking (so also a
- *  room, or a person who is not the claimed one). On such a door the agent's own files hold no private notes. */
+ *  room, or a person who is not the claimed one). On such a door the agent's own files hold no private notes.
+ *  FAILS CLOSED: anything that is not web chat or a schedule counts as a door, including an authenticator
+ *  the door table does not know. */
 export function onManagedDoor(ctx: unknown): boolean {
-  try { return !!managedIdentity(process.env) && !!doorRowOf((ctx as Ctx | undefined)?.session?.auth?.current); } catch { return true; }
+  try { return !!managedIdentity(process.env) && chatKindOf((ctx as Ctx | undefined)?.session?.auth?.current as never) !== 'not-a-door'; } catch { return true; }
 }
 
 /**

@@ -88,3 +88,24 @@ eve has no notion of who pays (read in eve `1.0.0-rc.10`).
   field.
 - Left for later: several claimed people per door (a members stage, which needs a database
   change), and Keeper checking the platform event itself instead of trusting the agent's check.
+
+## Amendment, 17 November 2026: the same split opens private notes from a door
+
+The split in rule 1 now also covers the claimed person's private notes in a Slack or Telegram
+private chat. The agent vouches for the platform event (the framework checked its signature or
+secret); Keeper vouches for the person. For one turn, Keeper hands the agent a pass that lasts at
+most five minutes. The agent names the door, the claim it speaks under, the turn and its
+definition, never a member. Keeper finds the member itself, as it does for money, and on every
+read checks the claim, the member's use of the agent, the definition and the member's access to
+the area again.
+
+- Private chats only. The pass is given when the conversation was started in a private chat and
+  the current speaker is in one, and both are the person who claimed the door. A channel or group
+  chat never gets one, and no note tool is offered there. A door the code does not know is refused.
+- Whose notes: the claimant's own private area (rule 5 of ADR-0023 still holds: being owner does
+  not open anyone else's notes).
+- Reading is built first. Saving a note from a door needs an approved card that Keeper rechecks,
+  and is built later; until then a save is refused before any card is shown, with a plain sentence.
+- The risk is the one this record already accepts for money: an agent program that was taken over
+  could ask for passes and read the claimant's private notes. Keeper checking the platform event
+  itself would remove it, and stays left for later.

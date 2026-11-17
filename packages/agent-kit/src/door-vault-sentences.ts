@@ -13,9 +13,9 @@ export const DOOR_NOTE_UNREACHABLE =
 /** The write is refused before any card, because it is not possible from this chat. */
 export const DOOR_NOTE_SAVE_NOT_POSSIBLE =
   "Saving to your private notes isn't possible from this chat. Nothing was saved, and I did not ask you to approve anything.";
-/** A list, read or search of private notes failed. */
+/** One list, read or search of private notes failed (claims nothing about why, or about any other call). */
 export const DOOR_NOTE_READ_FAILED =
-  "I couldn't open your private notes from this chat just now, so I have not read any of them for this answer.";
+  "I couldn't get that from your private notes in this chat, so I have not used it in my answer.";
 /** A note tool that is not offered from a chat reached the guard anyway. */
 export const DOOR_NOTE_TOOL_UNAVAILABLE =
   "That isn't available from this chat. Nothing was changed.";

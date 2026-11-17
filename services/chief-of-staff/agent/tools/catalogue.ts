@@ -109,7 +109,7 @@ export default defineDynamic(async (ctx) => {
                 const admission=consoleAdmission(c.session?.auth?.current),own=managedIdentity(process.env),turnId=c.session?.turn?.id,sequence=c.session?.turn?.sequence;
                 if(admission?.purpose!=='human'||!own||!c.session?.id||typeof turnId!=='string'||!Number.isSafeInteger(sequence))throw new Error('Conversation authority is not available');
                 const turn=vaultTurnCapability({sessionId:c.session.id,turnId,sequence:sequence as number,incarnation:own.incarnation});
-                if(!turn||turn.expiresAt<=Date.now()||turn.turnId!==turnId||turn.sequence!==sequence)throw new Error('Conversation authority is not available');
+                if(!turn||turn.door||turn.expiresAt<=Date.now()||turn.turnId!==turnId||turn.sequence!==sequence)throw new Error('Conversation authority is not available');
                 const args=input as {area?:unknown;path?:unknown;offset?:unknown;folder?:unknown;cursor?:unknown;q?:unknown};
                 if((args.area!=='private'&&args.area!=='shared')||(name==='agent-kit__vault_read'&&typeof args.path!=='string')||(name==='agent-kit__vault_search'&&typeof args.q!=='string'))throw new Error('Vault access refused');
                 const identity={turnCapability:turn.capability,turnId,sequence,sessionId:c.session.id,memberId:admission.memberId,admissionNonce:admission.admissionNonce,area:args.area};

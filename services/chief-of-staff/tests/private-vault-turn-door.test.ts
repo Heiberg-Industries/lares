@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DOORS, claimEnvNames } from "@lares/agent-kit/door-kinds";
 
-const keeper = vi.hoisted(() => ({ calls: [] as Array<{ op: string; input: Record<string, unknown> }>, fail: false }));
+const keeper = vi.hoisted(() => ({ calls: [] as Array<{ op: string; input: Record<string, unknown> }>, fail: false, gate: undefined as undefined | Promise<void> }));
 vi.mock("@lares/agent-kit/vault-broker-client", async (original) => {
   const real = await original<typeof import("@lares/agent-kit/vault-broker-client")>();
   return { ...real, vaultBrokerRequest: async (op: string, input: Record<string, unknown>) => {
     keeper.calls.push({ op, input });
+    if (op === "door.turn.open" && keeper.gate) await keeper.gate;
     if (keeper.fail) throw new Error("Vault reader unavailable (the keeper refused: grant)");
     return op === "door.turn.open" ? { ok: true, turnCapability: "p".repeat(43), expiresAt: Date.now() + 60_000 } : { ok: true };
   } };
@@ -27,7 +28,7 @@ const ctx = (current: unknown, initiator: unknown = current) => ({ session: { id
 
 let hook: { events: Record<string, (event: unknown, ctx: unknown) => Promise<void>> };
 beforeEach(async () => {
-  keeper.calls = []; keeper.fail = false;
+  keeper.calls = []; keeper.fail = false; keeper.gate = undefined;
   vi.stubEnv("LARES_AGENT_NAME", "helper"); vi.stubEnv("LARES_AGENT_INCARNATION", INCARNATION);
   for (const door of kinds) { const names = claimEnvNames(door); vi.stubEnv(names.principal, SENDER); vi.stubEnv(names.revision, REVISION); }
   hook = (await import("../agent/hooks/private-vault-turn.js")).default as never;
@@ -53,6 +54,20 @@ describe("the turn-start hook opens a door pass, over every door in the table", 
     it(`${door}: a refused pass never fails the turn`, async () => {
       keeper.fail = true;
       await expect(hook.events["turn.started"]!({ data: { turnId: "turn_0" } }, ctx(auth(door, "privateChat")))).resolves.toBeUndefined();
+    });
+  }
+  for (const door of kinds) {
+    it(`${door}: a pass still being asked for when the turn settles is closed once Keeper answers, and never kept`, async () => {
+      let release!: () => void;
+      keeper.gate = new Promise<void>((resolve) => { release = resolve; });
+      const c = ctx(auth(door, "privateChat"));
+      const started = hook.events["turn.started"]!({ data: { turnId: "turn_0" } }, c);
+      await vi.waitFor(() => expect(keeper.calls.map((call) => call.op)).toEqual(["door.turn.open"]));
+      await hook.events["turn.settled"]!({ data: { turnId: "turn_0" } }, c);
+      release();
+      await started;
+      expect(keeper.calls.map((call) => call.op)).toEqual(["door.turn.open", "door.turn.close"]);
+      expect(keeper.calls[1]!.input).toMatchObject({ turnCapability: "p".repeat(43) });
     });
   }
 });
