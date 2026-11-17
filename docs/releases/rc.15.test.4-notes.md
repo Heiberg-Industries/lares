@@ -31,8 +31,8 @@ comparison of digests below):
   unchanged from the rc.15.test.3 record. No file of the program that runs inside the gateway changed
   since rc.15.test.3.
 - The Keeper, the console, both agent images (chief of staff and creative) and sync jobs are built from
-  changed files: each holds the changed lock file and agent kit, and all but the creative image also
-  hold the box package with the new database file.
+  changed files: each holds the changed lock file, all but sync jobs hold the changed agent kit, and
+  all but the creative image hold the box package with the new database file.
 - The egress proxy and the firewall helper are built from files that did not change. They are expected
   to hold the same content as in rc.15.test.3. A publishing run builds all seven images, so their
   digests may still differ from rc.15.test.3's.
@@ -74,9 +74,9 @@ Model prices were last checked on 3 November 2026.
 - **Both roles share one copy** of the Slack door, the Slack approval card, the approval rules (who may
   approve, who may answer a card on Slack or Telegram) and the list of people an agent answers. Each role
   had its own copy before, and the copies had drifted. Where the two roles behaved differently, each
-  keeps its own behaviour through a setting. Apart from the next point, nothing an agent does changed.
+  keeps its own behaviour through a setting. Apart from the next two points, nothing an agent does changed.
 - **Web chat names a member only through the console's admission.** The console names the signed-in
-  member to the agent by the member's stable id, a one-time admission and its purpose. Both roles' web
+  member to the agent by the member's stable id, an admission code and its purpose. Both roles' web
   chat stopped reading the older `x-lares-member` address header, and the console's waiting page stopped
   sending it. When the waiting page reads or answers a card in a Slack or Telegram conversation, the
   owner's address now comes from the member record that the admission check has already verified. A
