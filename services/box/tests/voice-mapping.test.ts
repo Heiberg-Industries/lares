@@ -337,7 +337,7 @@ describe("a run that collides with another write", () => {
     const collision = Object.assign(new Error("could not serialize access due to concurrent update"), { code: "40001" });
     const fakePool = { connect: async () => ({ query: async (sql: string) => { if (sql.startsWith("BEGIN")) throw collision; return { rows: [] }; }, release: () => undefined }) } as unknown as Pool;
     expect(await applyVoiceMapping(fakePool)).toEqual({ kind: "failed",
-      reason: "The database stopped the run (could not serialize access due to concurrent update), so nothing was changed. Something else changed the same rows at the same moment; run the same command again." });
+      reason: "The database stopped the run (could not serialize access due to concurrent update), so nothing was changed. Something else wrote to the voice data at the same moment; run the same command again." });
   });
 });
 

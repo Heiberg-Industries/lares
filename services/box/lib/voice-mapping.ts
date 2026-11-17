@@ -280,8 +280,12 @@ export async function planVoiceMapping(
 
   // A learn marked "running" is marked "interrupted" even while the agent is up. That is safe: a learn
   // that really is in progress writes its own status again when it finishes or fails
-  // (chief-of-staff lib/voice-learn.ts, runVoiceLearn), and a write to the same card while this run is
-  // open makes the run stop with nothing changed. The report says so when the schedule is active.
+  // (chief-of-staff lib/voice-learn.ts, runVoiceLearn). If the learn writes a card this run is about to
+  // update, and that write was committed after this run's snapshot (or is still uncommitted), the run's
+  // UPDATE fails with a serialization failure (40001) and nothing is changed; if this run writes the
+  // card first, the learn's own status write waits for the commit and then replaces the mark. Exemplar
+  // rows the learn inserts during the run are not seen here: they stay unlinked until the next run. The
+  // report explains this when a card is marked running and the schedule checked in recently.
   const running = profiles.filter((p) => p.learn_status === "running").map((p) => p.id);
 
   const sum = (f: (g: ExemplarGroup) => boolean) => groups.filter(f).reduce((n, g) => n + g.n, 0);
@@ -372,7 +376,7 @@ export async function applyVoiceMapping(pool: Pool, opts: VoiceMappingOptions = 
     if (err instanceof VoiceMappingUsageError || err instanceof VoiceMappingNotReady) throw err;
     // 40001 / 40P01: another write to the same rows (for example a voice learn) got there first.
     const code = (err as { code?: unknown }).code;
-    const again = code === "40001" || code === "40P01" ? " Something else changed the same rows at the same moment; run the same command again." : "";
+    const again = code === "40001" || code === "40P01" ? " Something else wrote to the voice data at the same moment; run the same command again." : "";
     return { kind: "failed", reason: `The database stopped the run (${err instanceof Error ? err.message : String(err)}), so nothing was changed.${again}` };
   } finally {
     if (!committed) await client.query("ROLLBACK").catch(() => undefined);
