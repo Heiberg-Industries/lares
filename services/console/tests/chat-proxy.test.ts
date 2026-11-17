@@ -682,15 +682,15 @@ describe("the member the console vouches for", () => {
     expect(d.fetch).not.toHaveBeenCalled();
   });
 
-  it("uses the header name the agent's own door reads", () => {
+  it("the agent's own door names a member only by the console admission, never by an address header", () => {
     // Same reason and same method as the ROUTE_USERNAME check above: the console cannot import a
     // service, so both doors' sources are read as text.
     for (const role of ["chief-of-staff", "creative"]) {
       const door = readFileSync(new URL(`../../${role}/agent/channels/eve.ts`, import.meta.url), "utf8");
-      expect(door, role).toMatch(new RegExp(`MEMBER_HEADER\\s*=\\s*"${MEMBER_HEADER}"`));
-      // And it is read only after the credential has been verified — the header appears inside the
-      // `result.ok` branch, never before it.
-      expect(door, role).toMatch(/if \(result\.ok\) \{\s+const legacy = withConsoleMember\(result\.sessionAuth, request\.headers\.get\(MEMBER_HEADER\)\)/);
+      expect(door, role).not.toContain(`"${MEMBER_HEADER}"`);
+      expect(door, role).not.toMatch(/MEMBER_HEADER/);
+      // The admission is read only after the credential has been verified, inside the `result.ok` branch.
+      expect(door, role).toMatch(/if \(result\.ok\) \{[\s\S]*?consoleRouteAdmission\(request\)/);
     }
   });
 });

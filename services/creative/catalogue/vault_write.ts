@@ -37,7 +37,7 @@
 // the Slack message can answer it" — so the click that authorises this never walks the inbound
 // allowlist. eve's own remedy is a re-check inside the tool. That is the first line of
 // `execute`, and it runs BEFORE the area is resolved, exactly as it did before the rename.
-// See `lib/principals.ts` for the whole argument.
+// See `@lares/agent-kit/principals` for the whole argument.
 //
 // NO CREDENTIAL OR PATH READ AT MODULE SCOPE: `storeRootForArea(area)` throws when the area's
 // path is unset and `eve build` runs with no env at all, so it is called inside `execute`.

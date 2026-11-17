@@ -41,7 +41,7 @@ import {
 } from "../lib/dream/promote.js";
 import { makeDreamStore } from "../lib/dream/store.js";
 
-import { UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
 
 const DREAM_SCHEMA_SQL = readFileSync(new URL("../../box/sql/026_dream_schema.sql", import.meta.url), "utf8");
 

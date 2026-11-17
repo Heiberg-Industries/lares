@@ -11,6 +11,7 @@ import {exactCardForRequest} from './exact-approval-request.js';
 import { getPool } from './db.js';
 import { PgGrantStore, type GrantDatabase } from './grant-store.js';
 import { managedIdentity, CONSOLE_SESSION_AUTHENTICATOR } from './door-authority.js';
+import { consoleMember } from './principals.js';
 import { turnAuthoritySchema, type TurnAuthority } from './authority-contract.js';
 
 export const CONSOLE_MEMBER_ID_HEADER = 'x-lares-member-id';
@@ -185,7 +186,10 @@ export async function guardConsoleToolContext(ctx: unknown): Promise<void> {
   if (hasConsoleTurnAuthorityTag(ctx)) await requireConsoleTurnAuthority(ctx as ConsoleAuthorityContext);
 }
 /** Called only after the route password is verified. Control/stream and approval-only routes
- * skip onMessage, so the binding check belongs here, not only in the message hook. */
+ * skip onMessage, so the binding check belongs here, not only in the message hook. The console's
+ * reads and answers on a native (Slack, Telegram) conversation carry `user_id`: the owner's address,
+ * read from the users row this check verified, which the native doors' allow-lists name the owner
+ * by. Nothing in the request names it. */
 export async function consoleRouteAdmission(request: Request, db?: AuthorityDatabase, env: NodeJS.ProcessEnv = process.env): Promise<Record<string,string> | undefined> {
   const own = managedIdentity(env);
   const sessionId = /\/eve\/v1\/session\/([A-Za-z0-9_-]{1,64})(?:\/|$)/.exec(new URL(request.url).pathname)?.[1];
@@ -199,11 +203,15 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
   }
   if (!own || !validMember(memberId) || !validNonce(nonce) || !purpose || !purposes.includes(purpose)) denied();
   const tuple = {agent:own!.name,incarnation:own!.incarnation,sessionId:sessionId ?? '',memberId:memberId!,admissionNonce:nonce!};
+  let ownerAddress: string | null = null;
   if (purpose!.startsWith('legacy-')) {
     if (!sessionId) denied();
-    const { rows } = await authorityQuery(db,`SELECT u.id FROM users u WHERE u.id=$1 AND u.id=$2 AND u.status='active' AND u.org_role='owner'
+    const { rows } = await authorityQuery(db,`SELECT u.id, u.primary_email FROM users u WHERE u.id=$1 AND u.id=$2 AND u.status='active' AND u.org_role='owner'
       AND NOT EXISTS(SELECT 1 FROM console_session_bindings WHERE agent=$3 AND incarnation=$4::uuid AND session_id=$5)`,[memberId,env.AGENT_OWNER_USER_ID?.trim() ?? '',own!.name,own!.incarnation,sessionId]);
     if (rows.length !== 1) denied();
+    // The address a native door's allow-list names this owner by, read from the row just verified,
+    // never from a request header. A missing or malformed address names nobody.
+    ownerAddress = consoleMember((rows[0] as { primary_email?: unknown }).primary_email as string | null);
   } else if (sessionId) {
     await requireConsoleSessionBinding(tuple,db,env);
     // Ending a conversation irrevocably retires authority even if the framework then fails to end it.
@@ -250,6 +258,6 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
       : {lares_resolver_member_id:memberId!,lares_purpose:'resolver',lares_resume_request_id:answer.interactionId,lares_resume_option:answer.optionId};
   }
   return purpose!.startsWith('legacy-')
-    ? {lares_resolver_member_id:memberId!,lares_purpose:purpose!}
+    ? {lares_resolver_member_id:memberId!,lares_purpose:purpose!,...(ownerAddress ? {user_id:ownerAddress} : {})}
     : {lares_member_id:memberId!,lares_admission_nonce:nonce!,lares_purpose:purpose!};
 }

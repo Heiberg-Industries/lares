@@ -1,5 +1,5 @@
 /**
- * lib/slack-approval-card.ts - what the owner reads on a Slack approval card.
+ * slack-approval-card.ts - what the owner reads on a Slack approval card, for every role's Slack door.
  *
  * eve 1.0.1 posts an approval whose call has input as one card: a `container` block with the
  * title, a bounded preview of the call's raw arguments, and the Deny and Approve buttons. A call
@@ -42,12 +42,7 @@
  * synchronous, and it reads nothing but the card it is given. The text goes to the owner in
  * Slack only; nothing here is fed to the model.
  *
- * This lives in `lib/`, not beside `agent/channels/slack.ts`: eve treats every file under
- * `agent/channels/` as a channel of its own, named after the file.
- *
- * The same file exists at `services/chief-of-staff/lib/slack-approval-card.ts`. Keep the two identical
- * but for this paragraph: the kit is where shared code belongs, and a new kit entry point needs a
- * `package.json` change this work was not allowed to make.
+ * Every role's Slack door (`slack-door.ts`) installs this one renderer; there is no per-role copy.
  */
 import {
   defineSlackRenderer,
@@ -55,7 +50,7 @@ import {
   type SlackInteractionCard,
   type SlackInteractionCardParts,
 } from "eve/channels/slack";
-import { coversApproval, detailsForApproval, shortenedNotice } from "@lares/agent-kit/approval-summary";
+import { coversApproval, detailsForApproval, shortenedNotice } from "./approval-summary.js";
 
 /** Slack refuses a section whose text is longer than this. The kit stays under it on its own
  *  (`DETAILS_MAX_LENGTH`); this is the check that it did. */

@@ -1,6 +1,7 @@
 // The owner of a door is the FIRST id on its allow-list; the allow-list says who may talk, the owner is who may approve.
 import { describe, expect, it } from "vitest";
-import { isAllowedPrincipal, isOwnerPrincipal, ownerPrincipalId } from "../lib/principals.js";
+import { ownerPrincipalId } from "@lares/agent-kit/principals";
+import { isAllowedPrincipal, isOwnerPrincipal } from "../lib/principals.js";
 
 const legacy = { SLACK_ALLOWED_USER_IDS: " U_OWNER , U_SECOND ", TELEGRAM_PRINCIPAL_ID: "100,200", CONSOLE_ALLOWED_EMAILS: "owner@example.com,second@example.com" };
 const managed = { LARES_AGENT_INCARNATION: "11111111-1111-4111-8111-111111111111", LARES_SLACK_PRINCIPAL: "U_OWNER,U_SECOND", LARES_TELEGRAM_PRINCIPAL: "100,200", LARES_CONSOLE_PRINCIPAL: "owner@example.com,second@example.com" };

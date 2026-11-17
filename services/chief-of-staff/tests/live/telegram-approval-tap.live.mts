@@ -47,7 +47,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 import { telegramCredentials } from "../../agent/channels/telegram.js";
-import { allowedPrincipalIds } from "../../lib/principals.js";
+import { allowedPrincipalIds } from "@lares/agent-kit/principals";
 import { callTelegramApi, sendTelegramMessage } from "../../lib/telegram-send.js";
 import { HITL_CALLBACK_PREFIX, refusedTap, tapCapturePaths, tapLane } from "../../lib/telegram-tap-gate.js";
 

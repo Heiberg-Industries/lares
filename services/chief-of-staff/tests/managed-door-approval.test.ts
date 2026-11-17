@@ -1,6 +1,6 @@
 import {it,expect} from 'vitest';
 import {assertApprover,approverFrom} from '../lib/approvals.js';
-import {isAllowedPrincipalId} from '../lib/principals.js';
+import { isAllowedPrincipalId } from "@lares/agent-kit/principals";
 const identity={LARES_AGENT_INCARNATION:'11111111-1111-4111-8111-111111111111',SLACK_ALLOWED_USER_IDS:'U_LEGACY',TELEGRAM_PRINCIPAL_ID:'100'};
 it('does not reuse legacy owner IDs for unclaimed managed doors',()=>{
  expect(isAllowedPrincipalId('slack','U_LEGACY',identity)).toBe(false);

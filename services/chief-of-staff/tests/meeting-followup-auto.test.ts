@@ -20,7 +20,7 @@ vi.mock("@lares/agent-kit/ratchet", () => ({
 vi.mock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
 
 import meetingFollowupAuto from "../catalogue/meeting_followup_auto.js";
-import { UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
 import { configuredOwnerId } from "../lib/identity-client.js";
 import { agentName } from "../lib/agent-name.js";
 

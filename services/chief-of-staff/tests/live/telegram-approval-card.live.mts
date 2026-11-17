@@ -50,7 +50,7 @@ import {
   telegramCredentials,
   waitingPageLink,
 } from "../../agent/channels/telegram.js";
-import { allowedPrincipalIds } from "../../lib/principals.js";
+import { allowedPrincipalIds } from "@lares/agent-kit/principals";
 import { callTelegramApi, sendTelegramMessage } from "../../lib/telegram-send.js";
 
 const chatId = allowedPrincipalIds("telegram")[0];

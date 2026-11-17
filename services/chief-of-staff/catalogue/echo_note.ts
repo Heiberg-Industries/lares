@@ -13,7 +13,8 @@ import { appendFileSync } from "node:fs";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { assertApproval, UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
+import { assertApproval } from "../lib/approvals.js";
 import { approvalFor } from "../lib/board.js";
 
 export { UnauthorizedApproverError };

@@ -28,7 +28,8 @@ import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
 import { recordSlackProfileSignal, type OwnerClockDb } from "@lares/agent-kit/owner-clock";
 
-import { allowedSlackUserIds, ownerId } from "../../lib/principals.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
+import { ownerId } from "../../lib/principals.js";
 import { logSlackNotConnected } from "../../lib/slack-allowlist.js";
 import { fetchSlackUserTimezone, resolveSlackToken, SlackNotConfiguredError } from "../../lib/slack-source.js";
 

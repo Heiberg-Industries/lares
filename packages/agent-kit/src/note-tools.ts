@@ -74,9 +74,8 @@ export interface TurnSpeaker {
  * (`sql/001_baseline.sql`: 'slack' | 'telegram' | 'email' | 'google' | 'legacy'). eve
  * documents no public contract for these strings; verified against the bundled dist
  * (`eve/dist/src/public/channels/{slack,telegram}/*.js`) exactly as
- * `services/chief-of-staff/lib/principals.ts`'s `AUTHENTICATOR_FOR` already documents — that
- * table is duplicated here, narrowly, because agent-kit is upstream of the chief-of-staff service and
- * cannot import its consumer's code. An authenticator with no entry (a channel this
+ * `principals.ts`'s `AUTHENTICATOR_FOR` already documents — that table is mapped here, narrowly,
+ * to the `user_aliases` system names. An authenticator with no entry (a channel this
  * store has never seen a human on) is passed through as-is: `resolveUser` then finds no
  * matching alias and the stranger path below refuses it — never a silent unfiltered read.
  */

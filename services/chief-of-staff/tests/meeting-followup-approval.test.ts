@@ -9,7 +9,7 @@ vi.mock("../lib/google.js", () => ({
 }));
 
 import meetingFollowupSend, { followupApproval } from "../catalogue/meeting_followup_send.js";
-import { UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
 import { fingerprintRecipients } from "../lib/meeting-followup-store.js";
 
 const RECIPIENTS = ["sam@example.com", "taylor@example.com"];

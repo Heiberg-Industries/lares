@@ -12,7 +12,10 @@ vi.mock("@lares/agent-kit/db", () => ({ getPool: () => ({ query }) }));
 
 async function freshModule() {
   vi.resetModules();
-  return await import("../agent/channels/slack.js");
+  // The door as eve loads it (this role's file), with the kit's Slack door that file binds.
+  const door = await import("../agent/channels/slack.js");
+  const { SLACK_TAP_REFUSAL } = await import("@lares/agent-kit/door-channels");
+  return { SLACK_TAP_REFUSAL, ...(await import("@lares/agent-kit/slack-door")), ...door };
 }
 
 /** Minimal SlackMessage stand-in — only the fields the allowlist actually reads. */
@@ -511,7 +514,7 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
    * The card itself is not touched, so its buttons are still there for the owner.
    */
   async function expectOnlyRefusalNotices(tappers: string[], threadTs = "1700000000.000100", channel = DM): Promise<void> {
-    const { SLACK_TAP_REFUSAL } = await import("../agent/channels/slack.js");
+    const { SLACK_TAP_REFUSAL } = await import("@lares/agent-kit/door-channels");
     await vi.waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.length).toBeGreaterThanOrEqual(tappers.length));
     await settle();
     const calls = slackCalls();

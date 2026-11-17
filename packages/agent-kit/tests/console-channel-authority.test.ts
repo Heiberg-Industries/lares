@@ -62,7 +62,9 @@ describe('actual Eve HTTP routes enforce authority independently of onMessage',(
    const context=attachRouteSessionCreator({},create);
    const response=await route.handler(request('/eve/v1/session',{}),context);
    expect(response.status).toBe(202);expect(response.headers.get('x-eve-session-id')).toBe('wrun_test');
-   expect(create.mock.calls[0]?.[0]).toMatchObject({auth:{attributes:{user_id:'owner@example.invalid',lares_member_id:'Owner-ID',lares_purpose:'human'}}});
+   expect(create.mock.calls[0]?.[0]).toMatchObject({auth:{principalId:'Owner-ID',attributes:{lares_member_id:'Owner-ID',lares_purpose:'human'}}});
+   // The request also carries a leftover member-address header: it names nobody.
+   expect((create.mock.calls[0]?.[0] as {auth:{attributes:Record<string,unknown>}}).auth.attributes['user_id']).toBeUndefined();
    expect(fake.query.mock.calls.some(([sql])=>String(sql).includes('INSERT INTO console_session_bindings'))).toBe(false);
   });
   it(`${role}: invalid bindings stop every session-addressed route before dispatch`,async()=>{

@@ -24,7 +24,7 @@
  */
 import { callSlackApi, type SlackBotToken } from "eve/channels/slack";
 
-import { slackCredentials } from "../agent/channels/slack.js";
+import { slackCredentials } from "@lares/agent-kit/slack-door";
 
 /** Thrown when the direct-message channel could not be established. `slackError` is Slack's own
  *  error code (`missing_scope`, `user_not_found`, ...) or a short reason of ours; never a token. */

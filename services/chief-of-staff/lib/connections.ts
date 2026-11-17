@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { storeRoot } from "@lares/agent-kit/notes-store";
 
 import { listEnrolledMailboxes } from "./google.js";
-import { allowedSlackUserIds } from "./slack-allowlist.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
 import { withTimeout } from "./timeout.js";
 
 export type ConnectionKey = "google" | "crm" | "notion" | "vault" | "atlas" | "slack";

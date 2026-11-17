@@ -33,7 +33,7 @@ import {
   memoryApproveConsequence,
   memoryRejectConsequence,
 } from "./proposals-store.js";
-import { isAllowedPrincipalId } from "./principals.js";
+import { isAllowedPrincipalId } from "@lares/agent-kit/principals";
 import { escapeTelegramHtml } from "@lares/agent-kit/telegram-markdown";
 
 export type ProposalLane = "np" | "ap";

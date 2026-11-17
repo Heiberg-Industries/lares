@@ -120,8 +120,8 @@ it('keeps claim-looking control text out of model history without intercepting u
  for(const text of ['claims report','reclaim this','Please claim this task'])expect(await consumeClaim('slack',text,'U_OWNER',true,pool,env)).toBe(false);
 });
 it('the console session authenticator the gate trusts matches every role door',()=>{
- for(const role of ['chief-of-staff','creative'])
-  expect(readFileSync(resolve(__dirname,`../../${role}/lib/principals.ts`),'utf8')).toContain('console: "lares-console"');
+ // Every role's door reads the kit's allow-list (each role's lib/principals.ts binds it).
+ expect(readFileSync(resolve(__dirname,'../../../packages/agent-kit/src/principals.ts'),'utf8')).toContain('console: "lares-console"');
 });
 // One owner per agent: the first member who connects any door.
 const REFUSAL='Another member already connects this agent. Only they can connect its other doors.';

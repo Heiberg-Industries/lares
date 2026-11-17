@@ -236,8 +236,23 @@ describe('durable console authority on disposable PostgreSQL',()=>{
   await expect(consoleRouteAdmission(request('/wrun_test','human',{answers:[]}),db,env)).rejects.toThrow('Conversation authority');
  });
  it('native Waiting carries resolver metadata without binding or human authority',async()=>{
-  const attrs=await consoleRouteAdmission(request('/native','legacy-resolver',{answers:[]}),db,env);
-  expect(attrs).toEqual({lares_resolver_member_id:'Owner-ID',lares_purpose:'legacy-resolver'});
+  // The owner row has no address yet: the admission names the owner by id only, so no native
+  // door's allow-list can match it.
+  expect(await consoleRouteAdmission(request('/native','legacy-resolver',{answers:[]}),db,env))
+   .toEqual({lares_resolver_member_id:'Owner-ID',lares_purpose:'legacy-resolver'});
+  // A malformed address is no address.
+  await db.query("UPDATE users SET primary_email='two words@example.invalid' WHERE id='Owner-ID'");
+  expect(await consoleRouteAdmission(request('/native','legacy-resolver',{answers:[]}),db,env))
+   .toEqual({lares_resolver_member_id:'Owner-ID',lares_purpose:'legacy-resolver'});
+  // With an address on the verified row, that address (never a request header) is the owner's user id.
+  await db.query("UPDATE users SET primary_email='owner@example.invalid' WHERE id='Owner-ID'");
+  const forged=request('/native','legacy-resolver',{answers:[]});forged.headers.set('x-lares-member','attacker@example.invalid');
+  const attrs=await consoleRouteAdmission(forged,db,env);
+  expect(attrs).toEqual({lares_resolver_member_id:'Owner-ID',lares_purpose:'legacy-resolver',user_id:'owner@example.invalid'});
+  // Another member is refused outright, whatever address header it brings.
+  const other=new Request('http://runtime.invalid/eve/v1/session/native',{method:'POST',headers:{'x-lares-member-id':'other','x-lares-admission':nonce,'x-lares-purpose':'legacy-resolver','x-lares-member':'owner@example.invalid'},body:JSON.stringify({answers:[]})});
+  await expect(consoleRouteAdmission(other,db,env)).rejects.toThrow('Conversation authority');
+  await db.query("UPDATE users SET primary_email=NULL WHERE id='Owner-ID'");
   expect(hasConsoleTurnAuthorityTag({session:{auth:{current:{authenticator:'lares-console',attributes:attrs}}}})).toBe(false);
   expect((await db.query('SELECT * FROM console_session_bindings')).rows).toEqual([]);
   await expect(requireConsoleTurnAuthority({session:{id:'native',turn:{id:'turn',sequence:1},auth:{current:{authenticator:'lares-console',attributes:attrs},initiator:auth()}}},db,env)).rejects.toThrow('Conversation authority');

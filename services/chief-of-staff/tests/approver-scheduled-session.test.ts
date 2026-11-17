@@ -18,8 +18,10 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-import { approverFrom, assertApprover, UnauthorizedApproverError } from "../lib/approvals.js";
-import { telegramPushAttributes, declaredApprover, AUTHENTICATOR_FOR } from "../lib/principals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
+import { approverFrom, assertApprover } from "../lib/approvals.js";
+import { AUTHENTICATOR_FOR } from "@lares/agent-kit/principals";
+import { telegramPushAttributes, declaredApprover } from "../lib/principals.js";
 
 const SLACK_OWNER = "U_EXAMPLE_OWNER";
 const TELEGRAM_OWNER = "123456789";

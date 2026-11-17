@@ -40,7 +40,7 @@
  */
 import { readFileSync } from "node:fs";
 
-import { allowedSlackUserIds } from "../../lib/principals.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
 import { SlackDmChannelError, slackDmChannelId } from "../../lib/slack-dm-channel.js";
 
 function fail(reason: string): never {

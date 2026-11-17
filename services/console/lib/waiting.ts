@@ -43,8 +43,8 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  *
  * HOW AN APPROVAL IS DECIDED: through the same door, the same way web chat answers its own cards —
  * `POST /eve/v1/session/<id>` with `{ answers: [{ interactionId, optionId }] }` where `optionId`
- * is `"approve"` or `"deny"`, the route password, and `x-lares-member` naming the signed-in
- * owner. eve's door resumes the session by its durable id whatever channel opened it, and the
+ * is `"approve"` or `"deny"`, the route password, and the console's admission for the signed-in
+ * owner (the stable member id, a nonce and the purpose; no address header). eve's door resumes the session by its durable id whatever channel opened it, and the
  * tool's own approver check accepts exactly that owner
  * (`services/chief-of-staff/tests/console-decides-approval.test.ts` runs it). Whether a person
  * decided is read from the interaction's own `outcome`: `accepted` or `declined` is a decision;
@@ -60,7 +60,7 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  */
 import { approvalArguments } from "./approval-text";
 import { decideProposal, listProposals } from "./waiting-proposals";
-import { bounded, MEMBER_HEADER, ROUTE_USERNAME, vouchedAddress } from "./chat-proxy";
+import { bounded, ROUTE_USERNAME, vouchedAddress } from "./chat-proxy";
 import { APPROVAL_LIFETIME_MS } from "../components/ChatTranscript";
 
 // ── The generic item ────────────────────────────────────────────────────────────────────────────
@@ -395,7 +395,7 @@ export function readStreamLines(text: string, startLine = 0): StreamFact[] {
 
 /** Recheck a bound console audience for every stream/decision. Native conversations retain
  * their existing applied-owner checks and get resolver metadata, never a fabricated binding. */
-async function waitingHeaders(agent: OwnedAgent, sessionId: string, member: string, door: string, purpose: "read" | "resolver", deps: WaitingDeps): Promise<Record<string,string>> {
+async function waitingHeaders(agent: OwnedAgent, sessionId: string, door: string, purpose: "read" | "resolver", deps: WaitingDeps): Promise<Record<string,string>> {
   const stable = await deps.signedInMember();
   if (!stable) throw new AgentReadError("refused");
   const {rows} = await deps.query("SELECT admission_nonce FROM console_session_bindings WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3",[agent.name,agent.incarnation,sessionId]);
@@ -409,7 +409,7 @@ async function waitingHeaders(agent: OwnedAgent, sessionId: string, member: stri
     nonce = randomBytes(32).toString("base64url");
     requestPurpose = `legacy-${purpose}`;
   }
-  return {[MEMBER_HEADER]:member,[CONSOLE_MEMBER_ID_HEADER]:stable.id,[CONSOLE_ADMISSION_HEADER]:nonce,[CONSOLE_PURPOSE_HEADER]:requestPurpose};
+  return {[CONSOLE_MEMBER_ID_HEADER]:stable.id,[CONSOLE_ADMISSION_HEADER]:nonce,[CONSOLE_PURPOSE_HEADER]:requestPurpose};
 }
 
 /**
@@ -428,7 +428,7 @@ async function sessionFacts(
   sessionId: string,
   password: string,
   deps: WaitingDeps,
-  opts: { member: string; door: string; startIndex?: number; signal?: AbortSignal },
+  opts: { door: string; startIndex?: number; signal?: AbortSignal },
 ): Promise<StreamFact[]> {
   const signal = opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]) : AbortSignal.timeout(READ_TIMEOUT_MS);
   const start = opts.startIndex === undefined ? "" : `&startIndex=${opts.startIndex}`;
@@ -437,7 +437,7 @@ async function sessionFacts(
   try {
     const response = await deps.fetch(
       `http://${agent.address}:3000/eve/v1/session/${sessionId}/stream?includeTailIndex=1&follow=false${start}`,
-      { method: "GET", headers: { authorization: basicAuth(password), accept: "application/x-ndjson", ...await waitingHeaders(agent,sessionId,opts.member,opts.door,"read",deps) }, redirect: "error", signal },
+      { method: "GET", headers: { authorization: basicAuth(password), accept: "application/x-ndjson", ...await waitingHeaders(agent,sessionId,opts.door,"read",deps) }, redirect: "error", signal },
     );
     if (response.status === 404) {
       await response.body?.cancel().catch(() => {});
@@ -658,7 +658,7 @@ const approvals: WaitingSource = {
         await eachLimited(live, 6, async (conversation) => {
           if (failed || signal.aborted) return;
           try {
-            const { pending } = readApprovals(await sessionFacts(agent, conversation.sessionId, password, deps, { signal, member, door:conversation.door }));
+            const { pending } = readApprovals(await sessionFacts(agent, conversation.sessionId, password, deps, { signal, door:conversation.door }));
             for (const approval of pending) items.push(approvalItem(agent, conversation, approval, now));
           } catch (error) {
             // A conversation this console cannot read (an older record, say) is left out and
@@ -719,7 +719,7 @@ const approvals: WaitingSource = {
     // request that is no longer pending would reach the agent as a stray message, so it is not sent.
     let state: ReturnType<typeof readApprovals>;
     try {
-      state = readApprovals(await sessionFacts(agent, sessionId, password, deps, {member,door:conversation.door}));
+      state = readApprovals(await sessionFacts(agent, sessionId, password, deps, {door:conversation.door}));
     } catch (error) {
       if (error instanceof SkippedConversation) {
         logSkipped(deps, agent.name, error.reason);
@@ -745,7 +745,7 @@ const approvals: WaitingSource = {
     try {
       response = await deps.fetch(`http://${agent.address}:3000/eve/v1/session/${sessionId}`, {
         method: "POST",
-        headers: { authorization: basicAuth(password), ...await waitingHeaders(agent,sessionId,member,conversation.door,"resolver",deps), "content-type": "application/json" },
+        headers: { authorization: basicAuth(password), ...await waitingHeaders(agent,sessionId,conversation.door,"resolver",deps), "content-type": "application/json" },
         body: JSON.stringify({ answers: [{ interactionId, optionId: actionId }] }),
         redirect: "error",
         signal: AbortSignal.timeout(READ_TIMEOUT_MS),
@@ -770,7 +770,7 @@ const approvals: WaitingSource = {
       await deps.sleep(750);
       let seen: ReturnType<typeof readApprovals>;
       try {
-        seen = readApprovals(await sessionFacts(agent, sessionId, password, deps, { startIndex: OUTCOME_TAIL, member, door:conversation.door }));
+        seen = readApprovals(await sessionFacts(agent, sessionId, password, deps, { startIndex: OUTCOME_TAIL, door:conversation.door }));
       } catch {
         break;
       }

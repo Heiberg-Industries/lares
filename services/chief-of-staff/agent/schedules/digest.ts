@@ -45,7 +45,7 @@ import { callSlackApi } from "eve/channels/slack";
 import { basename, join } from "node:path";
 import { readdirSync, readFileSync, statSync, promises as fsPromises } from "node:fs";
 
-import { slackCredentials } from "../channels/slack.js";
+import { slackCredentials } from "@lares/agent-kit/slack-door";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleGate } from "@lares/agent-kit/schedule-gate";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
@@ -53,7 +53,7 @@ import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedul
 import { storeRoot, listNotes } from "@lares/agent-kit/notes-store";
 import { thisAgent } from "../../lib/definition.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
-import { allowedSlackUserIds } from "../../lib/slack-allowlist.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
 import { writeRawNote } from "@lares/agent-kit/vault-raw";
 import { makeDigestFileNote } from "../../lib/digest-file.js";
 import {

@@ -9,7 +9,7 @@ import {
   type AuthFn,
 } from "eve/channels/auth";
 
-import { CONSOLE_AUTHENTICATOR, consoleMember } from "../../lib/principals.js";
+import { CONSOLE_AUTHENTICATOR } from "@lares/agent-kit/principals";
 
 // Route auth (INBOUND): who may reach this agent's HTTP session routes.
 // GET /eve/v1/health is always public and never walks this policy.
@@ -58,51 +58,42 @@ function routePassword(): string {
 }
 
 /**
- * The header the console's chat proxy sets to name the signed-in member it is acting for
- * (`MEMBER_HEADER` in `services/console/lib/chat-proxy.ts`). The console STRIPS whatever
- * the browser sent under this name — its forwarded-header list is deny-by-default — and sets its
- * own from the session cookie it has just verified.
- *
- * READ ONLY AFTER THE ROUTE PASSWORD HAS BEEN VERIFIED. That is the whole trust boundary, and it
- * is worth writing out rather than leaving to be inferred: this agent believes the header because
- * the request already proved it knows the agent's own route password, so **anyone holding that
- * password can claim to be any member**. Today that is the console container and the keeper, both
- * on the owner's own server (an owner decision, and the same sentence is in
- * `docs/decisions/0022-the-tested-install-path.md`). The claim is still only a claim:
- * `lib/principals.ts` checks the named member against this agent's own allow-list before it may
- * approve anything, and an unset list admits nobody.
+ * Who a web chat request is, comes ONLY from the console's admission: the stable member id, an
+ * admission nonce and the purpose (`x-lares-member-id`, `x-lares-admission`, `x-lares-purpose`),
+ * read once the route password is verified. The admission is believed because the request knew
+ * that password, so anyone holding it can name any member (the same sentence is in
+ * `docs/decisions/0022-the-tested-install-path.md`); what `consoleRouteAdmission`
+ * (`@lares/agent-kit/console-turn-authority`) checks in the database is that the member named is an
+ * active member with use of this agent, and, on a Slack or Telegram conversation, its owner. No
+ * header naming a member by address is read: a request that knows the route password but carries
+ * no admission stays eve's plain `http-basic` context, which names nobody and approves nothing,
+ * whatever else it sends.
  */
-export const MEMBER_HEADER = "x-lares-member";
 
 /** eve's own `SessionAuthContext`, named without a second import path: it is exactly what an
  *  `AuthFn` may return. */
 type DoorSessionAuth = NonNullable<Awaited<ReturnType<AuthFn<Request>>>>;
 
 /**
- * eve's own session auth with the console's member stamped on it — or eve's own, untouched, when
- * no usable member was asserted.
+ * eve's own session auth with the console's admitted member stamped on it.
  *
  * `verifyHttpBasic` returns `{attributes: {}, authenticator: "http-basic", principalId: <username>,
  * principalType: "user"}` (bundled dist, eve 1.0, `dist/src/channel/auth/http-basic.js`'s
  * `authenticateHttpBasicStrategy` → `createRuntimeSessionAuthContext`), which says only "this
- * caller knows the route password". That is deliberately NOT a channel in `lib/principals.ts`, so
- * an operator with the password can start a session and still approve nothing. Only the
- * `lares-console` stamp below is a channel, and only `attributes.user_id` — the same key eve's own
- * Slack and Telegram channels use — says who.
- *
- * A malformed or absent header is NOT an error: it leaves the plain `http-basic` context in place,
- * which fails closed at the approval gate. `consoleMember` is the shape check, and it runs before
- * any allow-list is consulted.
+ * caller knows the route password". That is deliberately NOT a door in `lib/principals.ts`, so an
+ * operator with the password can start a session and still approve nothing. Only the
+ * `lares-console` stamp below is a door. The member is the admitted stable id; on a native (Slack,
+ * Telegram) conversation the console reads or answers for the owner, and the admission also gives
+ * `attributes.user_id`, the owner's address read from the verified users row — the same key eve's
+ * own Slack and Telegram channels use for who.
  */
-function withConsoleMember(sessionAuth: DoorSessionAuth, supplied: string | null): DoorSessionAuth {
-  const member = consoleMember(supplied);
-  if (member === null) return sessionAuth;
+function withAdmittedMember(sessionAuth: DoorSessionAuth, attributes: Record<string, string>): DoorSessionAuth {
+  const member = attributes.lares_member_id ?? attributes.user_id;
   return {
     ...sessionAuth,
-    attributes: { ...sessionAuth.attributes, user_id: member },
     authenticator: CONSOLE_AUTHENTICATOR,
-    principalId: member,
-    principalType: "user",
+    ...(member ? { principalId: member, principalType: "user" as const } : {}),
+    attributes: { ...sessionAuth.attributes, ...attributes },
   };
 }
 
@@ -111,7 +102,7 @@ function withConsoleMember(sessionAuth: DoorSessionAuth, supplied: string | null
  *  accepted username with eve's own constant-time comparison — never a comparison by hand.
  *
  *  `trustedForwarders` is deliberately NOT configured on the channel below, and that is what keeps
- *  the header the ONLY way a member can be asserted: eve answers 403 to a `forwardedPrincipal`
+ *  the console's admission the ONLY way a member can be asserted: eve answers 403 to a `forwardedPrincipal`
  *  field in a request BODY whenever a channel declares no forwarder predicate
  *  (`dist/src/channel/forwarded-principal.js`'s `resolveForwardedPrincipal`). So a browser cannot
  *  smuggle an identity through the body the console passes along, and the console does not have to
@@ -124,14 +115,11 @@ export const basicFromSecretFile: AuthFn<Request> = async (request) => {
       password,
     });
     if (result.ok) {
-      const legacy = withConsoleMember(result.sessionAuth, request.headers.get(MEMBER_HEADER));
       try {
         if (request.headers.has("x-lares-member-id") || request.headers.has("x-lares-admission") || request.headers.has("x-lares-purpose")) await assertPrivateConsoleRequest(request);
         const attributes = await consoleRouteAdmission(request);
-        if (!attributes) return legacy;
-        return { ...legacy, authenticator: CONSOLE_AUTHENTICATOR,
-          ...(attributes.lares_member_id ? {principalId:attributes.lares_member_id,principalType:'user' as const}:{}),
-          attributes: { ...legacy.attributes, ...attributes } };
+        if (!attributes) return result.sessionAuth;
+        return withAdmittedMember(result.sessionAuth, attributes);
       } catch { return null; }
     }
   }

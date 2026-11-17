@@ -133,27 +133,27 @@ export const READ_INDIRECTLY: Readonly<Record<string, string>> = {
   // services/box/lib/crypto.ts's `keyFromEnv` reads `process.env[varName]` with `varName` a
   // parameter, never a literal `env.TOKEN_ENC_KEY`.
   TOKEN_ENC_KEY: "keyFromEnv in services/box/lib/crypto.ts",
-  // services/chief-of-staff/lib/principals.ts's `ENV_VAR_FOR` maps a channel to its env var name,
+  // packages/agent-kit/src/principals.ts's `ENV_VAR_FOR` maps a channel to its env var name,
   // then a caller reads `process.env[ENV_VAR_FOR[channel]]` — never a literal for any of these.
-  SLACK_ALLOWED_USER_IDS: "ENV_VAR_FOR in services/chief-of-staff/lib/principals.ts",
+  SLACK_ALLOWED_USER_IDS: "ENV_VAR_FOR in packages/agent-kit/src/principals.ts",
   CONSOLE_SESSION_SECRET_FILE: "readSecret's own *_FILE half, in services/console/lib/console-oidc.ts and services/console/lib/account-oauth-state.ts",
   SIGNAL_ADMIN_TOKEN: "readSecret in services/console/lib/signals.ts",
   SIGNAL_READ_TOKEN: "readSecret in services/console/lib/signals.ts",
   TWENTY_KEY: "readSecret in services/notion-sync/lib/cli.ts",
   NOTION_SYNC_PRINCIPAL: "readSecret in services/notion-sync/lib/cli.ts",
-  SLACK_BOT_TOKEN_FILE: "readSecret in services/chief-of-staff/agent/channels/slack.ts",
-  SLACK_SIGNING_SECRET_FILE: "readSecret in services/chief-of-staff/agent/channels/slack.ts",
+  SLACK_BOT_TOKEN_FILE: "readSecret in packages/agent-kit/src/slack-door.ts",
+  SLACK_SIGNING_SECRET_FILE: "readSecret in packages/agent-kit/src/slack-door.ts",
   TELEGRAM_BOT_TOKEN: "eve's own Telegram channel binding, not this repository's TypeScript",
   TELEGRAM_BOT_TOKEN_FILE: "readSecret in services/chief-of-staff/agent/channels/telegram.ts",
   TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: "readSecret in services/chief-of-staff/agent/channels/telegram.ts",
-  // `env[`LARES_${channel.toUpperCase()}_PRINCIPAL`]` in services/chief-of-staff/lib/principals.ts
+  // `env[`LARES_${channel.toUpperCase()}_PRINCIPAL`]` in packages/agent-kit/src/principals.ts
   // — a template-literal key, never a literal `env.LARES_SLACK_PRINCIPAL`. The CLAIM_REVISION
   // pair is written the same templated way by the keeper (`environment[`LARES_${claim.kind
   // .toUpperCase()}_CLAIM_REVISION`]`) and read back by nothing in this repository's TypeScript
   // at all — bookkeeping only, per its own breaksWithout in settings.ts.
-  LARES_SLACK_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in services/chief-of-staff/lib/principals.ts",
-  LARES_CONSOLE_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in services/chief-of-staff/lib/principals.ts and services/creative/lib/principals.ts",
-  LARES_TELEGRAM_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in services/chief-of-staff/lib/principals.ts",
+  LARES_SLACK_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in packages/agent-kit/src/principals.ts",
+  LARES_CONSOLE_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in packages/agent-kit/src/principals.ts",
+  LARES_TELEGRAM_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in packages/agent-kit/src/principals.ts",
   LARES_SLACK_CLAIM_REVISION: "templated LARES_${claim.kind}_CLAIM_REVISION key, written only, in services/keeper/lib/compose-agents.ts",
   LARES_TELEGRAM_CLAIM_REVISION: "templated LARES_${claim.kind}_CLAIM_REVISION key, written only, in services/keeper/lib/compose-agents.ts",
   // The GOOGLE_CLIENT_{ID,SECRET}_<ORG>[_FILE] family is built from a template

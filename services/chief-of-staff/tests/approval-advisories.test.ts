@@ -221,7 +221,8 @@ describe("what this installation has NOT closed, stated rather than hidden", () 
     );
     expect(principal).toEqual({ authenticator: "telegram-webhook", userId: "111" });
 
-    const src = readFileSync(join(here, "..", "lib", "approvals.ts"), "utf8");
+    // The rule lives once in the kit; this role binds it in lib/approvals.ts.
+    const src = readFileSync(join(here, "..", "..", "..", "packages", "agent-kit", "src", "approval-policy.ts"), "utf8");
     expect(src).toContain("auth: null");
     expect(src).toContain("INITIATOR");
   });

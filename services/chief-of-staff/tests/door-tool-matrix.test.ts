@@ -180,7 +180,8 @@ import { parseDefinition } from "@lares/agent-kit/definition";
 import { interceptSlackClaim, interceptTelegramClaim } from "@lares/agent-kit/door-channels";
 
 import { basicFromSecretFile } from "../agent/channels/eve.js";
-import { admitSlackDirectMessage, admitSlackMessage } from "../agent/channels/slack.js";
+import { admitSlackMessage } from "@lares/agent-kit/slack-door";
+import { admitSlackDirectMessage } from "../agent/channels/slack.js";
 import { hasDispatchableContent, isAllowedTelegramMessage } from "../agent/channels/telegram.js";
 import catalogueResolver from "../agent/tools/catalogue.js";
 import commercialResolver from "../agent/tools/commercial_who_to_contact.js";

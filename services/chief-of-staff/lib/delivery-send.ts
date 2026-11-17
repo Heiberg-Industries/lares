@@ -17,7 +17,7 @@
  */
 import { callSlackApi } from "eve/channels/slack";
 
-import { slackCredentials } from "../agent/channels/slack.js";
+import { slackCredentials } from "@lares/agent-kit/slack-door";
 import { telegramCredentials } from "../agent/channels/telegram.js";
 import type { Routed } from "./delivery.js";
 import { gatewayComplete } from "./llm-complete.js";

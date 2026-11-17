@@ -30,7 +30,10 @@ import { SLACK, appMentionBody, deliverSlackEvent, directMessageBody } from "./h
 
 async function freshModule() {
   vi.resetModules();
-  return await import("../agent/channels/slack.js");
+  // The door as eve loads it (this role's file), with the kit's Slack door that file binds.
+  const door = await import("../agent/channels/slack.js");
+  const { SLACK_TAP_REFUSAL } = await import("@lares/agent-kit/door-channels");
+  return { SLACK_TAP_REFUSAL, ...(await import("@lares/agent-kit/slack-door")), ...door };
 }
 
 /** Minimal SlackMessage stand-in — only the fields the allowlist actually reads. */
@@ -210,7 +213,7 @@ describe("the inbound allowlist fails closed", () => {
   });
 
   it("reads the SAME list the approval re-check reads — asserted THROUGH the door", async () => {
-    // lib/slack-allowlist.ts re-exports lib/principals.ts, which lib/approvals.ts also reads:
+    // The door reads the kit's Slack allow-list (`@lares/agent-kit/principals`), which lib/approvals.ts also reads:
     // one list, two enforcement points (who may START a turn, who may APPROVE one).
     //
     // The id here is deliberately arbitrary and NOT the owner's. A version of this test that
@@ -220,7 +223,7 @@ describe("the inbound allowlist fails closed", () => {
     // hardcoded list could plausibly contain is what makes it load-bearing.
     process.env["SLACK_ALLOWED_USER_IDS"] = "U0PARITYCHECK";
     const { isAllowedSlackUser } = await freshModule();
-    const { isAllowedSlackUserId } = await import("../lib/principals.js");
+    const { isAllowedSlackUserId } = await import("@lares/agent-kit/principals");
 
     for (const id of ["U0PARITYCHECK", "U_EXAMPLE_OWNER", "U0STRANGER"]) {
       expect(
@@ -526,7 +529,7 @@ describe("the creative Slack door, through its webhook route", () => {
    * The card itself is not touched, so its buttons are still there for the owner.
    */
   async function expectOnlyRefusalNotices(tappers: string[], threadTs = "1700000000.000100"): Promise<void> {
-    const { SLACK_TAP_REFUSAL } = await import("../agent/channels/slack.js");
+    const { SLACK_TAP_REFUSAL } = await import("@lares/agent-kit/door-channels");
     await vi.waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.length).toBeGreaterThanOrEqual(tappers.length));
     await settle();
     const calls = slackCalls();

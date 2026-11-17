@@ -1,13 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-import { assertApprover, UnauthorizedApproverError } from "../lib/approvals.js";
-import {
-  allowedPrincipalIds,
-  channelForAuthenticator,
-  isAllowedPrincipal,
-  isAllowedPrincipalId,
-  principalFromAuth,
-} from "../lib/principals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
+import { assertApprover } from "../lib/approvals.js";
+import { allowedPrincipalIds, isAllowedPrincipalId, principalFromAuth } from "@lares/agent-kit/principals";
+import { channelForAuthenticator, isAllowedPrincipal } from "../lib/principals.js";
 
 /**
  * The approver re-check, extracted from `echo_note.ts` and widened from
