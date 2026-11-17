@@ -218,7 +218,10 @@ it('an update whose migration adds a table gives the engine logins that table\'s
   try {
     expect(await engineDatabasePrivilegesMatch(engine)).toBe(true);
     // Every migration after 035 is taken away too: the runner refuses to slot a file beneath
-    // one already applied, so they all reapply in order, as on a real update.
+    // one already applied, so they all reapply in order, as on a real update. 038 only adds
+    // columns and constraints to an existing table, and every statement in it can run again, so
+    // its columns stay and only its ledger row goes.
+    await engine.query("DELETE FROM schema_migrations WHERE filename='038_approval_card_record.sql'");
     await engine.query('DROP TABLE person_voice_profiles');
     await engine.query("DELETE FROM schema_migrations WHERE filename='037_person_voice_profiles.sql'");
     await engine.query('DROP TABLE agent_account_bindings');
