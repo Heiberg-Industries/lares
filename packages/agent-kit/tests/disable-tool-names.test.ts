@@ -20,7 +20,9 @@
  *
  * WHERE THE LIST COMES FROM. `dist/src/framework/sources/registry.js` in the installed eve, the
  * module the compiler itself reads to build the framework-default candidate set
- * (`eve:defaults` / `eve:root-defaults`). A directory listing of `dist/src/tools/` is not a
+ * (`eve:defaults` / `eve:root-defaults`), together with `default-tools.js` beside it: since eve
+ * 1.0.1 the registry imports the local default tools (`DEFAULT_TOOL_MODULES`) from that file and
+ * names only the root-only `tools/agent.ts` itself. A directory listing of `dist/src/tools/` is not a
  * substitute: it holds every tool eve SHIPS, default or not. It is read as text here; the
  * kit's `framework-default-tools.ts` imports the same module as an object, and
  * `framework-default-tools.test.ts` pins that reader.
@@ -45,18 +47,22 @@ function disableToolFiles(serviceDir: string): string[] {
 
 /**
  * eve's real framework-DEFAULT tool names for the SERVICE's own installed eve (not the
- * workspace root's) — see this file's header for why `registry.js` rather than a directory
- * listing. Names already match `agent/tools/<name>.ts` exactly: the registry's logical paths are
+ * workspace root's) — see this file's header for why `registry.js` and `default-tools.js`
+ * rather than a directory listing. Names already match `agent/tools/<name>.ts` exactly: the registry's logical paths are
  * snake_case.
  */
 function frameworkToolNames(serviceDir: string): ReadonlySet<string> {
   const req = createRequire(join(serviceDir, "package.json"));
   const eveRoot = dirname(req.resolve("eve/package.json"));
-  const registryPath = join(eveRoot, "dist", "src", "framework", "sources", "registry.js");
-  const source = readFileSync(registryPath, "utf8");
+  const sourcesDir = join(eveRoot, "dist", "src", "framework", "sources");
+  // eve 1.0.1 keeps the local default tools in `default-tools.js`, which `registry.js` imports;
+  // the registry itself names only the root-only `tools/agent.ts`. Read both when both exist.
+  const files = ["registry.js", "default-tools.js"].map((f) => join(sourcesDir, f)).filter((f) => existsSync(f));
   const names = new Set<string>();
-  for (const m of source.matchAll(/logicalPath:`tools\/([a-z_]+)\.ts`/gu)) names.add(m[1]!);
-  if (names.size === 0) throw new Error(`no tools/*.ts logicalPath found in ${registryPath} — the registry format has changed`);
+  for (const file of files) {
+    for (const m of readFileSync(file, "utf8").matchAll(/logicalPath:`tools\/([a-z_]+)\.ts`/gu)) names.add(m[1]!);
+  }
+  if (names.size === 0) throw new Error(`no tools/*.ts logicalPath found in ${files.join(", ")} — the registry format has changed`);
   return names;
 }
 
