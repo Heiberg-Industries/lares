@@ -4,7 +4,9 @@ import { chmod, chown, lstat, mkdir, unlink, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { authorityTransaction, requireConsoleSessionBinding, type AuthorityPool } from '@lares/agent-kit/console-turn-authority';
-import { consoleSourceTransaction } from '@lares/agent-kit/console-source-transaction';
+import { consoleSourceTransaction, checkConsoleSourceDeadlines, retainSourceTransactionDeadline } from '@lares/agent-kit/console-source-transaction';
+import { isValidDoorClaim, requireDoorClaim } from '@lares/agent-kit/door-claim';
+import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { captureConsoleVaultSources, withConsoleVaultSourceRead } from '@lares/agent-kit/console-turn-authority';
 import { definitionSchema, hashOf, parseDefinition } from '@lares/agent-kit/definition';
 import { canWriteVaultArea, grantedVaultAreas } from '@lares/agent-kit/manifest';
@@ -35,11 +37,14 @@ type Challenge={input:Input;challenge:string;expiry:number};
 type Pending={input:Input;expiry:number};
 type Capsule=Input & {version:1;purpose:'human';challenge:string;nonce:string;expiry:number};
 type SessionDefinitionMaterial={definition:ReturnType<typeof definitionSchema.parse>;dutiesMd:string;voiceMd:string;hash:string};
+// A pass for one chat-door turn. Keeper took the member from its own configuration; the agent never named one.
+type DoorTurn={agent:string;incarnation:string;sessionId:string;turnId:string;sequence:number;door:string;principal:string;claimRevision:string;memberId:string;accessRevision:number;definition:SessionDefinitionMaterial;areaIds:string[];expiry:number};
 type Turn={input:Input;turnId:string;sequence:number;definition:SessionDefinitionMaterial;areaIds:string[];expiry:number};
-export interface VaultBrokerSocketOptions {consoleSocket?:string;rootUid?:number;socketUid?:number;socketGid?:number;turnClockForTests?:()=>number;
+export interface VaultBrokerSocketOptions {designatedOwnerId?:string;consoleSocket?:string;rootUid?:number;socketUid?:number;socketGid?:number;turnClockForTests?:()=>number;
  vaultFilesForTests?:{root:string;originRoot:string};outsideCustody?:Pick<OutsideCustodyStore,'dispatchApproved'|'acceptedRuntimeTools'|'approveExecution'>}
 const challenges=new Map<string,Challenge>(),pending=new Map<string,Pending>(),runtimeRequests=new Map<string,number>();
 const turns=new Map<string,Turn>();
+const doorTurns=new Map<string,DoorTurn>();
 function object(v:unknown):Record<string,unknown>{if(!v||typeof v!=='object'||Array.isArray(v))throw new Error();return v as Record<string,unknown>}
 type SocketState={clients:Set<Socket>;inFlight:number};
 /** Every short code a request in this file fails with: the ones a reply may name, plus the ones only the log
@@ -47,7 +52,7 @@ type SocketState={clients:Set<Socket>;inFlight:number};
  *  message from the database, the file system or a library, which can carry a path or an id, is never logged. */
 const FAILURE_CODES:ReadonlySet<string>=new Set([...VAULT_BROKER_REFUSAL_REASONS,'identity','signature','not found','note exists','track path','track target changed','track target revision','vault read grant']);
 /** The operations the two sockets serve. Closed for the same reason: the log never copies text out of a request. */
-const OPERATIONS:ReadonlySet<unknown>=new Set(['challenge','request.admit','turn.open','turn.close','vault.read','vault.write','vault.scheduled','tracks.write','outside.tools','outside.approve','outside.execute']);
+const OPERATIONS:ReadonlySet<unknown>=new Set(['challenge','request.admit','turn.open','turn.close','door.turn.open','door.turn.close','vault.read','vault.write','vault.scheduled','tracks.write','outside.tools','outside.approve','outside.execute']);
 function failedOperation(line:string):string{
  try{const req=JSON.parse(line),kind=req?.input?.operation;if(!OPERATIONS.has(req?.op))return 'unknown';return req.op==='vault.read'&&(kind==='list'||kind==='read'||kind==='search')?`vault.read ${kind}`:req.op;}catch{return 'unknown';}
 }
@@ -64,7 +69,7 @@ export function createBoundedVaultBrokerServer(handler:(line:string,signal:Abort
 function isInput(v:unknown):v is Input {
  const x=v as Input;return !!x&&typeof x==='object'&&/^[a-z][a-z0-9-]{1,30}$/.test(x.agent)&&/^[a-f0-9-]{36}$/.test(x.incarnation)&&/^[A-Za-z0-9_-]{1,64}$/.test(x.session)&&typeof x.member==='string'&&x.member.length>0&&x.member.length<=256&&/^[A-Za-z0-9_-]{43}$/.test(x.admissionNonce)&&x.method==='POST'&&/^\/eve\/v1\/session\/[A-Za-z0-9_-]{1,64}$/.test(x.path)&&/^[a-f0-9]{64}$/.test(x.rawBodyHash)&&Number.isSafeInteger(x.policyRevision)&&x.policyRevision>0&&/^[a-f0-9]{64}$/.test(x.definitionHash);
 }
-function prune(now=Date.now(),turnNow=Date.now()){for(const [k,v] of challenges)if(v.expiry<=now)challenges.delete(k);for(const [k,v] of pending)if(v.expiry<=now)pending.delete(k);for(const [k,v] of turns)if(v.expiry<=turnNow)turns.delete(k);for(const [k,v] of runtimeRequests)if(v<=now)runtimeRequests.delete(k);if(challenges.size>MAX_LIVE||pending.size>MAX_LIVE||turns.size>MAX_LIVE||runtimeRequests.size>MAX_LIVE)throw new Error('capacity');}
+function prune(now=Date.now(),turnNow=Date.now()){for(const [k,v] of challenges)if(v.expiry<=now)challenges.delete(k);for(const [k,v] of pending)if(v.expiry<=now)pending.delete(k);for(const [k,v] of turns)if(v.expiry<=turnNow)turns.delete(k);for(const [k,v] of doorTurns)if(v.expiry<=turnNow)doorTurns.delete(k);for(const [k,v] of runtimeRequests)if(v<=now)runtimeRequests.delete(k);if(challenges.size>MAX_LIVE||pending.size>MAX_LIVE||turns.size>MAX_LIVE||doorTurns.size>MAX_LIVE||runtimeRequests.size>MAX_LIVE)throw new Error('capacity');}
 async function keyFile(path:string):Promise<Buffer>{const value=(await readFile(path,'utf8')).trim();if(!/^[a-f0-9]{64}$/.test(value))throw new Error('key');return Buffer.from(value,'hex')}
 /** Prepare only Keeper's exact, dedicated socket directory. It is safe to create empty even
  *  without signing-key custody: agents then start normally and their Vault calls fail closed. */
@@ -168,6 +173,33 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
  const outsideResumes=new Map<string,{binding:{agent:string;incarnation:string;sessionId:string;memberId:string;approverMemberId:string;admissionNonce:string;policyRevision:number};
   call:Pick<OutsideToolCallRequest,'callId'|'connectionName'|'toolName'>;payloadHash:string;expiresAt:number}>();
  const clients=new Set<Socket>(),secret=await keyFile(consoleSigningKeyFile),socketState:SocketState={clients,inFlight:0};
+
+ type ReadParams={memberId:string;areaIds:string[];area:'private'|'shared';operation:string;path:unknown;offset:unknown;requestedHome:unknown;folder:unknown;cursor:unknown;query:unknown};
+ // One list, read or search of one area for one member. The caller has already proved who may ask; this
+ // rechecks the member's binding on the area and filters every note by the same reader, for web chat and doors alike.
+ async function readFromArea(db:any,p:ReadParams,assertLive:()=>void):Promise<unknown>{
+    assertLive();await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");
+    const inventory=loadVaultStorageInventory();await verifyVaultStorageMetadata(db as never,inventory,true);assertLive();
+    const member=await currentMember(db as never,p.memberId);assertLive();if(!member)throw new Error('member');
+    const kind=p.area==='private'?'private':'shared',candidates=inventory.areas.filter(a=>a.kind===kind),vault=new PgVaultStore(),matches=[] as {areaId:string;revision:number}[];
+    for(const candidate of candidates){if(!p.areaIds.includes(candidate.areaId))continue;const result=await db.query('SELECT revision FROM vault_areas WHERE id=$1 AND status=\'active\'',[candidate.areaId]);if(result.rows.length!==1)continue;const revision=Number(result.rows[0]!.revision);const binding=await vault.vaultAreaBinding(p.memberId,{areaId:candidate.areaId,expectedRevision:revision,permission:'use'},{db:db as never,requiredBackingKind:'git'});if(binding)matches.push({areaId:candidate.areaId,revision});}
+    if(matches.length!==1||(p.requestedHome!==undefined&&matches[0]!.areaId!==(p.requestedHome as string).slice('vault:'.length)))throw new Error('area');const selected=matches[0]!,testPaths=socketOptions.vaultFilesForTests,backings=new Map([[inventory.backing.id,{kind:'git' as const,root:testPaths?.root??'/srv',areas:new Map(inventory.areas.map(a=>[a.areaId,{origin:testPaths?join(testPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]),files=new GuardedVaultFiles(vault,backings),ctx={memberId:p.memberId,areaId:selected.areaId,expectedRevision:selected.revision,db:db as never},reader:Reader={userId:p.memberId,store:kind==='private'?'brain':'atlas' as StoreName};
+    // A list is one page of at most NOTE_LIST_PAGE notes this reader may see. The folder's notes are read to
+    // drop hidden ones before the page is cut, so the cursor counts only visible notes. The caller pages on with `nextCursor`.
+    if(p.operation==='list'){
+     const page=await files.listPage(ctx,{folder:p.folder as string|undefined,cursor:p.cursor as number|undefined,limit:NOTE_LIST_PAGE},reader);assertLive();
+     return {notes:page.paths,...(page.nextCursor!==undefined?{nextCursor:page.nextCursor}:{})};
+    }
+    // The same keyword search the native doors use, over this area's files, filtered by the same reader.
+    if(p.operation==='search'){
+     const found=await files.search(ctx,p.query as string,reader);assertLive();
+     return {hits:found.hits.slice(0,VAULT_SEARCH_HITS),files:found.files,...(found.hits.length>VAULT_SEARCH_HITS?{more:true}:{})};
+    }
+    assertLive();const note=await files.read(ctx,p.path as string);assertLive();if(!visibleTo(note.content,reader))throw new Error('not found');const page=boundText(note.content,{limit:DEFAULT_READ_LIMIT,offset:Number(p.offset??0)});
+    if(!page.truncated&&page.note===undefined&&(p.offset??0)===0)return note;
+    return {...note,content:page.text,totalChars:page.totalChars,...(page.truncated?{truncated:true,nextOffset:page.nextOffset}:{}),...(page.note!==undefined?{note:page.note}:{})};
+
+ }
  async function handle(line:string,signal:AbortSignal):Promise<Record<string,unknown>>{
   const deadlineAtMs=Date.now()+1700,assertLive=()=>{if(signal.aborted||Date.now()>=deadlineAtMs)throw new Error('deadline')};assertLive();const req=object(JSON.parse(line));prune();
   if(req.op==='challenge'){
@@ -339,7 +371,71 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
   if(op==='turn.close'){
    const cap=input.turnCapability,turnId=input.turnId,sequence=input.sequence;if(typeof cap!=='string')throw new Error('turn');const turn=turns.get(cap);if(!turn||turn.turnId!==turnId||turn.sequence!==sequence||turn.input.agent!==agent||turn.input.incarnation!==incarnation)throw new Error('turn');turns.delete(cap);return {closed:true};
   }
+  if(op==='door.turn.open'){
+   // A turn that came through a chat door. The agent names the door, the claim it speaks under, the turn and
+   // its definition; Keeper finds the member itself (its configured owner, checked against the claim) and
+   // refuses anything not declared a private chat. The capability is for this turn only.
+   const sessionId=input.sessionId,turnId=input.turnId,sequence=input.sequence,definition=object(input.definition);
+   if(Object.keys(input).sort().join(',')!=='chat,claimRevision,definition,door,principal,sequence,sessionId,turnId'||!isValidDoorClaim(input as never)||
+     typeof sessionId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)||typeof turnId!=='string'||!/^[A-Za-z0-9._:-]{1,128}$/.test(turnId)||
+     !Number.isSafeInteger(sequence)||Number(sequence)<0||typeof definition.hash!=='string'||typeof definition.dutiesMd!=='string'||typeof definition.voiceMd!=='string'||!('definition'in definition))throw new Error('turn');
+   if(input.chat!=='private')throw new Error('authority');
+   const ownerId=socketOptions.designatedOwnerId;if(typeof ownerId!=='string'||!/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(ownerId))throw new Error('owner');
+   const sessionDefinition={definition:definitionSchema.parse(definition.definition),dutiesMd:definition.dutiesMd,voiceMd:definition.voiceMd,hash:definition.hash};
+   if(!/^[a-f0-9]{64}$/.test(sessionDefinition.hash)||hashOf(sessionDefinition as never)!==sessionDefinition.hash||sessionDefinition.hash!==active.rows[0]!.hash)throw new Error('definition');
+   const claim={door:String(input.door),principal:String(input.principal),claimRevision:String(input.claimRevision)};
+   const env={...process.env,LARES_AGENT_NAME:agent,LARES_AGENT_INCARNATION:incarnation} as NodeJS.ProcessEnv;
+   if(!managedIdentity(env))throw new Error('runtime');
+   const grantedAreas=grantedVaultAreas(sessionDefinition.definition).filter(area=>area==='private'||area==='shared');
+   if(!grantedAreas.length)throw new Error('vault read grant');
+   const inventory=loadVaultStorageInventory(),store=new PgVaultStore();
+   const opened=await authorityTransaction(pool,async db=>{
+    await db.query("SELECT set_config('statement_timeout','900ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");
+    await requireDoorClaim(db,{...claim,memberId:ownerId},env);assertNotAborted();
+    const grant=await new PgGrantStore().captureUseWithExpiry(ownerId,agent,{db:db as never});if(!grant)throw new Error('grant');
+    await verifyVaultStorageMetadata(db as never,inventory,true);assertNotAborted();
+    const member=await currentMember(db as never,ownerId);if(!member)throw new Error('member');
+    const rows=await db.query("SELECT id,revision FROM vault_areas WHERE organisation_id=$1 AND kind=ANY($2::text[]) AND status='active' ORDER BY id LIMIT 513",[member.organisationId,grantedAreas]);
+    if(rows.rows.length>512)throw new Error('areas');const allowed:string[]=[];
+    for(const row of rows.rows){assertNotAborted();if(!inventory.areas.some(a=>a.areaId===row.id))throw new Error('inventory');
+     const binding=await store.vaultAreaBinding(ownerId,{areaId:String(row.id),expectedRevision:Number(row.revision),permission:'use'},{db:db as never,requiredBackingKind:'git'});if(binding)allowed.push(String(row.id));}
+    if(!allowed.length)throw new Error('areas');
+    if(grant.validUntil!==null)retainSourceTransactionDeadline(db,grant.validUntil);await checkConsoleSourceDeadlines(db);
+    return {areaIds:allowed,accessRevision:grant.accessRevision};
+   },transactionDeadline);
+   assertNotAborted();const turnCapability=randomBytes(32).toString('base64url'),expiry=turnNow()+5*60_000;
+   if(doorTurns.size>=MAX_LIVE)throw new Error('capacity');
+   doorTurns.set(turnCapability,{agent:agent as string,incarnation:incarnation as string,sessionId,turnId,sequence:sequence as number,...claim,memberId:ownerId,accessRevision:opened.accessRevision,definition:sessionDefinition,areaIds:opened.areaIds,expiry});
+   return {turnCapability,expiresAt:expiry};
+  }
+  if(op==='door.turn.close'){
+   const cap=input.turnCapability;if(typeof cap!=='string')throw new Error('turn');const pass=doorTurns.get(cap);
+   if(!pass||pass.turnId!==input.turnId||pass.sequence!==input.sequence||pass.agent!==agent||pass.incarnation!==incarnation)throw new Error('turn');doorTurns.delete(cap);return {closed:true};
+  }
   if(op==='vault.read'){
+   if(input.door!==undefined){
+    // A chat door's read: the pass, not a console session. Keeper rechecks the claim, the member, the use grant,
+    // the definition and the area on every call; the agent never names a member and sends no admission.
+    const cap=input.turnCapability,operation=input.operation,area=input.area;
+    if(typeof cap!=='string'||typeof input.turnId!=='string'||!Number.isSafeInteger(input.sequence)||typeof input.sessionId!=='string'||!isValidDoorClaim(input as never)||input.memberId!==undefined||input.admissionNonce!==undefined||
+      (operation!=='list'&&operation!=='read'&&operation!=='search')||(area!=='private'&&area!=='shared')||(operation==='read'&&typeof input.path!=='string')||
+      (input.offset!==undefined&&(!Number.isSafeInteger(input.offset)||Number(input.offset)<0))||input.home!==undefined||
+      (input.folder!==undefined&&(operation!=='list'||typeof input.folder!=='string'||input.folder.length>512))||(input.cursor!==undefined&&(operation!=='list'||!Number.isSafeInteger(input.cursor)||Number(input.cursor)<0))||
+      (operation==='search'?typeof input.q!=='string'||input.q.length<1||input.q.length>1000:input.q!==undefined))throw new Error('read');
+    const pass=doorTurns.get(cap);
+    if(!pass||pass.expiry<=turnNow()||pass.turnId!==input.turnId||pass.sequence!==input.sequence||pass.agent!==agent||pass.incarnation!==incarnation||pass.sessionId!==input.sessionId||
+      pass.door!==input.door||pass.principal!==input.principal||pass.claimRevision!==input.claimRevision)throw new Error('turn');
+    if(pass.definition.hash!==active.rows[0]!.hash||!grantedVaultAreas(pass.definition.definition).includes(area))throw new Error('definition');
+    const assertLive=()=>{assertNotAborted();if(doorTurns.get(cap)!==pass||pass.expiry<=turnNow())throw new Error('turn')};assertLive();
+    const env={...process.env,LARES_AGENT_NAME:agent,LARES_AGENT_INCARNATION:incarnation} as NodeJS.ProcessEnv;
+    return await consoleSourceTransaction(pool as never,async db=>{
+     assertLive();await requireDoorClaim(db,{door:pass.door,principal:pass.principal,claimRevision:pass.claimRevision,memberId:pass.memberId},env);
+     const grant=await new PgGrantStore().captureUseWithExpiry(pass.memberId,pass.agent,{expectedRevision:pass.accessRevision,db:db as never});if(!grant)throw new Error('grant');
+     if(grant.validUntil!==null)retainSourceTransactionDeadline(db,grant.validUntil);
+     const found=await readFromArea(db,{memberId:pass.memberId,areaIds:pass.areaIds,area,operation,path:input.path,offset:input.offset,requestedHome:undefined,folder:input.folder,cursor:input.cursor,query:input.q},assertLive);
+     await checkConsoleSourceDeadlines(db);assertLive();return found as Record<string,unknown>;
+    },undefined,{deadlineAtMs:requestDeadline,beforeCommit:assertLive,afterCommit:assertLive});
+   }
    const cap=input.turnCapability,turnId=input.turnId,sequence=input.sequence,sessionId=input.sessionId,memberId=input.memberId,admissionNonce=input.admissionNonce,operation=input.operation,area=input.area,path=input.path,offset=input.offset,requestedHome=input.home,folder=input.folder,cursor=input.cursor,query=input.q;
    if(typeof cap!=='string'||typeof turnId!=='string'||!Number.isSafeInteger(sequence)||typeof sessionId!=='string'||typeof memberId!=='string'||typeof admissionNonce!=='string'||(operation!=='list'&&operation!=='read'&&operation!=='search')||(area!=='private'&&area!=='shared')||(operation==='read'&&typeof path!=='string')||(offset!==undefined&&(!Number.isSafeInteger(offset)||Number(offset)<0))||(requestedHome!==undefined&&(area!=='shared'||typeof requestedHome!=='string'||!/^vault:[A-Za-z0-9_-]{1,128}$/.test(requestedHome)))||
       (folder!==undefined&&(operation!=='list'||typeof folder!=='string'||folder.length>512))||(cursor!==undefined&&(operation!=='list'||!Number.isSafeInteger(cursor)||Number(cursor)<0))||
@@ -347,28 +443,8 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    const turn=turns.get(cap);if(!turn||turn.expiry<=turnNow()||turn.turnId!==turnId||turn.sequence!==sequence||turn.input.agent!==agent||turn.input.incarnation!==incarnation||turn.input.session!==sessionId||turn.input.member!==memberId||turn.input.admissionNonce!==admissionNonce)throw new Error('turn');
    const assertLive=()=>{assertNotAborted();if(turns.get(cap)!==turn||turn.expiry<=turnNow())throw new Error('turn')};assertLive();
    const sourceReadOptions={deadlineAtMs:requestDeadline,beforeCommit:assertLive,afterCommit:assertLive};
-   const result=await withConsoleVaultSourceRead({agent,incarnation,sessionId,memberId,admissionNonce},{sessionDefinition:turn.definition,areaIds:turn.areaIds},async(db)=>{
-    assertLive();await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");
-    const inventory=loadVaultStorageInventory();await verifyVaultStorageMetadata(db as never,inventory,true);assertLive();
-    const member=await currentMember(db as never,memberId);assertLive();if(!member)throw new Error('member');
-    const kind=area==='private'?'private':'shared',candidates=inventory.areas.filter(a=>a.kind===kind),vault=new PgVaultStore(),matches=[] as {areaId:string;revision:number}[];
-    for(const candidate of candidates){if(!turn.areaIds.includes(candidate.areaId))continue;const result=await db.query('SELECT revision FROM vault_areas WHERE id=$1 AND status=\'active\'',[candidate.areaId]);if(result.rows.length!==1)continue;const revision=Number(result.rows[0]!.revision);const binding=await vault.vaultAreaBinding(memberId,{areaId:candidate.areaId,expectedRevision:revision,permission:'use'},{db:db as never,requiredBackingKind:'git'});if(binding)matches.push({areaId:candidate.areaId,revision});}
-    if(matches.length!==1||(requestedHome!==undefined&&matches[0]!.areaId!==requestedHome.slice('vault:'.length)))throw new Error('area');const selected=matches[0]!,testPaths=socketOptions.vaultFilesForTests,backings=new Map([[inventory.backing.id,{kind:'git' as const,root:testPaths?.root??'/srv',areas:new Map(inventory.areas.map(a=>[a.areaId,{origin:testPaths?join(testPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]),files=new GuardedVaultFiles(vault,backings),ctx={memberId,areaId:selected.areaId,expectedRevision:selected.revision,db:db as never},reader:Reader={userId:memberId,store:kind==='private'?'brain':'atlas' as StoreName};
-    // A list is one page of at most NOTE_LIST_PAGE notes this reader may see. The folder's notes are read to
-    // drop hidden ones before the page is cut, so the cursor counts only visible notes. The caller pages on with `nextCursor`.
-    if(operation==='list'){
-     const page=await files.listPage(ctx,{folder:folder as string|undefined,cursor:cursor as number|undefined,limit:NOTE_LIST_PAGE},reader);assertLive();
-     return {notes:page.paths,...(page.nextCursor!==undefined?{nextCursor:page.nextCursor}:{})};
-    }
-    // The same keyword search the native doors use, over this area's files, filtered by the same reader.
-    if(operation==='search'){
-     const found=await files.search(ctx,query as string,reader);assertLive();
-     return {hits:found.hits.slice(0,VAULT_SEARCH_HITS),files:found.files,...(found.hits.length>VAULT_SEARCH_HITS?{more:true}:{})};
-    }
-    assertLive();const note=await files.read(ctx,path as string);assertLive();if(!visibleTo(note.content,reader))throw new Error('not found');const page=boundText(note.content,{limit:DEFAULT_READ_LIMIT,offset:Number(offset??0)});
-    if(!page.truncated&&page.note===undefined&&(offset??0)===0)return note;
-    return {...note,content:page.text,totalChars:page.totalChars,...(page.truncated?{truncated:true,nextOffset:page.nextOffset}:{}),...(page.note!==undefined?{note:page.note}:{})};
-   },pool as never,process.env,sourceReadOptions) as Record<string,unknown>;assertLive();return result;
+   const result=await withConsoleVaultSourceRead({agent,incarnation,sessionId,memberId,admissionNonce},{sessionDefinition:turn.definition,areaIds:turn.areaIds},async(db)=>readFromArea(db,{memberId,areaIds:turn.areaIds,area:area as 'private'|'shared',operation,path,offset,requestedHome,folder,cursor,query},assertLive)
+,pool as never,process.env,sourceReadOptions) as Record<string,unknown>;assertLive();return result;
   }
   if(op==='tracks.write'){
    const action=input.operation,rawInput=input.input,approval=object(input.approval);
@@ -451,7 +527,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
  try{const st=await lstat(runtimeSocket);if(!st.isSocket()||st.uid!==rootUid)throw new Error('path');const stale=await new Promise<boolean>(resolve=>{const c=createConnection(runtimeSocket);c.setTimeout(500,()=>{c.destroy();resolve(false)});c.once('connect',()=>{c.destroy();resolve(false)});c.once('error',(e:NodeJS.ErrnoException)=>resolve(e.code==='ECONNREFUSED'));});if(!stale)throw new Error('active');await unlink(runtimeSocket);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('keeper: Vault runtime socket unavailable');}
  await new Promise<void>((resolve,reject)=>{runtimeServer.once('error',reject);runtimeServer.listen(runtimeSocket,()=>{runtimeServer.off('error',reject);resolve()})});await chown(runtimeSocket,socketUid,socketGid);await chmod(runtimeSocket,0o660);
  }catch(error){for(const client of clients)client.destroy();await Promise.all([new Promise<void>(resolve=>server.close(()=>resolve())),new Promise<void>(resolve=>runtimeServer.close(()=>resolve()))]);throw error;}
- return async()=>{for(const client of clients)client.destroy();await Promise.all([new Promise<void>(resolve=>server.close(()=>resolve())),new Promise<void>(resolve=>runtimeServer.close(()=>resolve()))]);challenges.clear();pending.clear();turns.clear();runtimeRequests.clear();outsideResumes.clear()};
+ return async()=>{for(const client of clients)client.destroy();await Promise.all([new Promise<void>(resolve=>server.close(()=>resolve())),new Promise<void>(resolve=>runtimeServer.close(()=>resolve()))]);challenges.clear();pending.clear();turns.clear();doorTurns.clear();runtimeRequests.clear();outsideResumes.clear()};
 }
 export function consumePendingVaultReceipt(handle:string,input:Pick<Input,'agent'|'incarnation'|'session'|'member'|'admissionNonce'>):Pending|undefined{
  prune();const value=pending.get(handle);if(!value)return undefined;pending.delete(handle);if(value.expiry<=Date.now()||value.input.agent!==input.agent||value.input.incarnation!==input.incarnation||value.input.session!==input.session||value.input.member!==input.member||value.input.admissionNonce!==input.admissionNonce)return undefined;return value;

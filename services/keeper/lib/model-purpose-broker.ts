@@ -4,6 +4,7 @@ import { chmod, chown, lstat, mkdir, open, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type {Pool} from 'pg';
+import { isValidDoorClaim } from '@lares/agent-kit/door-claim';
 import { captureBudgetAuthorityReference, captureDoorBudgetAuthorityReference, validateBudgetAuthorityReference, type ConversationBudgetAuthorityReference, type DoorBudgetAuthorityReference, type DoorTurnRequest } from '@lares/agent-kit/budget-model-authority';
 import {PgBudgetAdmissionStore,type BudgetFinancialWriter,type GatewayModelRequestIdentity,type ModelPurposeClaimSource} from '@lares/agent-kit/budget-admission-store';
 import {GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH} from '@lares/agent-kit/gateway-admission-protocol';
@@ -423,13 +424,12 @@ export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurpo
       // the turn; Keeper finds the payer itself (its configured owner, checked against the claim).
       if(req.outcomeDigest!==EMPTY_DIGEST||req.payloadDigest!==modelPurposeDigest(input)||
         Object.keys(input).sort().join(',')!=='claimRevision,door,principal,sequence,sessionId,turnId'||
-        (input.door!=='slack'&&input.door!=='telegram')||typeof input.principal!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(input.principal)||
-        typeof input.claimRevision!=='string'||!/^[a-f0-9-]{36}$/.test(input.claimRevision)||
+        !isValidDoorClaim(input as never)||
         typeof input.sessionId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(input.sessionId)||
         typeof input.turnId!=='string'||!/^[A-Za-z0-9._:-]{1,128}$/.test(input.turnId)||
         !Number.isSafeInteger(input.sequence)||Number(input.sequence)<0)throw deny();
       if(!options.designatedOwnerId)throw deny();
-      const door:DoorTurnRequest={door:input.door,principal:input.principal,claimRevision:input.claimRevision,sessionId:input.sessionId,turnId:input.turnId,sequence:Number(input.sequence)};
+      const door:DoorTurnRequest={door:input.door as DoorTurnRequest['door'],principal:String(input.principal),claimRevision:String(input.claimRevision),sessionId:String(input.sessionId),turnId:String(input.turnId),sequence:Number(input.sequence)};
       const agent=String(req.agent),incarnation=String(req.incarnation),env=runtimeEnv(agent,incarnation);
       let reference!:DoorBudgetAuthorityReference,definition!:{hash:string;alias:string};
       await consoleSourceTransaction(pool,async db=>{
