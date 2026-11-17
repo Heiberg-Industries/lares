@@ -261,6 +261,9 @@ try:
  # The agent account-binding table came from the loop above, holds no credential column, and reapplies as a no-op.
  sql((repo/'services/box/sql/036_agent_account_bindings.sql').read_text())
  sql("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='agent_account_bindings') OR (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_account_bindings')<>8 OR EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='agent_account_bindings' AND column_name ~* '(secret|token|password|key|credential)') THEN RAISE EXCEPTION 'Agent account binding table missing, changed on reapply, or holding a credential column'; END IF; END $$")
+ # The person voice-profile table and the voice tables' owner columns came from the loop above, and reapply as a no-op.
+ sql((repo/'services/box/sql/037_person_voice_profiles.sql').read_text())
+ sql("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='person_voice_profiles') OR (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='person_voice_profiles')<>12 OR (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('voice_profile','voice_exemplar') AND column_name IN ('owner_member_id','connected_account_id','mapped_at'))<>5 THEN RAISE EXCEPTION 'Person voice-profile table or voice owner columns missing, or changed on reapply'; END IF; END $$")
  # Apply the production privilege helper to the exact migrated engine inventory. Its source is
  # mounted read-only into the existing crypto directory in this neutral role image.
  engine_privileges=root/'prepare-engine-privileges.mts'

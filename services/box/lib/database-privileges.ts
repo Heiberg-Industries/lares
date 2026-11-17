@@ -48,6 +48,7 @@ export const ENGINE_TABLE_PRIVILEGES = {
     "standing_facts", "studio_runs", "telegram_daily_log", "telegram_session_rotation",
     "trigger_schedules", "update_history", "user_aliases", "users", "vault_areas",
     "vault_backing_stores", "voice_exemplar", "voice_profile", "web_inbox", "workflow_jobs",
+    "person_voice_profiles",
   ],
   financial: FINANCIAL_TABLES,
   // Written by the application role only; the financial role reads three named columns of it.

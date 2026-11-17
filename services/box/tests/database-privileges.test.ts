@@ -232,6 +232,24 @@ describe("engine database privilege foundation", () => {
     expect((await app.query("DELETE FROM agent_account_bindings WHERE agent='binding-agent'")).rowCount).toBe(1);
   });
 
+  it("lets the application login keep person voice profiles and link voice rows, and keeps custody out",async()=>{
+    await admin.query("INSERT INTO orgs(id,display_name) VALUES('voice-org','Voice fixture')");
+    await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('voice-member','Fixture member','voice-org','member','active')");
+    await admin.query(`INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status)
+      VALUES('voice-account','voice-member','google','https://accounts.example','voice-subject','Fixture','ok')`);
+    expect((await app.query("INSERT INTO person_voice_profiles(owner_member_id,core,created_from) VALUES('voice-member','Warm.','mapping')")).rowCount).toBe(1);
+    expect((await app.query("UPDATE person_voice_profiles SET revision=revision+1 WHERE owner_member_id='voice-member'")).rowCount).toBe(1);
+    // The mapping command runs as this login: it reads the stored account address and links the voice rows.
+    expect((await app.query("SELECT email_address FROM oauth_tokens WHERE false")).rows).toEqual([]);
+    expect((await app.query("INSERT INTO voice_profile(id,owner_member_id,connected_account_id) VALUES('member@example.invalid','voice-member','voice-account')")).rowCount).toBe(1);
+    expect((await app.query("INSERT INTO voice_exemplar(id,lang,text,vector,mailbox,owner_member_id,connected_account_id) VALUES('voice-ex','en','Hi','[]','member@example.invalid','voice-member','voice-account')")).rowCount).toBe(1);
+    expect((await financial.query("SELECT owner_member_id FROM person_voice_profiles")).rows).toEqual([{owner_member_id:'voice-member'}]);
+    await expectDenied(()=>outsideCustody.query("SELECT owner_member_id FROM person_voice_profiles"));
+    expect((await app.query("DELETE FROM voice_exemplar WHERE id='voice-ex'")).rowCount).toBe(1);
+    expect((await app.query("DELETE FROM voice_profile WHERE id='member@example.invalid'")).rowCount).toBe(1);
+    expect((await app.query("DELETE FROM person_voice_profiles WHERE owner_member_id='voice-member'")).rowCount).toBe(1);
+  });
+
   it("allows custody to lock retained Vault metadata without changing authority or reading content",async()=>{
     await admin.query("INSERT INTO orgs(id,display_name) VALUES('metadata-org','Metadata fixture')");
     await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('metadata-owner','Fixture owner','metadata-org','owner','active')");

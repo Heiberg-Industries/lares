@@ -4,6 +4,8 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- `sudo lares voices map` reports which member and connected account each mailbox's writing voice belongs to, and changes nothing. A mailbox is matched to an account only when exactly one connected account has exactly that address as Google reported it; otherwise it is held, and the report says why. Add `--map <mailbox>=<account id>` to link a held mailbox yourself, and `--apply` to make the changes; they are made together and checked, or not at all. `--apply` also copies the shared default card into the installation owner's new writing profile, when the owner is clear. Agents do not use these profiles yet: drafting works exactly as before.
+
 - `sudo lares doctor --test-model` now works on a new installation with no extra flags. It asks your model provider whether it accepts the installation's provider key (a free call that does no model work) and says plainly when the key was refused. It sends no test completion: the built-in gateway takes only calls the spending limits have approved, and the doctor cannot ask for that. Before, the command was refused unless you named a gateway, an alias and a key file, and even then it could not reach or use the built-in gateway.
 
 - `sudo lares provider-key set --key-file <path>` replaces the installation's model provider key. It writes the key file as the installer does (owned by root, mode 0440), never prints the key, and restarts only the model gateway. Until now a rerun of the installer kept the old key and there was no supported way to change it.

@@ -446,6 +446,12 @@ const SEED_ROWS: SeedRow[] = [
       [`fixture-shared-${index}`,member,`fixture-account-${index+1}`,`fixture-account-${index+1}-resource`,`44444444-4444-4444-8444-${String(index+1).padStart(12,'0')}`]),
   ]),
 
+  // ── 037_person_voice_profiles.sql — one writing profile per member ────────────────────────
+  ...[FIXTURE_OWNER, FIXTURE_SECOND].map((member) =>
+    row("person_voice_profiles", "owner_member_id", member,
+      `INSERT INTO person_voice_profiles (owner_member_id, core, created_from) VALUES ($1, 'Fixture voice.', 'console')`,
+      [member])),
+
   // Outside custody is private person data, so both members have independent encrypted
   // accounts, immutable revisions, and stage-operation evidence in the identity fixture.
   ...[FIXTURE_OWNER, FIXTURE_SECOND].flatMap((member, index) => {
