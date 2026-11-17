@@ -14,8 +14,6 @@
  * names nobody, even when the same raw id is on another list. Fail-closed everywhere: an unset or
  * blank list admits nobody, never everybody.
  */
-import { CONSOLE_SESSION_AUTHENTICATOR } from "./door-authority.js";
-
 /**
  * The doors a principal may arrive through. `console` is web chat — the agent's own HTTP door,
  * reached by the console on behalf of a signed-in member.
@@ -57,7 +55,9 @@ export type ChannelName = "slack" | "telegram" | "console";
 export const AUTHENTICATOR_FOR: Readonly<Record<ChannelName, string>> = {
   slack: "slack-webhook",
   telegram: "telegram-webhook",
-  console: CONSOLE_SESSION_AUTHENTICATOR,
+  // The same string as `CONSOLE_SESSION_AUTHENTICATOR` (`door-authority.ts`), the one the gate
+  // trusts; `tests/principals.test.ts` and keeper's `door-claims.test.ts` hold the two equal.
+  console: "lares-console",
 };
 
 /** The authenticator web chat's door stamps on a session the console admitted. */

@@ -73,7 +73,7 @@ export async function tryClaim(kind:ChatDoor,text:string,sender:string,privateHu
 /** Every managed gated-tool approval consult rechecks the resource, even a continuation
  * resumed through eve's authenticated HTTP API rather than a native chat callback. */
 /** The authenticator the agent's own HTTP door stamps on a session the console vouched for
- * (`CONSOLE_AUTHENTICATOR` in `principals.ts` is this same constant). */
+ * (`CONSOLE_AUTHENTICATOR` in `principals.ts`; a test keeps them equal). */
 export const CONSOLE_SESSION_AUTHENTICATOR='lares-console';
 export const NO_OWNER_CONNECTION='An applied owner connection is required';
 interface SessionAuthShape {current?:{authenticator?:string}|null;initiator?:{authenticator?:string}|null}
