@@ -21,8 +21,7 @@
 
 Terms used below, each with one meaning. The **owner** is the person an installation belongs to.
 A **member** is any other person the installation accepts. A **card** is an approval an agent
-shows before it acts. The **kit** is the shared package `packages/agent-kit`. `cos` stands for
-`services/chief-of-staff`, `creative` for `services/creative`.
+shows before it acts. The **kit** is the shared package `packages/agent-kit`. `cos` stands for `services/chief-of-staff`.
 
 ## Context
 
@@ -112,7 +111,7 @@ This section records what the code does today, so the build starts from facts.
     64 KiB, and at most 64 KiB of taught-skill text enters one turn. Over the limit is an error,
     never a cut.
 13. **The fingerprint is the approval.** The save writes a hash of exactly the approved body into
-    the header; nobody types it. When a conversation starts, the hash is computed again. If it
+    the header; nobody types it. When a session starts, the hash is computed again. If it
     does not match, the skill is not offered and a signal is recorded. So a note edited by hand,
     or by any write that bypassed the approved save, stops working until it is approved again. A
     test proves both sides: a changed body is not offered and the signal is recorded; a matching
@@ -122,8 +121,8 @@ This section records what the code does today, so the build starts from facts.
     the agent keeps working.
 15. **Where skills live.** A member's skills live in that member's private Vault area and are used
     only in that member's conversations. Shared skills live in the shared area and only the owner
-    approves them. A member's skill becomes shared only when the owner copies it into the shared
-    area, behind one card; the member's own copy is untouched. The version record is the Vault
+    approves them. A member's skill becomes shared only when the owner, after the member asks, copies
+    it into the shared area, behind one card; the member's own copy is untouched. The version record is the Vault
     commit; retiring a skill removes the note, and history keeps it.
 16. **Which skills a conversation sees.** Per conversation, a skill is offered only when the person
     owns its area or holds a grant to it, the agent's grants cover its `requires`, its fingerprint
@@ -131,7 +130,7 @@ This section records what the code does today, so the build starts from facts.
     `packages/agent-kit/src/shared-room.ts` lists it), and the conversation is not a private
     console conversation.
 17. **Saving a skill.** An agent saves a skill only through an ask-first tool whose card shows the
-    whole text. If the conversation has read outside text (the per-turn record in Context), the
+    whole text. If the conversation has read outside text, such as an email or a web page, the
     card says so. Saving is still allowed; the person decides with the whole text in front of
     them. There is no trial state: using a way of working before saving it is simply the
     conversation.
@@ -174,8 +173,6 @@ This section records what the code does today, so the build starts from facts.
    text.
 4. **Importing skills** from a package or a repository, and a member proposing a skill for the
    owner to approve. Neither is planned in this record.
-5. **A brand that is removed**: what happens to work that named it is settled when the Brands page
-   is built.
 
 ## Cross-references
 
