@@ -247,14 +247,22 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "updated_by",
     idKind: "actor",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "conservative default: voice_profile is a singleton (id text NOT NULL DEFAULT 'default'; learn_key defaults to a specific agent's own name, not a mailbox address or a person id); updated_by is the only candidate person-column and defaults to 'system' — an unsure call.",
+    reason: "conservative default: updated_by names whoever last edited a card (the console writes the editor's sign-in address) and defaults to 'system' — an unsure call. The rows are the shared `default` card plus one card per mailbox address; sql/037_person_voice_profiles.sql adds `owner_member_id`, filled only for the mailboxes the owner mapped, and the erase removes those mapped cards with their member.",
   },
   {
     table: "voice_exemplar",
     scope: "resolved",
     clearedWholeOnly: true,
-    reachedBy: "cannot be reached at all: sql/001_baseline.sql creates it as (id, lang, text, vector, source_message_id, included, created_at, mailbox) — no person column; `mailbox` is the address the mail was sent from, which does not resolve to a registered person. On a single-member installation the whole corpus is the owner's own learned exemplars and is cleared in full when the owner is erased; left untouched for any other identity.",
+    reachedBy: "sql/001_baseline.sql creates it with no person column; `mailbox` is the address the mail was sent from, which does not itself resolve to a registered person. sql/037_person_voice_profiles.sql adds `owner_member_id`, filled only for the mailboxes the owner mapped (`lares voices map`); the erase removes those rows with their member, and the foreign key removes any it missed when the register row goes. Rows with no member (never mapped, held, or the old blended set) are cleared in full only when the person erased is the installation's one member, and left untouched otherwise.",
     createdBy: `${BOX}/001_baseline.sql`,
+  },
+  {
+    table: "person_voice_profiles",
+    scope: "member",
+    column: "owner_member_id",
+    idKind: "registry",
+    createdBy: `${BOX}/037_person_voice_profiles.sql`,
+    reason: "A member's own writing profile: one row per member, keyed on the register's id with a foreign key, erased with them.",
   },
 
   {

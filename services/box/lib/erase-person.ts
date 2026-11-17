@@ -364,12 +364,13 @@ async function situationalOutstanding(
   if (!soleMember) {
     const corpus = MEMBER_SCOPE.filter((t) => t.clearedWholeOnly);
     for (const entry of corpus) {
-      const n = await countWhere(q, `SELECT count(*)::int AS n FROM ${entry.table}`);
+      // Only the samples linked to nobody: linked ones go with their own member (step 3.5).
+      const n = await countWhere(q, `SELECT count(*)::int AS n FROM ${entry.table} WHERE owner_member_id IS NULL`);
       if (n > 0) {
         lines.push(
-          `The ${n} sample${n === 1 ? "" : "s"} of the learned writing voice. They record whose ` +
-            "words they came from nowhere at all, and somebody else is still a member here, so " +
-            "clearing them would take away a writing voice that may not be this person's.",
+          `The ${n} sample${n === 1 ? "" : "s"} of the learned writing voice that ${n === 1 ? "is" : "are"} not ` +
+            `linked to any member. ${n === 1 ? "It does" : "They do"} not record whose words ${n === 1 ? "it" : "they"} came from, and somebody else is still a member here, so ` +
+            `clearing ${n === 1 ? "it" : "them"} would take away a writing voice that may not be this person's.`,
         );
       }
     }
@@ -604,6 +605,7 @@ interface PlannedStep {
  *   2. the tables reached through those held ids;
  *   2.5. the path-keyed sync tables, only when `paths` was given;
  *   3. the whole-corpus tables, when this person is the only member left;
+ *   3.5. the mailbox writing cards and examples linked to this person;
  *   4. every member table, matched on every spelling this person has;
  *   5. the identity register itself, aliases first, LAST of all.
  */
@@ -696,6 +698,24 @@ async function buildPlan(
     }
   }
 
+  // 3.5 — a mailbox's writing card and examples that the owner linked to this person
+  // (sql/037_person_voice_profiles.sql, `lares voices map`). Neither table is a member table in
+  // the inventory (one names an editor, the other no person at all), so the link column is read
+  // here by name. The examples are skipped when step 3 already removes the whole collection.
+  for (const [table, how] of [
+    ["voice_profile", "removed — the writing card of a mailbox linked to this person"],
+    ["voice_exemplar", "removed — writing examples from a mailbox linked to this person"],
+  ] as const) {
+    if (table === "voice_exemplar" && soleMember) continue;
+    const entry = MEMBER_SCOPE.find((t) => t.table === table)!;
+    const rows = await countWhere(db, `SELECT count(*)::int AS n FROM ${table} WHERE owner_member_id = $1`, [person.id]);
+    steps.push({
+      plan: { table, scope: entry.scope, rows, how },
+      rows,
+      write: { sql: `DELETE FROM ${table} WHERE owner_member_id = $1`, params: [person.id] },
+    });
+  }
+
   // 4 — every member table except the register, in inventory order.
   for (const entry of MEMBER_SCOPE) {
     if (entry.scope !== "member") continue;
@@ -738,11 +758,14 @@ async function memberStep(
   person: PersonIdentity,
 ): Promise<PlannedStep> {
   const spellings = spellingsFor(person, entry.idKind!);
+  // A mailbox card linked to this person is removed in step 3.5, so it is not also counted here
+  // as a card whose editor's name is replaced ($2 is the person's id in both queries below).
+  const linkedElsewhere = entry.table === "voice_profile" ? " AND owner_member_id IS DISTINCT FROM $2" : "";
   const where = matchClause(entry);
   const rows = await countWhere(
     db,
-    `SELECT count(*)::int AS n FROM ${entry.table} WHERE ${where}`,
-    [spellings],
+    `SELECT count(*)::int AS n FROM ${entry.table} WHERE ${where}${linkedElsewhere}`,
+    linkedElsewhere ? [spellings, person.id] : [spellings],
   );
 
   if (eraseHandlingFor(entry) === "retire-and-redact-budget-liability") {
@@ -763,8 +786,9 @@ async function memberStep(
   }
 
   if (entry.idKind === "actor") {
+    const erasedParam = linkedElsewhere ? "$3" : "$2";
     const sets = personColumnsOf(entry)
-      .map((c) => `${c} = CASE WHEN ${c} = ANY($1::text[]) THEN $2::text ELSE ${c} END`)
+      .map((c) => `${c} = CASE WHEN ${c} = ANY($1::text[]) THEN ${erasedParam}::text ELSE ${c} END`)
       .join(", ");
     return {
       plan: {
@@ -775,8 +799,8 @@ async function memberStep(
       },
       rows,
       write: {
-        sql: `UPDATE ${entry.table} SET ${sets} WHERE ${where}`,
-        params: [spellings, ERASED],
+        sql: `UPDATE ${entry.table} SET ${sets} WHERE ${where}${linkedElsewhere}`,
+        params: linkedElsewhere ? [spellings, person.id, ERASED] : [spellings, ERASED],
       },
     };
   }
