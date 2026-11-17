@@ -1,0 +1,33 @@
+{
+  "release": "2026-11-17-rc.15.test.3",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:7616d229a44022dd23246e22a0025e19743106726c7642defe7ed13b51bdf9b9",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:ae7d065c03523c0edcea4be76d4b6051fbead2d1e8356a64e1b65ddfece259b5",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:ef4643eff437385df3b3b83a6b4636e4d2071cb92eaf99e054cc47dffb69eea7",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:3a8446f1f985cdd2fb1ceb7410d19bcadcf119faf1e95f0603e93bea4e371281",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:5a7c7ab627ca5aa0f1805388bf1edca791df53ec35553bbb87429b6467411cfd",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:bf848c001e4db9e2f1ae8fa3c961439384ccd662a76c05e99f955adf68e138ac",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:a08eb6347da653e039993be9e08ed1cfc9d34ce82352cc672eb7afed09c92fba"
+  },
+  "migrations": {
+    "box": "036_agent_account_bindings.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "This is a test release, not a finished rc.15. Use it only to test it on a test server; see docs/releases/rc.15.test.3-notes.md for what is unfinished.",
+    "A server on rc.12 or earlier cannot update to this release in place: the update refuses it before changing anything, because it lacks the operator database password file (/etc/lares/operator/database-password) that the update checks first, and says that the Compose, credentials, or database do not match one installed Lares target. This follows from the code; it has not been run against a real rc.12 server, and moving such a server to this release has not been tested.",
+    "Put this test release on a test server by a fresh install followed by a restore of a backup made on rc.14 (or an rc.14 test release), or, from rc.15.test.2, by an in-place lares update. The in-place update from rc.15.test.1 to rc.15.test.2 has been run on a real test server and lares doctor then reported exactly that release with every check passing; it needed backups switched on and verified first, because the update takes a backup before it starts and refuses while none is verified. The in-place update from rc.15.test.2 to this release has not been run on a real server yet, and neither has an in-place update from rc.14.",
+    "A backup made on rc.14 restores onto this release; a backup in any other layout is refused with nothing changed. Restore right after the install, before lares budget setup: a restore onto a server whose spending limits are already set up finishes with spending closed and says to keep the agents stopped, and this release has no command that reopens it.",
+    "This update ends open web-chat conversations, and so does every later save of a change to a running agent. It stops the Keeper and the agents while it upgrades their stores; if it fails after it has begun upgrading the stores they stay stopped until the same update is run again, and a failure before that starts them again on the previous release.",
+    "Before changing anything, the update refuses a server where any agent store is neither exactly as rc.14 left it nor already at this release (it names the store and how many schema steps it found), and one whose database is not set to UTC.",
+    "On an agent another member can use, or one that the installation's owner does not own, model calls outside a conversation (scheduled briefs, mail triage, a tool's own model call) are now refused; only an agent that the installation's owner owns and nobody else can use makes them.",
+    "The e-mail door is gone. An agent definition that still has an email door is refused, and the agent keeps its last valid definition: delete the door from agent.json, then choose the agent's mailbox on its Access tab.",
+    "A chief of staff's Slack app made before rc.15.test.1 needs the bot permission im:write added under OAuth & Permissions in Slack, and the app installed to the workspace again; until then its messages that start on a schedule are expected to be refused by Slack.",
+    "Only Anthropic models are on the tested path in this release. Setting an OpenAI or other model by hand is not, and chat will be refused.",
+    "Selective import from an older installation can only preview; it cannot write anything yet.",
+    "The note list tool now returns at most 200 notes per call, with a cursor for the next page, and no longer returns a note count. An agent's duties or skills that expect one list call to return a whole area see only the first page."
+  ]
+}
