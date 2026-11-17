@@ -75,6 +75,11 @@ function escapeMrkdwn(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** The reverse of `escapeMrkdwn`, for counting characters as the input has them. */
+function unescapeMrkdwn(text: string): string {
+  return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
 /**
  * The call's whole input as the owner reads it: pretty JSON in a code block, escaped, within one
  * Slack section. Over the limit it is cut, marked "…", and the card says how many characters are
@@ -89,7 +94,10 @@ function wholeInputText(input: unknown): string | undefined {
   // Room for the fences, the "…" and the widest notice; never stop inside an escaped character.
   const room = SLACK_SECTION_TEXT_LIMIT - fenced("…").length - shortenedNotice(escaped.length).length;
   const shown = escaped.slice(0, room).replace(/&[a-z]*$/u, "");
-  return fenced(`${shown}…`) + shortenedNotice(escaped.length - shown.length);
+  // Count the hidden characters in the input as written, not in its escaped form, so the
+  // notice never says more is hidden than is.
+  const hidden = json.length - unescapeMrkdwn(shown).length;
+  return fenced(`${shown}…`) + shortenedNotice(hidden);
 }
 
 /** eve's compact card for the call without its input, with Lares's text in a section under it. */

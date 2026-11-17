@@ -346,6 +346,19 @@ describe("a tool without a Lares summary shows its whole input", () => {
     expect(shown).toMatch(/…\n```\n\n— shortened — \d+ characters are not shown\.$/u);
   });
 
+  it("counts the hidden characters as the input has them, not as Slack escapes them", () => {
+    // `&`, `<` and `>` each take 4 or 5 characters once escaped; the hidden part is full of them.
+    const input = { body: "y".repeat(3_000) + "&<>".repeat(500) };
+    const { parts } = render(approval("some_tool_nobody_summarised", input));
+    const shownText = (blocksOf(parts)[1] as unknown as { text: { text: string } }).text.text;
+    const match = /^```\n([\s\S]*)…\n```\n\n— shortened — (\d+) characters are not shown\.$/u.exec(shownText);
+    expect(match).not.toBeNull();
+    const visible = match![1]!.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    const json = JSON.stringify(input, null, 2);
+    expect(json.startsWith(visible)).toBe(true);
+    expect(Number(match![2])).toBe(json.length - visible.length);
+  });
+
   it("a call with no input keeps eve's card as it is", () => {
     const { parts, fallback } = render(approval("some_tool_nobody_summarised", {}));
     expect(parts).toEqual(fallback);
