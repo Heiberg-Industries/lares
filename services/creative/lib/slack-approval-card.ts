@@ -28,8 +28,13 @@
  * the kit caps the text at 2,800 characters and says so on the card when it cuts, so the click
  * stays small.
  *
- * A tool WITHOUT a Lares summary keeps eve's card untouched, raw input preview included: its
- * title is a generic one, and the request is the only complete thing the owner has to read.
+ * A tool WITHOUT a Lares summary (an outside tool among them) gets the same compact card with the
+ * WHOLE call input under it, as JSON in a code block: its title is a generic one, and the request
+ * is the only complete thing the owner has to read. eve 1.0.1's own preview would not do: it shows
+ * at most ten arguments and about 1,500 characters, and cuts every value at 500. The input is cut
+ * only when it does not fit in one Slack section (3,000 characters), and then the card says how
+ * much is not shown (`shortenedNotice`), as eve's "Tool input" message on rc.10 cut at about the
+ * same length. A call with no input at all keeps eve's card as it is.
  *
  * The renderer changes what is shown, never what a click does. eve's controls pass through
  * exactly as `next` rendered them, which eve checks: a result that adds, drops or alters a
@@ -50,7 +55,7 @@ import {
   type SlackInteractionCard,
   type SlackInteractionCardParts,
 } from "eve/channels/slack";
-import { coversApproval, detailsForApproval } from "@lares/agent-kit/approval-summary";
+import { coversApproval, detailsForApproval, shortenedNotice } from "@lares/agent-kit/approval-summary";
 
 /** Slack refuses a section whose text is longer than this. The kit stays under it on its own
  *  (`DETAILS_MAX_LENGTH`); this is the check that it did. */
@@ -65,6 +70,45 @@ function withoutCallInput(card: SlackInteractionCard): SlackInteractionCard {
   return { ...card, interaction: { ...card.interaction, call: rest as typeof call } };
 }
 
+/** Slack mrkdwn reads `<…>` as a link or mention and `&` as an entity, inside a code block too. */
+function escapeMrkdwn(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * The call's whole input as the owner reads it: pretty JSON in a code block, escaped, within one
+ * Slack section. Over the limit it is cut, marked "…", and the card says how many characters are
+ * not shown. `undefined` when there is no input to show.
+ */
+function wholeInputText(input: unknown): string | undefined {
+  const json = JSON.stringify(input ?? {}, null, 2);
+  if (json === undefined || json === "{}") return undefined;
+  const escaped = escapeMrkdwn(json);
+  const fenced = (body: string) => "```\n" + body + "\n```";
+  if (fenced(escaped).length <= SLACK_SECTION_TEXT_LIMIT) return fenced(escaped);
+  // Room for the fences, the "…" and the widest notice; never stop inside an escaped character.
+  const room = SLACK_SECTION_TEXT_LIMIT - fenced("…").length - shortenedNotice(escaped.length).length;
+  const shown = escaped.slice(0, room).replace(/&[a-z]*$/u, "");
+  return fenced(`${shown}…`) + shortenedNotice(escaped.length - shown.length);
+}
+
+/** eve's compact card for the call without its input, with Lares's text in a section under it. */
+function compactCardWith(
+  card: SlackInteractionCard,
+  next: (card: SlackInteractionCard) => SlackInteractionCardParts,
+  sectionText: string,
+): SlackInteractionCardParts {
+  const parts = next(withoutCallInput(card));
+  const section: BlockKitBlock = { type: "section", text: { type: "mrkdwn", text: sectionText } };
+  return {
+    controls: {
+      blocks: [...parts.controls.blocks, section],
+      // The notification preview and screen readers get the text too, not the title alone.
+      text: `${parts.controls.text}\n${sectionText}`,
+    },
+  };
+}
+
 /**
  * `renderers.interactionCard` for the Slack door. Exported on its own so tests can call it with
  * eve's real default card as `next`.
@@ -75,26 +119,23 @@ export function approvalInteractionCard(
 ): SlackInteractionCardParts {
   const { call, request } = card.interaction;
   if (request.kind !== "approval" || call === undefined) return next(card);
-  // No Lares summary: eve's card as it is, with the request on it.
-  if (!coversApproval(call.name)) return next(card);
+  // No Lares summary: the whole input under eve's compact card. No input: eve's card as it is.
+  if (!coversApproval(call.name)) {
+    const whole = wholeInputText(call.input);
+    return whole === undefined ? next(card) : compactCardWith(card, next, whole);
+  }
 
   const draft = detailsForApproval(call.name, call.input);
   // Never cut what is being authorised without saying so. The kit shortens and says so; if a
-  // text ever arrives over Slack's limit anyway, show eve's own card rather than a silent cut.
-  if (draft !== undefined && draft.length > SLACK_SECTION_TEXT_LIMIT) return next(card);
+  // text ever arrives over Slack's limit anyway, show the whole input instead of a silent cut.
+  if (draft !== undefined && draft.length > SLACK_SECTION_TEXT_LIMIT) {
+    const whole = wholeInputText(call.input);
+    return whole === undefined ? next(card) : compactCardWith(card, next, whole);
+  }
 
-  const parts = next(withoutCallInput(card));
   // A summarised tool with nothing more to show: the card alone, without the raw input.
-  if (draft === undefined) return { controls: parts.controls };
-
-  const draftBlock: BlockKitBlock = { type: "section", text: { type: "mrkdwn", text: draft } };
-  return {
-    controls: {
-      blocks: [...parts.controls.blocks, draftBlock],
-      // The notification preview and screen readers get the draft too, not the title alone.
-      text: `${parts.controls.text}\n${draft}`,
-    },
-  };
+  if (draft === undefined) return { controls: next(withoutCallInput(card)).controls };
+  return compactCardWith(card, next, draft);
 }
 
 /** The renderer the Slack door installs. */

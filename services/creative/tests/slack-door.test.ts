@@ -415,7 +415,7 @@ describe("what the door installs on eve 1.0", () => {
     expect(answeredText).not.toContain("rich_text");
   });
 
-  it("a tool without a Lares summary keeps eve's own card", async () => {
+  it("a tool without a Lares summary shows its whole input under eve's compact card", async () => {
     const mod = await freshModule();
     const { renderRequestCard } = await import("../node_modules/eve/dist/src/public/channels/slack/request-card-render.js");
     const { composeInteractionCards } = await import("../node_modules/eve/dist/src/public/channels/slack/renderers.js");
@@ -427,11 +427,14 @@ describe("what the door installs on eve 1.0", () => {
       },
       destination: "thread", audience: "private", view: {},
     } as never, undefined);
-    expect(rendered.parts).toEqual(rendered.fallback);
-    // eve 1.0.1 shows the raw input as a preview inside the card, beside the buttons.
+    // Not eve's 1.0.1 card, whose preview cuts long values: the whole input, in a code block.
+    expect(rendered.parts).not.toEqual(rendered.fallback);
+    const blocks = rendered.parts.controls.blocks as { type: string }[];
+    expect(blocks.map((b) => b.type)).toEqual(["card", "section"]);
     const shown = JSON.stringify(rendered.parts.controls);
-    expect(shown).toContain("rich_text");
     expect(shown).toContain("target");
+    expect(shown).toContain("```");
+    expect(shown).not.toContain("rich_text");
   });
 });
 

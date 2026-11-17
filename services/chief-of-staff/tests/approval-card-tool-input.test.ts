@@ -283,34 +283,72 @@ describe("a summarised tool's card never shows the raw tool input", () => {
   });
 });
 
-describe("a tool without a Lares summary keeps eve's own card", () => {
-  it("is eve's default, with eve's preview of the raw input inside the card", () => {
-    const { parts, fallback } = render(approval("some_tool_nobody_summarised", { target: "x" }));
-    expect(parts).toEqual(fallback);
+describe("a tool without a Lares summary shows its whole input", () => {
+  it("is eve's compact card with the whole input under it, and no eve preview", () => {
+    const interaction = approval("some_tool_nobody_summarised", { target: "x" });
+    const { parts, fallback } = render(interaction);
+    // eve's own card for this request shows only its preview inside the card; this one is ours.
+    expect(text(fallback)).toContain("rich_text");
+    expect(text(parts)).not.toBe(text(fallback));
+    expect(controlsOf(parts)).toEqual(controlsOf(fallback));
 
-    // eve 1.0.1: one `container` holding the title, the input preview and the buttons.
-    const container = blocksOf(parts).find((b) => b.type === "container") as { child_blocks?: Block[] } | undefined;
-    expect(container?.child_blocks?.map((b) => b.type)).toEqual(["rich_text", "actions"]);
-    expect(text(container?.child_blocks?.[0])).toContain("target");
+    const blocks = blocksOf(parts);
+    expect(blocks.map((b) => b.type)).toEqual(["card", "section"]);
+    expect(blocks[0]).toEqual(compactCardFor(interaction).controls.blocks[0]);
+    const whole = (blocks[1] as unknown as { text: { type: string; text: string } }).text;
+    expect(whole.type).toBe("mrkdwn");
+    expect(whole.text).toBe('```\n{\n  "target": "x"\n}\n```');
+    expect(text(parts)).not.toContain("rich_text");
+    expect(parts.details).toBeUndefined();
     expect(buttons(parts)).toEqual([
-      { label: "Approve", value: "approve" },
       { label: "Deny", value: "deny" },
+      { label: "Approve", value: "approve" },
     ]);
   });
 
-  // An outside tool's title shortens values and drops arguments, and the request was built by a
-  // model for a server nobody reviewed, so its card stays eve's own: every argument listed. Since
-  // eve 1.0.1 eve's preview cuts a value at 500 characters and marks the cut with "..." (it lists
-  // up to ten arguments and about 1,500 characters in all, then says how many more there are).
-  it("an outside tool keeps eve's card: every argument listed, a long value cut with a mark", () => {
+  // An outside tool's title shortens values and drops arguments ("see the full request below"),
+  // and the request was built by a model for a server nobody reviewed. The whole input has to be
+  // on the card: eve 1.0.1's own preview would cut this value at 500 characters.
+  it("an outside tool keeps every argument and the whole long value", () => {
     registerOutsideConnections(["registry"]);
     const input = { a1: "x".repeat(500) + "TAIL_MARKER", a2: 2, a3: 3, a4: 4, a5: 5, a6: 6, a7: 7, a8: "EIGHTH_ARG" };
-    const { parts, fallback } = render(approval("registry__create_note", input));
-    expect(parts).toEqual(fallback);
-    for (const key of Object.keys(input)) expect(text(parts)).toContain(`"${key}"`);
+    const { parts } = render(approval("registry__create_note", input));
+    expect(text(parts)).toContain("TAIL_MARKER");
     expect(text(parts)).toContain("EIGHTH_ARG");
-    expect(text(parts)).toContain("x...");
-    expect(text(parts)).not.toContain("TAIL_MARKER");
+    expect(text(parts)).not.toContain("rich_text");
+    expect(buttons(parts).map((b) => b.value)).toEqual(["deny", "approve"]);
+  });
+
+  it("keeps the whole input after the request is answered or ends", () => {
+    registerOutsideConnections(["registry"]);
+    const input = { a1: "x".repeat(600) + "TAIL_MARKER" };
+    for (const ending of [settled("accepted", "approve"), settled("declined", "deny"), settled("withdrawn")]) {
+      const { parts } = render(approval("registry__create_note", input, ending), "U0000000000");
+      expect(text(parts)).toContain("TAIL_MARKER");
+      expect(buttons(parts)).toEqual([]);
+      expect(text(parts)).not.toContain("eve_input:");
+    }
+  });
+
+  it("escapes Slack markup in the input, so it is read as typed", () => {
+    const { parts } = render(approval("some_tool_nobody_summarised", { note: "<!channel> & <https://example.com|x>" }));
+    const shown = text(blocksOf(parts)[1]);
+    expect(shown).toContain("&lt;!channel&gt; &amp; &lt;https://example.com|x&gt;");
+    expect(shown).not.toContain("<!channel>");
+  });
+
+  it("cuts an input longer than one Slack section, says how much is not shown, and stays under the limit", () => {
+    const input = { body: "y".repeat(5_000) + "END_MARKER" };
+    const { parts } = render(approval("some_tool_nobody_summarised", input));
+    const shown = (blocksOf(parts)[1] as unknown as { text: { text: string } }).text.text;
+    expect(shown.length).toBeLessThanOrEqual(3_000);
+    expect(shown).not.toContain("END_MARKER");
+    expect(shown).toMatch(/…\n```\n\n— shortened — \d+ characters are not shown\.$/u);
+  });
+
+  it("a call with no input keeps eve's card as it is", () => {
+    const { parts, fallback } = render(approval("some_tool_nobody_summarised", {}));
+    expect(parts).toEqual(fallback);
   });
 
   it("a question is not an approval: untouched", () => {
@@ -324,19 +362,20 @@ describe("a tool without a Lares summary keeps eve's own card", () => {
 });
 
 describe("the renderer never breaks a card", () => {
-  it("falls back to eve's card rather than cut a draft silently, if one ever arrives over Slack's limit", async () => {
+  it("shows the whole input rather than cut a draft silently, if one ever arrives over Slack's limit", async () => {
     vi.resetModules();
     vi.doMock("@lares/agent-kit/approval-summary", () => ({
       coversApproval: () => true,
       detailsForApproval: () => "y".repeat(3_001),
+      shortenedNotice: (hidden: number) => `\n\n— shortened — ${hidden} characters are not shown.`,
     }));
     try {
       const { approvalInteractionCard: withLongDraft } = await import("../lib/slack-approval-card.js");
-      const eveDefault: SlackInteractionCardParts = {
-        controls: { blocks: [{ type: "card" }], text: "title" },
-        details: { blocks: [{ type: "container" }], text: "raw" },
-      };
-      expect(withLongDraft(cardFor(approval("gmail_send", MAIL)), () => eveDefault)).toBe(eveDefault);
+      const eveDefault: SlackInteractionCardParts = { controls: { blocks: [{ type: "card" }], text: "title" } };
+      const parts = withLongDraft(cardFor(approval("gmail_send", MAIL)), () => eveDefault);
+      expect(text(parts)).not.toContain("yyyy");
+      expect(text(parts)).toContain("bodyText");
+      expect(text(parts)).toContain("Thanks for the meeting today.");
     } finally {
       vi.doUnmock("@lares/agent-kit/approval-summary");
       vi.resetModules();
@@ -360,13 +399,16 @@ describe("the renderer never breaks a card", () => {
     expect(parts.details).toBeUndefined();
   });
 
-  it("hands a tool without a Lares summary to eve's default unchanged", () => {
+  it("calls eve's default exactly once for a tool without a Lares summary too, with the input taken out", () => {
     const card = cardFor(approval("some_tool_nobody_summarised", { target: "x" }));
     const next = vi.fn((_card: SlackInteractionCard): SlackInteractionCardParts => ({
       controls: { blocks: [{ type: "card" }], text: "title" },
+      details: { blocks: [{ type: "container" }], text: "raw" },
     }));
-    approvalInteractionCard(card, next);
+    const parts = approvalInteractionCard(card, next);
     expect(next).toHaveBeenCalledTimes(1);
-    expect(next).toHaveBeenCalledWith(card);
+    const { input: _input, ...call } = card.interaction.call!;
+    expect(next).toHaveBeenCalledWith({ ...card, interaction: { ...card.interaction, call } });
+    expect(parts.details).toBeUndefined();
   });
 });
