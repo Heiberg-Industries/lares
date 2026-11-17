@@ -22,8 +22,8 @@ export default defineExtension({
     // parallel, unused `vaultPath` config field here would be dead configuration with no
     // consumer. `isApprovedPrincipal` is the only thing that genuinely needs to cross the
     // extension boundary: it's the seam that lets the extension's gated tools re-check WHO
-    // approved without importing the chief-of-staff service's `lib/principals.ts`/`lib/approvals.ts` (a
-    // deliberate least-privilege boundary — see extension/lib/approval-gate.ts).
+    // approved without importing a role's `lib/principals.ts`/`lib/approvals.ts` (which doors count
+    // is the role's own setting — see extension/lib/approval-gate.ts).
     brain: z
       .object({
         isApprovedPrincipal: z.custom<(authenticator: string | undefined, userId: string | undefined) => boolean>(

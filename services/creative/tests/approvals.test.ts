@@ -1,27 +1,21 @@
 /**
- * The approval plumbing — `lib/principals.ts` + `lib/approvals.ts` — proven directly.
+ * The approval plumbing — this role's `lib/principals.ts` + `lib/approvals.ts` bindings — proven directly.
  *
- * This is the module that decides who may authorise a studio run or an Atlas commit, and it
- * exists per-agent precisely BECAUSE it is a least-privilege boundary that differs between
- * agents (the kit's own docblocks say so). A per-agent copy with no per-agent test is the
- * worst of both: the divergence is real and nothing checks it. So the cases below are chosen
- * for what is different about the creative agent — one channel, one approver, no schedules — not merely
- * copied from chief-of-staff's file.
+ * This is what decides who may authorise a studio run or an Atlas commit. The rules live once in
+ * the kit (`@lares/agent-kit/principals`, `@lares/agent-kit/approval-policy`); this role binds them
+ * to its doors. The cases below are chosen for what is different about the creative agent — one
+ * chat door, one approver, no schedules — not merely copied from chief-of-staff's tests.
  *
  * `tests/atlas-tools.test.ts` proves the same guarantee one level up, through a real gated
  * tool's `execute`. This file proves the primitives.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-import { approverFrom, assertApprover, UnauthorizedApproverError } from "../lib/approvals.js";
-import {
-  allowedPrincipalIds,
-  channelForAuthenticator,
-  isAllowedPrincipal,
-  isAllowedSlackUserId,
-  principalFromAuth,
-} from "../lib/principals.js";
-import { allowedSlackUserIds, slackUserIdOf } from "../lib/slack-allowlist.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
+import { approverFrom, assertApprover } from "../lib/approvals.js";
+import { allowedPrincipalIds, isAllowedSlackUserId, principalFromAuth } from "@lares/agent-kit/principals";
+import { channelForAuthenticator, isAllowedPrincipal } from "../lib/principals.js";
+import { allowedSlackUserIds, slackUserIdOf } from "@lares/agent-kit/principals";
 
 const SLACK_OWNER = "U_EXAMPLE_OWNER";
 const SLACK_AUTH = "slack-webhook";

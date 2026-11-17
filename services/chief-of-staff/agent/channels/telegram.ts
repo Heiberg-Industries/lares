@@ -32,7 +32,7 @@ import {
   type TelegramWebhookSecretToken,
 } from "eve/channels/telegram";
 
-import { isAllowedPrincipalId } from "../../lib/principals.js";
+import { isAllowedPrincipalId } from "@lares/agent-kit/principals";
 import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
 import { markRouteDeclineQuestionSent } from "../../lib/route-decline.js";
 import { continuityAuthAttributes, nativeConversationContinuity } from "../../lib/conversation-continuity.js";
@@ -96,7 +96,7 @@ function botUsername(): string {
  * secrets at all. Anything read at module scope fails the image build outright.
  *
  * Errors name the path and never the contents, matching `lib/gateway-provider.ts` and
- * `agent/channels/slack.ts`.
+ * the kit's Slack door (`@lares/agent-kit/slack-door`).
  */
 function readSecret(envVar: string, fallbackPath: string): string {
   if (managedIdentity() && !process.env[envVar]) throw new Error("Managed door credential is not configured");
@@ -115,7 +115,7 @@ function readSecret(envVar: string, fallbackPath: string): string {
  * Credentials in the shape eve documents for both: `TelegramBotToken` and
  * `TelegramWebhookSecretToken` are each `string | ( => string | Promise<string>)`, so
  * both are async functions here, read at request time — never at module scope (the
- * eve-build-has-no-secrets trap, restated in `agent/channels/slack.ts`). Unlike Slack's
+ * eve-build-has-no-secrets trap, restated in `@lares/agent-kit/slack-door`). Unlike Slack's
  * `signingSecret` (typed as a plain string there, forcing a getter), Telegram's own type
  * accepts a function directly for the webhook secret too.
  */
@@ -151,7 +151,7 @@ async function replyBeforeClaimApplied(chatId: string | number, text: string): P
  * across every chat type, private included.
  *
  * Bots (including the bot's own echoes) are rejected outright, matching
- * `agent/channels/slack.ts`'s `isAllowedSlackUser`.
+ * the Slack door's `isAllowedSlackUser` (`@lares/agent-kit/slack-door`).
  *
  * Also rejects anything that isn't a private 1:1 chat. This door has no group code path;
  * this states that scope explicitly rather than by omission. Without this check, identity
@@ -670,8 +670,8 @@ export async function onInteractionSettled(
 /**
  * What the agent says on Telegram when its gateway key hits its cap.
  *
- * Same condition, same sentence and the same reasoning as `agent/channels/slack.ts` (read its
- * docblock, including why the sentence is English by default). Only the dialect differs: eve
+ * Same condition, same sentence and the same reasoning as the Slack door (`@lares/agent-kit/slack-door`,
+ * `SLACK_BUDGET_EXCEEDED_TEXT`; English because every fixed operational string this agent emits is). Only the dialect differs: eve
  * words its own default failure text slightly differently per channel, and the non-budget path
  * has to reproduce THIS channel's version.
  *

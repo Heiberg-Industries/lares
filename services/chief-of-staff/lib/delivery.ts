@@ -24,7 +24,8 @@ import {
 
 import { agentName } from "./agent-name.js";
 import { initiate, type DoorInitiate } from "./initiation.js";
-import { allowedSlackUserIds, doorId, ownerId, primaryTelegramChatId } from "./principals.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
+import { doorId, ownerId, primaryTelegramChatId } from "./principals.js";
 import { slackDmChannelId } from "./slack-dm-channel.js";
 import { captureWebContinuityFence, putInbox, recordFallback, type WebContinuityFence } from "./web-inbox.js";
 

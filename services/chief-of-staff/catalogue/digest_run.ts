@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { getPool } from "@lares/agent-kit/db";
 import { enqueueDigestRequest } from "../lib/digest-client.js";
-import { allowedSlackUserIds } from "../lib/slack-allowlist.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
 import { agentName } from "../lib/agent-name.js";
 
 export default defineTool({

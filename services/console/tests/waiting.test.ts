@@ -648,7 +648,9 @@ describe("deciding", () => {
     expect(result.message).toBe("Approved, and example carried it out. Its reply appears in the Telegram conversation this came from.");
     expect(f.posts).toHaveLength(1);
     expect(f.posts[0]!.url).toBe("http://10.0.0.5:3000/eve/v1/session/wrun_tg");
-    expect(f.posts[0]!.headers.get("x-lares-member")).toBe(OWNER);
+    // The member is named only by the console admission; no address header goes to the agent.
+    expect(f.posts[0]!.headers.get("x-lares-member")).toBeNull();
+    expect(f.posts[0]!.headers.get("x-lares-member-id")).toBe("owner-id");
     // The framework's own answer body: the card by its interaction id, and one of its two options.
     expect(f.posts[0]!.body).toEqual({ answers: [{ interactionId: "req-1", optionId: "approve" }] });
     // The outcome is read from the stream's tail, not the whole session again.

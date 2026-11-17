@@ -130,7 +130,7 @@ failed.
    with the agent's own route password.
 
    The honest limit, stated rather than left to be discovered: **anything holding an agent's route
-   password can claim to be any member, and so can approve anything that member could.** That is the console container and the keeper, both on the owner's own server. A browser cannot
+   password can claim to be any member (by the member's stable id, which the agent checks is an active member allowed to use it), and so can approve anything that member could.** That is the console container and the keeper, both on the owner's own server. A browser cannot
    do it — the console replaces whatever identity header the browser sent with the one it verified,
    and the agent reads that header only after the password has checked out — but a route password
    that leaks is not merely a way to talk to the agent, it is a way to authorise its actions. Treat

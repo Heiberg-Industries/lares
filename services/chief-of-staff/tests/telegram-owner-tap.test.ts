@@ -21,7 +21,8 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isAllowedPrincipal, principalFromAuth } from "../lib/principals.js";
+import { principalFromAuth } from "@lares/agent-kit/principals";
+import { isAllowedPrincipal } from "../lib/principals.js";
 
 vi.mock("@lares/agent-kit/telegram-fetch", () => ({
   telegramFetch: async () => new Response(JSON.stringify({ ok: true, result: true }), { status: 200, headers: { "content-type": "application/json" } }),

@@ -23,10 +23,10 @@ import {
 import { renderRequestCard } from "../node_modules/eve/dist/src/public/channels/slack/request-card-render.js";
 import { composeInteractionCards } from "../node_modules/eve/dist/src/public/channels/slack/renderers.js";
 
-import { approvalCardRenderer, approvalInteractionCard } from "../lib/slack-approval-card.js";
+import { approvalCardRenderer, approvalInteractionCard } from "@lares/agent-kit/slack-approval-card";
 
 /**
- * What the owner reads on a Slack approval card (`lib/slack-approval-card.ts`).
+ * What the owner reads on a Slack approval card (`@lares/agent-kit/slack-approval-card`).
  *
  * On eve 0.60 this file pinned hunks of a framework patch. eve 1.0 has a supported seam for the
  * same thing, `renderers.interactionCard`, so the card is now Lares's own renderer around eve's
@@ -383,7 +383,7 @@ describe("the renderer never breaks a card", () => {
       shortenedNotice: (hidden: number) => `\n\n— shortened — ${hidden} characters are not shown.`,
     }));
     try {
-      const { approvalInteractionCard: withLongDraft } = await import("../lib/slack-approval-card.js");
+      const { approvalInteractionCard: withLongDraft } = await import("@lares/agent-kit/slack-approval-card");
       const eveDefault: SlackInteractionCardParts = { controls: { blocks: [{ type: "card" }], text: "title" } };
       const parts = withLongDraft(cardFor(approval("gmail_send", MAIL)), () => eveDefault);
       expect(text(parts)).not.toContain("yyyy");

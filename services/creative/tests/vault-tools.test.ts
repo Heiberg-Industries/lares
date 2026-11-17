@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
 import { thisAgent } from "../lib/definition.js";
 import vaultSearch from "../catalogue/vault_search.js";
 import vaultRead from "../catalogue/vault_read.js";
@@ -411,7 +411,7 @@ describe("vault_write checks which card it answered, after the approver and befo
     // DIFFERENT class than the one this fresh, post-resetModules module graph throws
     // (memory-reads-tools.test.ts's own header explains why) — re-imported here so
     // `instanceof` compares the same prototype the thrown error actually has.
-    const { UnauthorizedApproverError: FreshUnauthorizedApproverError } = await import("../lib/approvals.js");
+    const { UnauthorizedApproverError: FreshUnauthorizedApproverError } = await import("@lares/agent-kit/approval-policy");
     const before = git(atlasRoot, "rev-parse", "HEAD").trim();
     await expect(
       freshVaultWrite.execute({ area: "shared", title: "x", body: "…" }, ctx(slackAuth(SOMEONE_ELSE))),

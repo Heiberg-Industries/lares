@@ -14,7 +14,7 @@ import gmailDraftRecipients from "../catalogue/gmail_draft_recipients.js";
 import { readFileSync } from "node:fs";
 import { wrapGmailApi } from "../lib/google.js";
 import { forgetChosenMailbox, useChosenMailbox } from "./helpers/chosen-mailbox.js";
-import { UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
 import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
 import { payloadFingerprint } from "@lares/agent-kit/approval-ledger";

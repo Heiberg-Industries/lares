@@ -1,25 +1,19 @@
-import {personalSendApprovalRequest,personalSendApprovalResponse,requirePersonalSendCall} from './personal-send-approval.js';
-import { assertPrivateConsoleTool as assertPrivateTool, privateOwnerTool, privateOnlyTool, isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
-import { assertSharedRoomAllows } from "@lares/agent-kit/shared-room";
-import { isExactApprovalContext, isExactApprovalResponse, isApprovalRecheck, reserveExactApprovalOrDeny, approveExactResponse,
-  requireApprovedExecution, requireApprovedRecheck, approvalResponderOf, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
+// Binds the kit's approval rules (`@lares/agent-kit/approval-policy`) to this role: its doors, its
+// exact-approval adapters and its own checks. Below the binding, what only this role has.
+import { approvalPolicy, type SessionAuthLike } from "@lares/agent-kit/approval-policy";
+import { principalFromAuth } from "@lares/agent-kit/principals";
+import { isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
+import { isApprovalRecheck, type ApprovedExecution } from "@lares/agent-kit/approval-execution";
+import { consoleAdmission, consoleResolverOnly, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
+import { getPool } from "@lares/agent-kit/db";
+import { personalSendApprovalRequest, personalSendApprovalResponse, requirePersonalSendCall } from "./personal-send-approval.js";
 import { callerIsAgentOwner } from "./webchat-owner.js";
 import { deadlineApprovalAdapter } from "./deadlines-store.js";
 import { canApproveCompanyTrack, tracksApprovalAdapter, twentyTracksApprovalAdapter } from "./tracks-approval.js";
 import { calendarApprovalAdapter } from "./calendar-approval.js";
 import { vaultNoteApprovalAdapter } from "./vault-note-write.js";
-import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
-/**
- * The approver re-check every gated write calls, on both channels.
- *
- * Extracted from `catalogue/echo_note.ts`'s original local `assertApproverAllowed` and widened
- * from Slack-only to whichever channel `lib/principals.ts` knows about.
- */
-import { approvalLedger, assertApprovedCall, callIdFrom } from "@lares/agent-kit/approval-ledger";
-import { getPool } from "@lares/agent-kit/db";
-import type { ApprovedExecution } from "@lares/agent-kit/approval-execution";
-
-import { declaredApprover, isAllowedPrincipal, isOwnerPrincipal, principalFromAuth } from "./principals.js";
+import * as principals from "./principals.js";
+import { declaredApprover, isAllowedPrincipal } from "./principals.js";
 import { outwardActionAfterAnswerRefusal, turnAskedACard } from "./approval-card-turns.js";
 
 const companyHome = (input: unknown) => !!input && typeof input === 'object' && !Array.isArray(input) && (input as Record<string, unknown>).home === 'twenty';
@@ -30,86 +24,8 @@ const adapterFor = (tool: string, input?: unknown) => {
     : vaultNoteApprovalAdapter.toolNames.includes(tool) ? vaultNoteApprovalAdapter
     : calendarApprovalAdapter.toolNames.includes(tool) ? calendarApprovalAdapter : deadlineApprovalAdapter;
 };
-
-/**
- * Refused because the person who approved is not the person allowed to, on THIS channel.
- *
- * Typed, and distinct from a write failure, because these two are the ones an operator
- * must never confuse: "the gate stopped someone" and "the disk was full" look identical in
- * a transcript otherwise.
- */
-export class UnauthorizedApproverError extends Error {
-  constructor(readonly approver: string) {
-    super(
-      `approval refused: ${approver} is not an allowed approver for this agent. ` +
-        `A Slack or Telegram approval button can be clicked by anyone who can see the ` +
-        `message, so the approver is re-checked here against lib/principals.ts.`,
-    );
-    this.name = "UnauthorizedApproverError";
-  }
-}
-
-/** The normalised shape a caller extracts from its channel's auth context (e.g. via
- *  `principalFromAuth`) before calling `assertApprover`. `absent` is set ONLY for a
- *  null/undefined auth context; `assertApprover` refuses it — only `approverFrom`'s
- *  initiator fallback consumes the marker. */
-export interface ApprovalPrincipal {
-  authenticator?: string;
-  userId?: string;
-  absent?: boolean;
-}
-
-/** The `ctx.session.auth` projection every eve tool receives. */
-export interface SessionAuthLike {
-  current?: unknown;
-  initiator?: unknown;
-}
-
-/**
- * The approver for a gated tool call, resolved from the session's auth contexts.
- *
- * `current` — the identity that triggered THIS resume — wins whenever it exists. When it
- * is ABSENT (null/undefined), the approval is attributed to the session's INITIATOR — the
- * channel-verified identity that opened the session — and checked against the allowlist
- * exactly like any other principal.
- *
- * Why the fallback exists (verified in the bundled dist, eve 0.32,
- * `channels/telegram/telegramChannel.js` `dispatchCallbackQuery`): eve resumes Telegram
- * HITL button taps with `.respond(..., { auth: null })` — the tap itself carries no
- * identity, by the framework's construction. The session's initiator, though, is real and
- * verified: a Telegram session only exists because a secret-token-verified update from an
- * allowlisted user id in a private chat opened it, and that inline-keyboard card only
- * exists inside that same chat. Attributing the anonymous tap to the initiator states the
- * actual security fact — "whoever can tap this card is whoever opened this session" — and
- * stays fail-closed everywhere else: a session with an unknown or missing initiator
- * refuses, whatever channel or route produced it, today or in a future eve version.
- */
-export function approverFrom(
-  auth: SessionAuthLike | null | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): ApprovalPrincipal {
-  const current = principalFromAuth(auth?.current);
-  if (current.absent !== true) return current;
-
-  // A human-opened session: the initiator IS the channel-verified human, and attributing the
-  // anonymous tap to them states the real fact. Gated on the allowlist rather than on the
-  // shape of the authenticator, so an app initiator can never satisfy it by accident.
-  const initiator = principalFromAuth(auth?.initiator);
-  if (initiator.absent !== true && isAllowedPrincipal(initiator.authenticator, initiator.userId, env)) {
-    return initiator;
-  }
-
-  // A SCHEDULE-opened session. The initiator is the app and says nothing about who
-  // tapped — but the push declared which chat it was addressed to, and a card only ever renders
-  // in that chat. Fail-closed either way: this principal goes through the same allowlist check
-  // as every other, so an unknown or wrong chat still refuses.
-  const declared = declaredApprover(auth?.initiator);
-  if (declared !== undefined) return declared;
-
-  // Nothing resolvable. Return the initiator when there is one, purely so the refusal names
-  // what it actually saw instead of "an unidentified principal".
-  return initiator.absent === true ? {} : initiator;
-}
+/** Tools whose changes need an exact approved card in a bound console conversation. */
+const EXACT_TOOLS = [deadlineApprovalAdapter, tracksApprovalAdapter, twentyTracksApprovalAdapter, calendarApprovalAdapter, vaultNoteApprovalAdapter];
 
 /**
  * WHO ANSWERED A NATIVE CARD. On eve 1.0 the settle hook's `session.auth.current` is the turn's
@@ -157,6 +73,63 @@ export function takeNativeAnswerer(requestId: string, sessionId: unknown, now = 
 /** Tests only. */
 export function clearNativeAnswersForTests(): void { nativeAnswers.clear(); }
 
+/** The catalogue tools that reach other people and are refused in the reply to an answered request
+ *  (`outwardActionAfterAnswerRefusal`, lib/approval-card-turns.ts): calendar writes email the attendees,
+ *  and the two door sends mail them. The personal mail send applies the same rule in its own policy. */
+const OUTWARD_AFTER_ANSWER_TOOLS: ReadonlySet<string> = new Set(['calendar_create_event','calendar_update_event','calendar_delete_event','gmail_send','meeting_followup_send']);
+/** Every approval status eve 1.0 accepts that raises NO card, as its own reader defines them
+ *  (`normalizeApprovalStatus` and `approvalDecision`, eve `dist/src/approval/status.js`): `undefined`
+ *  and `false` and `"not-applicable"` continue with no prompt, `"approved"` runs without a person,
+ *  `"denied"` denies, and the object forms `{ type }` of those three (`approved` and `denied` may
+ *  carry a reason). The forms that pause for a person are `"user-approval"`, `true` and
+ *  `{ type: "user-approval" }`. Anything else is not a status eve accepts; it is treated as asking
+ *  (fails closed), so in the reply to an answered request it is refused like a card. */
+const NO_CARD_TYPES: ReadonlySet<unknown> = new Set(['not-applicable', 'approved', 'denied']);
+const raisesNoCard = (decision: unknown) => decision === undefined || decision === false || NO_CARD_TYPES.has(decision) ||
+  (typeof decision === 'object' && decision !== null && NO_CARD_TYPES.has((decision as { type?: unknown }).type));
+/** The shared rule, for a call that is about to raise a card. Never for eve's recheck of a call that
+ *  is already approved: that is the answered card's own action, and it runs as before. */
+const outwardRefusal = (name: string, ctx: unknown) => OUTWARD_AFTER_ANSWER_TOOLS.has(name) && !isApprovalRecheck(ctx)
+  ? outwardActionAfterAnswerRefusal((ctx as ConsoleAuthorityContext | undefined)?.session as never) : undefined;
+
+export const {
+  approverFrom, assertApprover, assertOwnerAnswerer, assertApproval, nativeAnswerDecision,
+  catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution,
+} = approvalPolicy({
+  role: "chief-of-staff",
+  principals,
+  approvalDoors: "Slack or Telegram",
+  declaredApprover,
+  adapterFor,
+  reserveRefusal: "deny",
+  needsExactCard: (name) => EXACT_TOOLS.some(a => a.toolNames.includes(name)),
+  keepAnswer: rememberNativeAnswer,
+  callerIsOwner: callerIsAgentOwner,
+  // A tool the owner set to run on its own ("autonomous") raises no card and is left as it is; one
+  // that would ask first is refused in the reply to an answered request. At "gated" the authored
+  // policy answers from the definition and the permissions table alone, before any provider call.
+  nativeRequest: (name, ctx, decision) => raisesNoCard(decision) ? decision : outwardRefusal(name, ctx) ?? decision,
+  // Web chat: every call of these tools asks first, so the refusal comes before the reservation.
+  // The company CRM check is refused before any card or provider read; the adapter repeats it at
+  // each later step.
+  beforeExactCard: async (name, c) => {
+    const answered = outwardRefusal(name, c);
+    if (answered) return answered;
+    const asking = consoleAdmission(c.session?.auth?.current);
+    if (companyHome(c.toolInput) && !(asking && await canApproveCompanyTrack(getPool(), asking.memberId))) {
+      return { type: 'denied', reason: 'Only the owner can approve a change to the company CRM.' };
+    }
+    return undefined;
+  },
+  ownChecks: {
+    personal_mailbox_send: {
+      request: (ctx) => personalSendApprovalRequest(ctx as never),
+      response: (ctx) => personalSendApprovalResponse(ctx as never),
+      execution: (ctx, input) => requirePersonalSendCall(ctx as never, input),
+    },
+  },
+});
+
 /**
  * The check an UNGATED, model-called write needs when its authority is "the owner just said so".
  * Returns a refusal sentence, or null when this turn really is the owner's.
@@ -201,7 +174,7 @@ export function humanTurnRefusal(
  * A web chat turn carries the console's member admission, not a door's `user_id`, so the door
  * allow-list above can never match it and every web chat turn would be refused. For that turn, and
  * only that one, the owner is decided by the SAME proof the owner-only web chat tools are re-checked
- * with when they run (`assertPrivateConsoleTool` below, `callerIsAgentOwner`): the member pinned when
+ * with when they run (the private-surface check, `callerIsAgentOwner`): the member pinned when
  * the conversation began is the agent's current owner. On top of that, `auth.current` must itself be
  * that member's human admission, because only the current message can say something (a turn with no
  * current identity, or an answer to a card, is refused as above). Async because the owner is read
@@ -219,94 +192,6 @@ export async function ownerTurnRefusal(
   if (consoleResolverOnly(auth?.current) || turnAskedACard(session)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
   if (consoleAdmission(auth?.current)?.purpose === "human" && await isOwner({ session })) return null;
   return `${lead} But this web chat message could not be confirmed as coming from this agent's owner. Nothing changed.`;
-}
-
-/**
- * Re-checks WHO approved, which the framework does not.
- *
- * eve's own Slack docs: "Built-in HITL buttons are handled before `onInteraction`, and the
- * person who clicks supplies the auth for the resumed session. Anyone who can interact
- * with the message can answer it." The same holds for Telegram's inline-keyboard HITL. So
- * a channel's inbound allowlist — which gates who may start a turn — does not cover the
- * click that authorises the write: that path never reaches an authored inbound handler.
- * eve's remedy is the one applied here, and it is the tool's job, not the channel's.
- *
- * Fail-closed on every other principal too, including authenticators this agent fronts for
- * other purposes (e.g. an HTTP Basic operator route): an operator with the route password
- * can start a session, but a write wants a named, channel-verified human.
- */
-export function assertApprover(
-  approval: ApprovalPrincipal,
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  // Strict, including ABSENT: an approval with no identity refuses. The Telegram
-  // null-auth reality is handled UPSTREAM by `approverFrom` (below), which attributes an
-  // anonymous resume to the session's verified INITIATOR — never by exempting
-  // absence itself (an in-band bypass any null-auth path would inherit; flagged in a
-  // security review).
-  if (!isAllowedPrincipal(approval.authenticator, approval.userId, env)) {
-    const label =
-      approval.userId !== undefined && approval.userId.length > 0
-        ? `${approval.authenticator ?? "unknown-channel"}:${approval.userId}`
-        : "an unidentified principal";
-    throw new UnauthorizedApproverError(label);
-  }
-}
-
-/**
- * The answerer of an approved native card must be the agent's OWNER (`isOwnerPrincipal`: the first id on that door's
- * allow-list), not merely an allowed person. Used where the answerer of record is `ctx.approval.responder`.
- */
-export function assertOwnerAnswerer(approval: ApprovalPrincipal, env: NodeJS.ProcessEnv = process.env): void {
-  if (!isOwnerPrincipal(approval.authenticator, approval.userId, env)) {
-    const label =
-      approval.userId !== undefined && approval.userId.length > 0
-        ? `${approval.authenticator ?? "unknown-channel"}:${approval.userId}`
-        : "an unidentified principal";
-    throw new UnauthorizedApproverError(label);
-  }
-}
-
-/**
- * The one call a gated tool makes before it acts: WHO answered (unchanged,
- * unconditional — `assertApprover` first, exactly as every call site had it), then WHICH CARD
- * they answered — the same arguments, and not a stale one (`assertApprovedCall`,
- * `@lares/agent-kit/approval-ledger`). Never a replacement for `assertApprover`: a
- * missing call id or a missing row PASSES here (evidence never fails an action — see that
- * module's header), so an autonomous call or a box without the approval ledger applied is unaffected.
- *
- * `input` MUST be the tool's own raw first argument, unmodified — never a destructured-and-
- * rebuilt object. `payloadFingerprint` treats a key present with an `undefined` value as
- * different from a key that is absent, so reconstructing `{ ...destructured }` from an input
- * whose optional field was never supplied would mismatch the hash the card was shown with and
- * refuse a call nothing actually changed about.
- *
- * `ctx`'s type deliberately has no
- * `& Record<string, unknown>` — eve's real `ToolContext` (what every call site actually
- * passes) has no index signature, so that intersection does not compile against it
- * (`tsc`: "Index signature for type 'string' is missing in type 'ToolContext'"). `{ session?:
- * { auth?: SessionAuthLike | null } }` alone is exactly what every existing call site's
- * `ctx.session.auth` already satisfied.
- */
-export async function assertApproval(
-  ctx: { session?: { auth?: SessionAuthLike | null }; approval?: { responder?: unknown } },
-  toolName: string,
-  input: unknown,
-): Promise<Awaited<ReturnType<typeof requireApprovedExecution>> | undefined> {
-  if (isExactApprovalContext(ctx)) {
-    return await requireApprovedExecution(ctx,toolName,input,{adapter:adapterFor(toolName,input)});
-  }
-  await guardConsoleToolContext(ctx);
-  // eve 1.0: `session.auth.current` is the person (or, for a scheduled turn, the app principal) who ASKED; the person
-  // who answered is `ctx.approval.responder`, present only when a card was answered. The approver of record is the
-  // answerer: it must be the agent's OWNER, and one that cannot be read is refused (`principalFromAuth` gives nothing).
-  // The requester is not asked to be an approver (a scheduled card's requester is the app). With no card (an
-  // autonomous call) the old rule stands: the session's own caller must be an allowed approver.
-  const responder = approvalResponderOf(ctx);
-  if (responder !== undefined) assertOwnerAnswerer(principalFromAuth(responder));
-  else assertApprover(approverFrom(ctx?.session?.auth));
-  await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
-  return undefined;
 }
 
 /** A durable, atomic one-use claim for an exact Twenty Tracks approval, made before provider I/O.
@@ -347,117 +232,4 @@ export async function runApprovedCalendarOnce<T>(approved: ApprovedExecution | u
       approved.authority.actingMemberId, approved.authority.sessionId, approved.authority.agentId]);
   if (claimed.rows.length !== 1) throw new Error('Exact calendar approval was already used or is unavailable');
   return write();
-}
-
-/** The private-surface check, with the owner question asked afresh for the tools only an owner may use.
- *  A conversation started in a shared room is refused every tool the room rule does not list, first and
- *  in words for the room, so a call replayed or carried over from an older list is refused the same way,
- *  before any card or execution. The room sends the person to a direct message only for a tool a direct
- *  message has. */
-async function assertPrivateConsoleTool(ctx: unknown, role: "chief-of-staff", name: string): Promise<void> {
-  if (!isPrivateConsoleContext(ctx)) assertSharedRoomAllows(ctx, name, !privateOnlyTool(name));
-  const callerIsOwner = privateOwnerTool(name) && isPrivateConsoleContext(ctx) ? await callerIsAgentOwner(ctx) : false;
-  assertPrivateTool(ctx, role, name, { callerIsOwner });
-}
-
-/** The catalogue tools that reach other people and are refused in the reply to an answered request
- *  (`outwardActionAfterAnswerRefusal`, lib/approval-card-turns.ts): calendar writes email the attendees,
- *  and the two door sends mail them. The personal mail send applies the same rule in its own policy. */
-const OUTWARD_AFTER_ANSWER_TOOLS: ReadonlySet<string> = new Set(['calendar_create_event','calendar_update_event','calendar_delete_event','gmail_send','meeting_followup_send']);
-/** Every approval status eve 1.0 accepts that raises NO card, as its own reader defines them
- *  (`normalizeApprovalStatus` and `approvalDecision`, eve `dist/src/approval/status.js`): `undefined`
- *  and `false` and `"not-applicable"` continue with no prompt, `"approved"` runs without a person,
- *  `"denied"` denies, and the object forms `{ type }` of those three (`approved` and `denied` may
- *  carry a reason). The forms that pause for a person are `"user-approval"`, `true` and
- *  `{ type: "user-approval" }`. Anything else is not a status eve accepts; it is treated as asking
- *  (fails closed), so in the reply to an answered request it is refused like a card. */
-const NO_CARD_TYPES: ReadonlySet<unknown> = new Set(['not-applicable', 'approved', 'denied']);
-const raisesNoCard = (decision: unknown) => decision === undefined || decision === false || NO_CARD_TYPES.has(decision) ||
-  (typeof decision === 'object' && decision !== null && NO_CARD_TYPES.has((decision as { type?: unknown }).type));
-/** The shared rule, for a call that is about to raise a card. Never for eve's recheck of a call that
- *  is already approved: that is the answered card's own action, and it runs as before. */
-const outwardRefusal = (name: string, ctx: unknown) => OUTWARD_AFTER_ANSWER_TOOLS.has(name) && !isApprovalRecheck(ctx)
-  ? outwardActionAfterAnswerRefusal((ctx as ConsoleAuthorityContext | undefined)?.session as never) : undefined;
-
-/** Preserve the authored native policy; bound console calls additionally require exact authority. */
-export async function catalogueApprovalRequest(name: string, ctx: unknown, authored: unknown): Promise<unknown> {
-  await assertPrivateConsoleTool(ctx,"chief-of-staff",name);
-  if(name==='personal_mailbox_send')return personalSendApprovalRequest(ctx as never);
-  if (!isExactApprovalContext(ctx)) {
-    await guardConsoleToolContext(ctx);
-    const decision = await (authored as (ctx:unknown)=>unknown)(ctx);
-    // A tool the owner set to run on its own ("autonomous") raises no card and is left as it is; one
-    // that would ask first is refused in the reply to an answered request. At "gated" the authored
-    // policy answers from the definition and the permissions table alone, before any provider call.
-    return raisesNoCard(decision) ? decision : outwardRefusal(name, ctx) ?? decision;
-  }
-  // Web chat: every call of these tools asks first, so the refusal comes before the reservation.
-  const answered = outwardRefusal(name, ctx);
-  if (answered) return answered;
-  const c = ctx as ConsoleAuthorityContext & {callId?:string;toolInput?:unknown};
-  // Refused before any card or provider read. The adapter repeats this at each later step.
-  const asking = consoleAdmission(c.session?.auth?.current);
-  if (companyHome(c.toolInput) && !(asking && await canApproveCompanyTrack(getPool(), asking.memberId))) {
-    return { type: 'denied', reason: 'Only the owner can approve a change to the company CRM.' };
-  }
-  if (isApprovalRecheck(c)) {
-    // eve asks the policy again, as the requester, before it runs a call that was approved. The call must
-    // already be approved on its card; nothing is reserved or shown again. Anything else is denied.
-    try { await requireApprovedRecheck(c,name,c.toolInput,{adapter:adapterFor(name,c.toolInput)}); }
-    catch { return 'denied'; }
-    return 'user-approval';
-  }
-  const refused = await reserveExactApprovalOrDeny(c,name,{adapter:adapterFor(name,c.toolInput)});
-  if (refused) return refused;
-  const decision = await (authored as (ctx:unknown)=>unknown)(ctx);
-  if (decision === 'denied' || (typeof decision === 'object' && decision !== null && 'type' in decision && decision.type === 'denied')) return decision;
-  return 'user-approval';
-}
-/**
- * The answer check for a card on a native door (Slack, Telegram). Without a response policy eve's default lets anyone answer
- * a card whose requester is missing, and refuses the owner on a card a SCHEDULED turn raised (its requester is the app
- * principal). So Lares attaches this one to every gated tool. It is asked about a Deny as well as an Approve, accepts an answer
- * only from the agent's OWNER (the first id on the door's allow-list, not merely an allowed person) and refuses everyone else; the card stays pending. Fail closed.
- */
-export function nativeAnswerDecision(ctx: unknown): {status:'allowed'}|{status:'rejected';reason:string} {
-  const refused = (reason: string) => ({status:'rejected' as const,reason});
-  try {
-    const c = ctx as {response?:{decision?:unknown;principal?:unknown}};
-    if (c?.response?.decision !== 'approve' && c?.response?.decision !== 'deny') return refused('this answer is neither Approve nor Deny');
-    // Only the agent's OWNER, identified by the door's verified sender (read from the authenticated principal eve
-    // hands the policy, never from message text): the first id on that door's allow-list. An allowed second person is refused. The requester plays no part:
-    // it may be a person, the app principal of a scheduled turn, or missing, and none of those changes who may answer.
-    const answerer = principalFromAuth(c.response.principal);
-    if (answerer.absent === true || !isOwnerPrincipal(answerer.authenticator, answerer.userId)) return refused('only the agent\'s owner can answer this card');
-    const notKept = rememberNativeAnswer((ctx as {request?:{interactionId?:unknown}}).request?.interactionId,
-      (ctx as {session?:{id?:unknown}}).session?.id, c.response.principal);
-    // An answer whose answerer cannot be kept until the card settles is not accepted (see the store above).
-    if (notKept) return refused(notKept);
-    return {status:'allowed'};
-  } catch { return refused('this answer could not be verified'); }
-}
-export async function catalogueApprovalResponse(name: string, ctx: unknown): Promise<unknown> {
-  await assertPrivateConsoleTool(ctx,"chief-of-staff",name);
-  if(name==='personal_mailbox_send')return personalSendApprovalResponse(ctx as never);
-  // The response policy is asked about a Deny as well as an Approve. On a native door it is the check
-  // above; in a bound console conversation it is the exact check, and anyone who is not that conversation's
-  // own resolver is refused for both, with the card staying pending.
-  if (!isExactApprovalResponse(ctx)) return nativeAnswerDecision(ctx);
-  return approveExactResponse(ctx as ExactResponseContext,{adapter:adapterFor(name,(ctx as ExactResponseContext).request.toolInput)});
-}
-/** Tools whose changes need an exact approved card in a bound console conversation. */
-const EXACT_TOOLS = [deadlineApprovalAdapter, tracksApprovalAdapter, twentyTracksApprovalAdapter, calendarApprovalAdapter, vaultNoteApprovalAdapter];
-export async function guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void> {
-  await assertPrivateConsoleTool(ctx,"chief-of-staff",name);
-  if(name==='personal_mailbox_send'){await requirePersonalSendCall(ctx as never,input);return;}
-  if (isExactApprovalContext(ctx)) {
-    // The answerer of an approved call is `ctx.approval.responder`; `session.auth.current` is the requester.
-    if (approvalResponderOf(ctx) !== undefined) {
-      await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{adapter:adapterFor(name,input)});
-      return;
-    }
-    // A change that needs an approved card never runs without one, and no other tool takes an approval.
-    if (EXACT_TOOLS.some(a => a.toolNames.includes(name))) throw new Error('Exact approval authority is unavailable or has changed');
-  }
-  await guardConsoleToolContext(ctx);
 }

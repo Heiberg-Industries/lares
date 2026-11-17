@@ -12,7 +12,7 @@ import { getPool } from "@lares/agent-kit/db";
 import { createReminder } from "../lib/reminders-store.js";
 import { assertApproval } from "../lib/approvals.js";
 import { primaryTelegramChatId } from "../lib/principals.js";
-import { allowedSlackUserIds } from "../lib/slack-allowlist.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
 import { formatDateTimeIn } from "@lares/agent-kit/clock";
 import { ownerTz } from "../lib/owner-clock.js";
 import { approvalFor } from "../lib/board.js";

@@ -2,8 +2,9 @@
 import type { Pool } from "pg";
 import { consoleSourceTransaction, gateConsoleOrganisation, type SourceDatabase, type SourcePool } from "@lares/agent-kit/console-source-transaction";
 import { managedIdentity } from "@lares/agent-kit/door-authority";
-import { isAllowedPrincipal, AUTHENTICATOR_FOR } from "../principals.js";
-import type { ApprovalPrincipal } from "../approvals.js";
+import { AUTHENTICATOR_FOR } from "@lares/agent-kit/principals";
+import type { ApprovalPrincipal } from "@lares/agent-kit/approval-policy";
+import { isAllowedPrincipal } from "../principals.js";
 import type { StudioRun } from "./types.js";
 
 export interface MiniPool extends SourcePool {}

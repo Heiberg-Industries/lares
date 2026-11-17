@@ -114,9 +114,8 @@ An in-memory state store is for local development only. It forgets everything on
   `agent_door_connections` table, that is a migration, and a migration needs the manual
   image-probe run described in `AGENTS.md`.
 - [ ] **Allow-list.** The door admits only people on its allow-list. An empty or unreadable
-  list admits nobody. The check will be one shared function in the kit (the kit's allow-list
-  check); a door calls it and must not carry its own copy. Today each role service has its own
-  copy in `lib/principals.ts`; do not add a third.
+  list admits nobody. The check is one shared function in the kit
+  (`packages/agent-kit/src/principals.ts`); a door calls it and must not carry its own copy.
 - [ ] **The shared contract test passes.** It runs your adapter against a fake platform and
   checks the rules in ADR-0025. You do not write rule tests of your own.
 - [ ] **Model permission.** Add one row for the door's eve authenticator to the kit's door model

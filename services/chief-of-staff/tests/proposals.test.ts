@@ -21,7 +21,7 @@ import {
   atlasApproveConsequence,
   atlasRejectConsequence,
 } from "../lib/proposals-store.js";
-import { UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
 import { scheduleGate } from "@lares/agent-kit/schedule-gate";
 
 import notionProposals from "../catalogue/notion_proposals.js";

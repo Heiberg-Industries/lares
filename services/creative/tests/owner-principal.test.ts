@@ -1,6 +1,7 @@
 // The owner of a door is the FIRST id on its allow-list; the allow-list says who may talk, the owner is who may approve.
 import { describe, expect, it } from "vitest";
-import { isAllowedPrincipal, isOwnerPrincipal, ownerPrincipalId } from "../lib/principals.js";
+import { ownerPrincipalId } from "@lares/agent-kit/principals";
+import { isAllowedPrincipal, isOwnerPrincipal } from "../lib/principals.js";
 
 const env = { SLACK_ALLOWED_USER_IDS: " U_OWNER , U_SECOND ", CONSOLE_ALLOWED_EMAILS: "owner@example.com,second@example.com" };
 

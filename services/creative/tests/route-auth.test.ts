@@ -40,6 +40,18 @@ describe("creative route auth", () => {
     expect(result).toBeTruthy();
   });
 
+  it("a member-address header beside the route password names nobody and approves nothing", async () => {
+    const auth = await freshAuth();
+    const request = basic("eve", "s3cret-route-password");
+    request.headers.set("x-lares-member", "owner@example.invalid");
+    const result = await auth(request);
+    expect(result).toMatchObject({ authenticator: "http-basic", attributes: {} });
+    expect(result?.attributes?.["user_id"]).toBeUndefined();
+    const { approverFrom, assertApprover } = await import("../lib/approvals.js");
+    const env = { CONSOLE_ALLOWED_EMAILS: "owner@example.invalid" } as NodeJS.ProcessEnv;
+    expect(() => assertApprover(approverFrom({ current: result, initiator: null }, env), env)).toThrow(/not an allowed approver/);
+  });
+
   it("rejects a wrong password", async () => {
     const auth = await freshAuth();
     expect(await auth(basic("eve", "wrong"))).toBeFalsy();

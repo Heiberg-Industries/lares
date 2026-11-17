@@ -14,7 +14,7 @@ import twentyCreateOpportunity from "../catalogue/twenty_create_opportunity.js";
 import twentyCommState from "../catalogue/twenty_comm_state.js";
 import twentyDoNotContact from "../catalogue/twenty_do_not_contact.js";
 import { TwentyUnavailableError } from "../lib/twenty-client.js";
-import { UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
 
 /**
  * The Twenty tools, against a REAL local HTTP server (matching twenty-client.test.ts's

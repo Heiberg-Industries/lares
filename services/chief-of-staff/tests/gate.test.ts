@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import echoNote, { UnauthorizedApproverError } from "../catalogue/echo_note.js";
-import { allowedSlackUserIds, isAllowedSlackUserId } from "../lib/slack-allowlist.js";
+import { allowedSlackUserIds, isAllowedSlackUserId } from "@lares/agent-kit/principals";
 
 /**
  * The approval gate, proven on a harmless action before any real write exists.

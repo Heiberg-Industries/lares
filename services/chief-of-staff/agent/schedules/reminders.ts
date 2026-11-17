@@ -57,12 +57,13 @@ import {
   type DueReminder,
   type NewReminder,
 } from "../../lib/reminders-store.js";
-import { slackCredentials } from "../channels/slack.js";
+import { slackCredentials } from "@lares/agent-kit/slack-door";
 import { telegramCredentials } from "../channels/telegram.js";
 import { sendTelegramMessage } from "../../lib/telegram-send.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
-import { allowedSlackUserIds, ownerId, primaryTelegramChatId } from "../../lib/principals.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
+import { ownerId, primaryTelegramChatId } from "../../lib/principals.js";
 import { initiateFor, SEND_UNGATED, type Initiate } from "../../lib/initiation.js";
 import { DOOR_LABEL, isDeliveryDoor, routeFor } from "@lares/agent-kit/delivery";
 import { connectedDoors } from "../../lib/delivery.js";

@@ -14,7 +14,7 @@ import calendarDeleteEvent from "../catalogue/calendar_delete_event.js";
 import { wrapCalendarApi } from "../lib/google.js";
 import { GoogleConfigError } from "@lares/agent-kit/google-auth";
 import { forgetChosenMailbox, useChosenMailbox, useNoChosenMailbox } from "./helpers/chosen-mailbox.js";
-import { UnauthorizedApproverError } from "../lib/approvals.js";
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
 import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
 

@@ -275,7 +275,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "Unmanaged web-chat approvals without a configured approver list are refused. This legacy role approval list no longer admits anyone to the console; console sign-in requires a linked provider identity and a current member session.",
-    readAt: ["services/chief-of-staff/lib/principals.ts (ENV_VAR_FOR.console)", "services/creative/lib/principals.ts (ENV_VAR_FOR.console)"],
+    readAt: ["packages/agent-kit/src/principals.ts (ENV_VAR_FOR.console)"],
   },
 
   // ── The fixed 13 (plus the door files and platform secrets) every agent container gets ────
@@ -347,7 +347,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "Nothing breaks when it is unset — it marks a MANAGED identity; unset, the agent falls back to its single-owner legacy identity path instead.",
-    readAt: ["services/chief-of-staff/lib/principals.ts:41", "packages/agent-kit/src/door-authority.ts:8"],
+    readAt: ["packages/agent-kit/src/principals.ts (allowedPrincipalIds)", "packages/agent-kit/src/door-authority.ts:8"],
   },
   {
     name: "LARES_RUNTIME_CONTROL_SECRET_FILE",
@@ -387,7 +387,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "A managed incarnation's Slack allow-list resolves empty, so a Slack message from the real owner is refused as coming from nobody trusted.",
-    readAt: ["services/chief-of-staff/lib/principals.ts:87"],
+    readAt: ["packages/agent-kit/src/principals.ts (templated LARES_${channel}_PRINCIPAL)"],
   },
   {
     name: "LARES_SLACK_CLAIM_REVISION",
@@ -407,7 +407,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "A managed incarnation's web-chat approver list resolves empty, so an approval answered from the console is refused as coming from nobody trusted — which is the behaviour before the managed approver list existed, and fail-closed. The keeper writes it from the owner address on a door or email claim; an installation with no claim at all has no console approver.",
-    readAt: ["services/chief-of-staff/lib/principals.ts (templated LARES_${channel}_PRINCIPAL)", "services/keeper/lib/compose-agents.ts"],
+    readAt: ["packages/agent-kit/src/principals.ts (templated LARES_${channel}_PRINCIPAL)", "services/keeper/lib/compose-agents.ts"],
   },
   {
     name: "LARES_TELEGRAM_PRINCIPAL",
@@ -417,7 +417,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "A managed incarnation's Telegram allow-list resolves empty, so a message from the real owner is refused as coming from nobody trusted.",
-    readAt: ["services/chief-of-staff/lib/principals.ts:87"],
+    readAt: ["packages/agent-kit/src/principals.ts (templated LARES_${channel}_PRINCIPAL)"],
   },
   {
     name: "LARES_TELEGRAM_CLAIM_REVISION",
@@ -437,7 +437,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "Fail-closed: an unset or blank list admits nobody at all over Slack, including the real owner.",
-    readAt: ["services/chief-of-staff/lib/principals.ts:78", "services/creative/lib/principals.ts:48"],
+    readAt: ["packages/agent-kit/src/principals.ts (ENV_VAR_FOR.slack)"],
   },
   {
     name: "TELEGRAM_PRINCIPAL_ID",
@@ -447,7 +447,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "Fail-closed: an unset or blank value admits nobody at all over Telegram, including the real owner.",
-    readAt: ["services/chief-of-staff/lib/principals.ts:79", "services/chief-of-staff/lib/principals.ts:182"],
+    readAt: ["packages/agent-kit/src/principals.ts (ENV_VAR_FOR.telegram)", "services/chief-of-staff/lib/principals.ts (primaryTelegramChatId)"],
   },
   {
     name: "LANGFUSE_PROXY_URL",
@@ -480,7 +480,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "The Slack door falls back to a bundled default token file that is never actually mounted, so every Slack call fails as unauthenticated.",
-    readAt: ["services/chief-of-staff/agent/channels/slack.ts:69", "services/keeper/lib/compose-agents.ts:13"],
+    readAt: ["packages/agent-kit/src/slack-door.ts (readSecret)", "services/keeper/lib/compose-agents.ts:13"],
   },
   {
     name: "SLACK_SIGNING_SECRET_FILE",
@@ -490,7 +490,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "Inbound Slack webhook requests cannot be verified, so the door refuses every one of them.",
-    readAt: ["services/chief-of-staff/agent/channels/slack.ts:70", "services/keeper/lib/compose-agents.ts:13"],
+    readAt: ["packages/agent-kit/src/slack-door.ts (readSecret)", "services/keeper/lib/compose-agents.ts:13"],
   },
   {
     name: "TELEGRAM_BOT_TOKEN_FILE",

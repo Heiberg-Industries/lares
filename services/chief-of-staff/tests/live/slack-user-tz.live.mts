@@ -31,7 +31,7 @@
  * row, and writes nothing — the 30-minute schedule is what writes). It prints the timezone, the
  * label and the offset, and no other profile field: a name or an email is not what is being asked.
  */
-import { allowedSlackUserIds } from "../../lib/principals.js";
+import { allowedSlackUserIds } from "@lares/agent-kit/principals";
 import { fetchSlackUserTimezone, resolveSlackToken } from "../../lib/slack-source.js";
 import { getPool } from "@lares/agent-kit/db";
 import { isValidTimeZone, readSlackProfileSignal, resolveOwnerClock } from "@lares/agent-kit/owner-clock";

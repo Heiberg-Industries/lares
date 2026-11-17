@@ -13,12 +13,10 @@
  *
  * The one substantive difference from the chief-of-staff service original: `assertApprover` here takes
  * the actual allowlist check as an INJECTED parameter (`isApprovedPrincipal`) instead of
- * importing `isAllowedPrincipal` from `lib/principals.ts` directly. That import is exactly
- * what this extension must never make — `lib/principals.ts`/`lib/approvals.ts` are a
- * deliberate least-privilege boundary that stays local to the chief-of-staff service (a hard
- * constraint, not a style choice): they know the chief-of-staff service's channel allowlist env vars
- * (`SLACK_ALLOWED_USER_IDS`, `TELEGRAM_PRINCIPAL_ID`), which this package has no business
- * reading. `principalFromAuth` has no such coupling — it only shapes a raw `ctx.session.auth`
+ * importing `isAllowedPrincipal` from `lib/principals.ts` directly. Which doors count as an
+ * approver's is each role's own setting, bound in that role's `lib/principals.ts` (the check
+ * itself is the kit's `src/principals.ts`), so the role passes its bound check in and the
+ * extension decides nothing about doors. `principalFromAuth` has no such coupling — it only shapes a raw `ctx.session.auth`
  * value into `{authenticator, userId, absent}`, so it is identical to the original with no
  * injection needed.
  *
@@ -62,7 +60,7 @@ export interface SessionAuthLike {
 
 /**
  * Extracts `{authenticator, userId}` from an eve session auth context — the shape
- * `ctx.session.auth.current` carries. Identical to `lib/principals.ts`'s: pure
+ * `ctx.session.auth.current` carries. Identical to the kit's `src/principals.ts`'s: pure
  * shaping, no allowlist knowledge, so no injection is needed for this half.
  *
  * `absent: true` marks the one shape that is deliberately NOT refused: a null/undefined
@@ -79,8 +77,8 @@ export function principalFromAuth(auth: unknown): ApprovalPrincipal {
 }
 
 /**
- * The approver for a gated tool call, resolved from the session's auth contexts. Identical
- * to `lib/approvals.ts`'s — see that file's docblock for the full Telegram
+ * The approver for a gated tool call, resolved from the session's auth contexts. Mirrors
+ * the kit's `src/approval-policy.ts` — see that file's docblock for the full Telegram
  * null-auth rationale (eve resumes Telegram HITL taps with `.respond(..., { auth: null })`,
  * so an anonymous resume is attributed to the session's verified INITIATOR, never exempted).
  */

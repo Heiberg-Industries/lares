@@ -2,17 +2,23 @@
 //
 // The console does it through the agent's own HTTP door, the same way web chat answers its own
 // cards: `POST /eve/v1/session/<sessionId>` with `{ answers: [{ interactionId, optionId }] }`,
-// HTTP Basic with the route password, and `x-lares-member` naming the signed-in owner. eve's door
-// hands that to `attachSession(sessionId).respond(...)`, which is pinned to the durable session id
-// whatever channel opened it — so the request that a Telegram card is waiting on is answered.
+// HTTP Basic with the route password, and the console's admission for the signed-in owner (the
+// stable member id, a nonce and the purpose `legacy-resolver`). eve's door hands that to
+// `attachSession(sessionId).respond(...)`, which is pinned to the durable session id whatever
+// channel opened it — so the request that a Telegram card is waiting on is answered.
 //
 // Three halves, run for real:
-//   1. the door turns the console's request into the `lares-console` identity of that member;
+//   1. the door turns the console's admitted request into the `lares-console` identity of that member,
+//      named by the address the admission read from the verified users row — never by a header;
 //   2. eve 1.0's REAL answer check (`checkResponders` + `weighResponders`, driven by `helpers/answer-check.ts`)
 //      admits that identity's Approve and Deny on a card a Telegram session raised, when it is the agent's
 //      owner, and refuses anyone else and a card with no requester;
 //   3. the tool's approver check, at execution, reads the answerer from `ctx.approval.responder` (eve 1.0:
 //      `session.auth.current` is the person who asked, on Telegram) and accepts the owner, refuses others.
+// STAND-IN: the admission's database read (`consoleRouteAdmission`), replaced by what it returns for a
+// member it verified (its own test, `packages/agent-kit/tests/console-turn-authority.test.ts`, runs it
+// against Postgres; the real one admits only the agent's owner, so the other members below are refused
+// one step earlier there).
 // NOT DRIVEN: eve's own session route turning the HTTP request into an answer (`attachSession(...).respond`),
 // which needs a running agent; and the console-side proxy that sends it.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -20,7 +26,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { approverFrom, assertApprover, assertApproval, UnauthorizedApproverError } from "../lib/approvals.js";
+/** The members the stand-in admission knows, by stable id, with the address on their users row. */
+const ADDRESS_OF: Record<string, string> = {
+  "member-owner": "owner@example.com",
+  "member-second": "second@example.com",
+  "member-other": "someone-else@example.com",
+};
+vi.mock("@lares/agent-kit/console-turn-authority", async (original) => ({
+  ...(await original<typeof import("@lares/agent-kit/console-turn-authority")>()),
+  consoleRouteAdmission: async (request: Request) => {
+    const memberId = request.headers.get("x-lares-member-id");
+    if (memberId === null) return undefined;
+    const address = ADDRESS_OF[memberId];
+    return { lares_resolver_member_id: memberId, lares_purpose: "legacy-resolver", ...(address ? { user_id: address } : {}) };
+  },
+}));
+
+import { UnauthorizedApproverError } from "@lares/agent-kit/approval-policy";
+import { approverFrom, assertApprover, assertApproval } from "../lib/approvals.js";
 import { driveAnswer } from "./helpers/answer-check.js";
 import { eveDynamicFor } from "./helpers/catalogue-tool.js";
 
@@ -39,29 +62,50 @@ afterEach(() => {
   delete process.env["EVE_ROUTE_PASSWORD_FILE"];
 });
 
-/** What the console sends: the route password, and the signed-in member it vouches for. */
-function consoleRequest(member: string): Request {
+const MEMBER_ID_OF: Record<string, string> = Object.fromEntries(Object.entries(ADDRESS_OF).map(([id, address]) => [address, id]));
+
+/** What the console sends: the route password and its admission for the signed-in member. `extra`
+ *  adds headers a caller might also send (a forged or leftover address header). */
+function consoleRequest(member: string | null, extra: Record<string, string> = {}): Request {
   return new Request("http://10.0.0.5:3000/eve/v1/session/wrun_telegram", {
     method: "POST",
     headers: {
       authorization: `Basic ${Buffer.from("eve:route-pw").toString("base64")}`,
-      "x-lares-member": member,
+      ...(member === null ? {} : {
+        "x-lares-member-id": MEMBER_ID_OF[member] ?? "member-unknown",
+        "x-lares-admission": "n".repeat(43),
+        "x-lares-purpose": "legacy-resolver",
+      }),
+      ...extra,
       "content-type": "application/json",
     },
     body: JSON.stringify({ answers: [{ interactionId: INTERACTION_ID, optionId: "approve" }] }),
   });
 }
 
-async function doorAuth(member: string) {
+async function doorAuth(member: string | null, extra: Record<string, string> = {}) {
   vi.resetModules();
   const { basicFromSecretFile } = await import("../agent/channels/eve.js");
-  return basicFromSecretFile(consoleRequest(member));
+  return basicFromSecretFile(consoleRequest(member, extra));
 }
 
 describe("the console decides an approval that a Telegram session is waiting on", () => {
   it("1. the door gives the console's request the owner's console identity", async () => {
     const auth = await doorAuth(OWNER);
-    expect(auth).toMatchObject({ authenticator: "lares-console", principalId: OWNER, attributes: { user_id: OWNER } });
+    expect(auth).toMatchObject({ authenticator: "lares-console", principalId: OWNER,
+      attributes: { user_id: OWNER, lares_resolver_member_id: "member-owner", lares_purpose: "legacy-resolver" } });
+  });
+
+  it("1. a forged or leftover address header names nobody and approves nothing", async () => {
+    // The route password and an address header alone: eve's plain route identity, which is no door.
+    const forged = await doorAuth(null, { "x-lares-member": OWNER });
+    expect(forged).toMatchObject({ authenticator: "http-basic", attributes: {} });
+    expect(forged?.attributes?.["user_id"]).toBeUndefined();
+    expect(() => assertApprover(approverFrom({ current: forged, initiator: null }, managed), managed)).toThrow(UnauthorizedApproverError);
+    // A leftover owner address beside another member's admission: the admission alone names who it is.
+    const leftover = await doorAuth("someone-else@example.com", { "x-lares-member": OWNER });
+    expect(leftover).toMatchObject({ principalId: "someone-else@example.com", attributes: { user_id: "someone-else@example.com" } });
+    expect(() => assertApprover(approverFrom({ current: leftover, initiator: null }, managed), managed)).toThrow(UnauthorizedApproverError);
   });
 
   it("2. the tool's approver check accepts the owner, and refuses another member — the same check answers a Deny", async () => {
@@ -98,6 +142,9 @@ describe("the console decides an approval that a Telegram session is waiting on"
     });
     it.each(["approve", "deny"])("another member's console %s is refused, on a person's card, a scheduled card and one with no requester", async (optionId) => {
       for (const requester of [telegram, app, null]) expect((await verdict(await doorAuth("someone-else@example.com"), optionId, requester)).stage).not.toBe("admitted");
+    });
+    it.each(["approve", "deny"])("a route-password request that names the owner only by an address header has its %s refused", async (optionId) => {
+      for (const requester of [telegram, app, null]) expect((await verdict(await doorAuth(null, { "x-lares-member": OWNER }), optionId, requester)).stage).not.toBe("admitted");
     });
   });
 

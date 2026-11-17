@@ -54,7 +54,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isAllowedPrincipalId } from "./principals.js";
+import { isAllowedPrincipalId } from "@lares/agent-kit/principals";
 import { parseProposalCallback } from "./proposal-buttons.js";
 
 /**
