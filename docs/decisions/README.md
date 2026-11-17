@@ -30,3 +30,4 @@ ADR-0009 is not part of this repository. ADR-0016 supersedes its runtime choice 
 | [ADR-0025](0025-one-door-layer.md) | One door-neutral layer; a door is an adapter |
 | [ADR-0026](0026-who-pays-for-a-door-turn.md) | Who pays for a Slack or Telegram turn; a managed runtime never reads a key file |
 | [ADR-0027](0027-changing-a-started-agent.md) | Changing a started agent: the key follows agent, incarnation and model name; what is live at Save; a save ends open conversations |
+| [ADR-0028](0028-voices-brands-taught-skills.md) | Proposed: one writing profile per person, brands made in the console whose voice wins for brand work, and skills a person can teach as approved Vault notes that add instructions only |
