@@ -445,6 +445,11 @@ void main();"""
  sql((repo/'services/box/sql/015_exact_approval_execution.sql').read_text())
  sql("DO $$ BEGIN IF (SELECT request_id FROM approval_asks WHERE call_id='legacy-proof')<>'legacy-proof' OR NOT EXISTS(SELECT 1 FROM approval_asks WHERE call_id='reserved-proof' AND request_id IS NULL) THEN RAISE EXCEPTION 'Exact approval migration lost ledger evidence'; END IF; END $$")
  sql("DELETE FROM approval_asks WHERE call_id IN ('legacy-proof','reserved-proof')")
+ # SQL038 (the card record) is additive: a question card with its door, person and address survives reapplication.
+ sql("INSERT INTO approval_asks(request_id,call_id,agent,tool,payload_hash,kind,door,put_to,card_address,shown_whole) VALUES('card-proof','question:card-proof','canary','question','h','question','slack','U-proof','{\"channel\":\"C-proof\",\"message\":\"1.2\"}',true)")
+ sql((repo/'services/box/sql/038_approval_card_record.sql').read_text())
+ sql("DO $$ BEGIN IF (SELECT count(*) FROM approval_asks WHERE request_id='card-proof' AND kind='question' AND door='slack' AND put_to='U-proof' AND card_address->>'message'='1.2' AND shown_whole)<>1 THEN RAISE EXCEPTION 'Card record migration lost data on reapply'; END IF; BEGIN UPDATE approval_asks SET kind='other' WHERE request_id='card-proof'; RAISE EXCEPTION 'Unknown card kind accepted'; EXCEPTION WHEN check_violation THEN NULL; END; END $$")
+ sql("DELETE FROM approval_asks WHERE request_id='card-proof'")
  # The credential journal is part of the baseline.
  sql("DO $$ BEGIN IF to_regclass('standing_facts') IS NULL OR (SELECT count(*) FROM information_schema.columns WHERE table_name='standing_facts' AND column_name IN ('user_id','origin','recorded_at','source','superseded_by'))<>5 THEN RAISE EXCEPTION 'standing_facts missing or not in its final shape'; END IF; END $$")
  sql("DO $$ BEGIN IF to_regclass('keeper_credentials') IS NULL THEN RAISE EXCEPTION 'Credential journal migration missing'; END IF; END $$")

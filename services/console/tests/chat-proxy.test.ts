@@ -10,8 +10,11 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import { forwardChat, CHAT_PATHS, MEMBER_HEADER, ROUTE_USERNAME, resetAnswerClaimsForTests, type ChatDeps } from "../lib/chat-proxy";
+import { forwardChat, CHAT_PATHS, ROUTE_USERNAME, resetAnswerClaimsForTests, type ChatDeps } from "../lib/chat-proxy";
 import { chatSessionCapabilityCookie } from "../lib/chat-session-capability";
+
+/** The header the proxy used to set. It sets none now, and one a browser supplies must not get through. */
+const MEMBER_HEADER = "x-lares-member";
 
 /**
  * THE AGENT KIT'S ENVELOPE CHECK. The proxy shows every body it is about to send to

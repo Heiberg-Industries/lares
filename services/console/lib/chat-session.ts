@@ -57,24 +57,11 @@ export function saveChatSession(
  */
 export const CONSOLE_REFUSAL_HEADER = "x-lares-console-refusal";
 
-/**
- * What a person is told in chat when an answer names a card that is no longer waiting for one: it
- * was already approved or denied (perhaps by this person's own first click), it expired, or it
- * closed with nobody deciding. The chat proxy refuses such an answer before it reaches the agent
- * (`lib/chat-proxy.ts`), and the chat page shows this sentence alone, with the conversation still
- * open. It says only that THIS answer was not used: the first answer may well have been carried
- * out (a sent email), so it must never read as "nothing happened". The Waiting page keeps its own
- * wording (`lib/waiting.ts`).
+/*
+ * The sentences for an answer to a card that is no longer waiting, and for a card whose record
+ * could not be read, are the card layer's (`@lares/agent-kit/card-sentences`), the same in every
+ * door. The chat page recognises them by that module's constants.
  */
-export const ANSWER_NOT_USED = "This request is no longer waiting, so this answer was not used.";
-
-/**
- * What a person is told in chat when the proxy could not read the card's record (or holds too many
- * answers in flight) and so did not send the answer on. Nothing reached the agent. The conversation
- * stays open, as for `ANSWER_NOT_USED`.
- */
-export const ANSWER_UNCHECKED = "I could not check that request just now. Nothing was done. Try again in a moment.";
-
 /**
  * What a person is told in chat when their conversation has been ended for good (`lib/chat-proxy.ts`).
  * Saving a change to the agent ends its open conversations, and so does a change to who may use it. The

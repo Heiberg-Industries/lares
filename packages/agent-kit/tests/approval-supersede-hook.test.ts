@@ -253,6 +253,7 @@ describe("the approval-supersede hook, against a real database", () => {
     db.on("connect", (client) => client.on("error", () => undefined));
     await db.query(readFileSync(join(SQL, "001_baseline.sql"), "utf8"));
     await db.query(readFileSync(join(SQL, "006_approval_session.sql"), "utf8"));
+    await db.query(readFileSync(join(SQL, "038_approval_card_record.sql"), "utf8"));
   }, 120_000);
   afterAll(async () => {
     const { getPool } = await import("../src/db.js");

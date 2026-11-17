@@ -42,7 +42,9 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  */
 import { isIP } from "node:net";
 import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSessionId } from "./chat-session-capability";
-import { ANSWER_NOT_USED, ANSWER_UNCHECKED, CONSOLE_REFUSAL_HEADER, CONVERSATION_GONE } from "./chat-session";
+import { CONSOLE_REFUSAL_HEADER, CONVERSATION_GONE } from "./chat-session";
+import { decideTap } from "@lares/agent-kit/card-layer";
+import { CARD_NO_LONGER_WAITING, CARD_UNCHECKED } from "@lares/agent-kit/card-sentences";
 import { createHash } from "node:crypto";
 import { AGENT_STATE_HEADER, AGENT_NOT_RUNNING } from "./agent-reachability";
 import { signPrivateVaultRequest, PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER } from "./vault-capsule";
@@ -56,29 +58,6 @@ import { PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER } from "@lares/agent-kit/private-c
  */
 export const ROUTE_USERNAME = "eve";
 
-/**
- * The header this proxy sets to name the signed-in member it is acting for. The agent's
- * own door reads it — `MEMBER_HEADER` in every role's `agent/channels/eve.ts`, which
- * `tests/chat-proxy.test.ts` reads as text so the two cannot drift.
- *
- * WHO SETS IT AND WHO MAY NOT. It is set HERE, on the server, from `deps.signedInEmail()` — the
- * same `verify()` of the `lares_session` cookie that `middleware.ts` already made, re-done rather
- * than trusted. It is never read from the incoming request: the browser's own copy is dropped
- * before this, because `REQUEST_HEADERS` below is an allow-list of exactly two names and
- * everything else the browser sent is discarded. A forged `x-lares-member` therefore cannot even
- * reach the agent, let alone be believed by it.
- *
- * WHAT THE AGENT IS TRUSTING. The agent believes this header because the same request carries
- * `Authorization: Basic eve:<route password>`. So the assertion is exactly as strong as that
- * password: **anything holding the agent's route password can claim to be any member** — today the
- * console container and the keeper, both on the owner's own server. That is the honest limit `docs/decisions/0022-the-tested-install-path.md` states.
- *
- * The BODY cannot carry an identity either, and this proxy does not have to parse it to be sure:
- * eve's own `forwardedPrincipal` body field is answered 403 unless the channel declares a
- * `trustedForwarders` predicate (`dist/src/channel/forwarded-principal.js`), and no role's door
- * declares one.
- */
-export const MEMBER_HEADER = "x-lares-member";
 export const MODEL_PURPOSE_REQUIRED_HEADER = "x-lares-model-purpose-required";
 
 /** The controls on one conversation. `end` is the framework's name for closing it for good; `reset`
@@ -100,10 +79,10 @@ export const CHAT_PATHS: readonly RegExp[] = ALLOWED.map((rule) => rule.path);
 /** The same shape `door-forwarder.ts` and `middleware.ts` accept — no dots, no slashes, no host. */
 const AGENT_NAME = /^[a-z][a-z0-9-]{1,30}$/;
 
-/** Everything else the browser sent — cookie, authorization, host, forwarded-*, and any
- *  `x-lares-member` it invented — is dropped. This list is the reason a forged identity header
- *  never leaves the console: it is an allow-list of two names, not a deny-list of known-bad
- *  ones, so a name nobody thought of is discarded too. (The framework's client sets only
+/** Everything else the browser sent — cookie, authorization, host, forwarded-*, and any identity
+ *  header it invented — is dropped. This list is the reason a forged identity header never leaves
+ *  the console: it is an allow-list of two names, not a deny-list of known-bad ones, so a name
+ *  nobody thought of is discarded too. (The framework's client sets only
  *  `content-type`; the browser adds `accept`. It no longer sends `last-event-id`: a stream is
  *  resumed by line position, in the `startIndex` query parameter.) */
 const REQUEST_HEADERS = ["content-type", "accept"] as const;
@@ -227,18 +206,12 @@ export interface ChatDeps {
 /**
  * A SECOND ANSWER TO A CARD THAT IS ALREADY SETTLED is refused here, before it reaches the agent.
  *
- * Why: eve treats an answer to a card that is no longer waiting as a new message, and opens a new
- * turn under the answer's identity. The agent refuses that turn, and the page then shows a dead
- * conversation. A double click, a second tab, an old tab or a request sent again would do it.
- *
- * How the console knows: from the card's own record, `approval_asks`, which the agent writes. It
- * finds the row by the card's four coordinates (the interaction id, this agent, this conversation,
- * this member) — the same coordinates the agent's own route admission needs for any answer
- * (`consoleRouteAdmission` in the agent kit), so a card that has none would be refused there too.
- * The card is waiting only while the row has no outcome and was never used: the agent's response
- * policy writes `approved` when it takes an Approve, and the card's settle writes a Deny, a
- * withdrawal or an expiry. Anything else — no row, two rows, a row that cannot be read — is not a
- * card this console can vouch is waiting, so the answer is not sent (fail closed).
+ * The decision is the card layer's (`decideTap` in the agent kit, the same for every door): the
+ * card's own record, `approval_asks`, says whether it still waits, and for web chat the answer
+ * counts only from the member the card was raised for. This file's part is to find the record by
+ * the card's coordinates (the interaction id, this agent, this conversation, this member) and to
+ * say the layer's sentence. A card with no record, two records, or a record that cannot be read
+ * is not a card this console can vouch is waiting, so the answer is not sent (fail closed).
  *
  * Two answers at the same moment (a double click). The agent takes a delivery at once and writes
  * the outcome on its next step, so for a moment the record still says "waiting" to both. The
@@ -247,7 +220,9 @@ export interface ChatDeps {
  * claim lasts. A claim is dropped at once when the answer did not reach the agent (no answer, or
  * a refusal), so a person may try again; otherwise it lasts `ANSWER_CLAIM_MS`, long after the
  * record has caught up. The claim is no record of answers: it decides nothing on its own beside
- * the record, and it is lost on a restart, after which the record alone decides.
+ * the record, and it is lost on a restart, after which the record alone decides. It stays because
+ * the agent's delivery step drops an answer to a settled card (the framework patch), but that
+ * step does not cover two answers that arrive before the first has settled the card.
  *
  * Two known limits. The console runs as one process today; with two, each would keep its own
  * claims, and only the agent's own checks would stop a double action. And an answer the agent
@@ -272,17 +247,6 @@ function claimAnswer(key: string, now: number): { release(): void } | "taken" | 
   answerClaims.set(key, until);
   // Drops this claim only, never a later one for the same card.
   return { release: () => { if (answerClaims.get(key) === until) answerClaims.delete(key); } };
-}
-
-/** True only when the card's own record says it still waits for an answer. Throws when the record
- *  cannot be read. */
-async function cardStillWaiting(deps: Pick<ChatDeps, "query">, card: { interactionId: string; agent: string; sessionId: string; memberId: string }): Promise<boolean> {
-  const { rows } = await deps.query(
-    `SELECT outcome, used_at FROM approval_asks
-      WHERE request_id = $1 AND agent = $2 AND session_id = $3 AND acting_member_id = $4`,
-    [card.interactionId, card.agent, card.sessionId, card.memberId],
-  );
-  return rows.length === 1 && rows[0]!.outcome === null && rows[0]!.used_at === null;
 }
 
 function refuse(status: number, message: string, notRunning = false): Response {
@@ -454,19 +418,17 @@ export async function forwardChat(request: Request, name: string, path: string, 
       return refuse(409, "Create the conversation before sending a private message.");
     }
     // An answer goes on only to a card that still waits for one, and only once (see
-    // `cardStillWaiting` and `claimAnswer` above). Before anything is signed or sent: a refused
+    // `decideTap` and `claimAnswer` above). Before anything is signed or sent: a refused
     // answer asks for no model authority and opens nothing on the agent.
     if (answer && sessionId) {
-      let waiting: boolean;
-      try {
-        waiting = await cardStillWaiting(deps, { interactionId: answer.interactionId, agent: name, sessionId, memberId: stableMember.id });
-      } catch {
-        return refuse(503, ANSWER_UNCHECKED);
-      }
-      if (!waiting) return refuse(409, ANSWER_NOT_USED);
+      const verdict = await decideTap(
+        { door: "console", tapper: stableMember.id, cards: [{ requestId: answer.interactionId, agent: name, sessionId, memberId: stableMember.id }] },
+        { db: deps },
+      );
+      if (!verdict.deliver) return refuse(verdict.why === "unchecked" ? 503 : verdict.why === "settled" ? 409 : 403, verdict.sentence);
       const claim = claimAnswer(JSON.stringify([name, rows[0]!.incarnation, sessionId, stableMember.id, answer.interactionId]), Date.now());
-      if (claim === "taken") return refuse(409, ANSWER_NOT_USED);
-      if (claim === "full") return refuse(503, ANSWER_UNCHECKED);
+      if (claim === "taken") return refuse(409, CARD_NO_LONGER_WAITING);
+      if (claim === "full") return refuse(503, CARD_UNCHECKED);
       answerClaim = claim;
     }
     const headers = new Headers();

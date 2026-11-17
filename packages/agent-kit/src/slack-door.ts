@@ -25,14 +25,18 @@ import {
 import type { SessionAuthContext } from "eve/context";
 import { calls, type SessionView } from "eve/events";
 
-import { slackDoorVerifier, interceptSlackClaim, tellRefusedSlackTapper, type SlackRefusalNoticeContext } from "./door-channels.js";
+import { slackDoorVerifier, interceptSlackClaim, tellRefusedSlackTapper, slackFailureCode, type SlackRefusalNoticeContext } from "./door-channels.js";
 import { assertDoorAuthority, managedIdentity } from "./door-authority.js";
-import { allowedSlackUserIds, isAllowedSlackUserId } from "./principals.js";
+import { isAllowedSlackUserId } from "./principals.js";
+import { decideTap } from "./card-layer.js";
+import { askedCallOf } from "./approval-events.js";
+import { recordCardPosted } from "./approval-ledger.js";
+import { getPool } from "./db.js";
 import { installSlackProxyDispatcher } from "./slack-dispatcher.js";
 import { slackUnreadableNote } from "./unreadable-content.js";
 import { respondToTurnFailed } from "./gateway-budget.js";
 import { anyCallCompleted, conversationTooLongSlackSentence, withPartlyDone } from "./conversation-too-long.js";
-import { approvalCardRenderer } from "./slack-approval-card.js";
+import { approvalCardRenderer, slackCardShownWhole } from "./slack-approval-card.js";
 
 const DEFAULT_BOT_TOKEN_FILE = "/run/secrets/eve-slack-bot-token";
 const DEFAULT_SIGNING_SECRET_FILE = "/run/secrets/eve-slack-signing-secret";
@@ -102,28 +106,14 @@ export async function replyBeforeClaimApplied(channelId: string, text: string): 
  * workspace. So this is an explicit allow-list and it fails closed: an unset or blank
  * `SLACK_ALLOWED_USER_IDS` admits nobody.
  *
- * This gates who may START a turn. Who may ANSWER a card is narrower, the owner alone
- * (`authorizeSlackAnswer`), and the gated tools check again themselves when an approved call runs
- * (`approval-policy.ts`). All three read the list in `principals.ts`.
+ * This gates who may START a turn. Who may ANSWER a card is the card layer's rule
+ * (`card-layer.ts`, asked from `authorizeSlackAnswer`), and the gated tools check again themselves
+ * when an approved call runs (`approval-policy.ts`). All three read the list in `principals.ts`.
  */
 export function isAllowedSlackUser(message: SlackMessage): boolean {
   const author = message.author;
   if (!author || author.isBot) return false;
   return isAllowedSlackUserId(author.userId);
-}
-
-/**
- * The owner's Slack user id: the FIRST id on the door's list, the same one scheduled messages are
- * addressed to. `undefined` when the list is unset, blank or cannot be read, and every caller
- * treats that as "nobody".
- */
-export function slackOwnerUserId(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  try {
-    const owner = allowedSlackUserIds(env)[0];
-    return typeof owner === "string" && owner.length > 0 ? owner : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -207,11 +197,17 @@ export interface SlackDoorSettings {
   readonly events?: Readonly<Record<string, unknown>>;
 }
 
+/** What a tap on a Slack card carries that the layer reads: who tapped, and the cards it names. */
+export interface SlackTapSubmission {
+  readonly user?: { readonly id?: string };
+  readonly answers?: ReadonlyArray<{ readonly interactionId?: string }>;
+}
+
 export interface SlackDoor {
   readonly authorizeSlackAnswer: (
     ctx: { readonly defaultAuth: SessionAuthContext } & SlackRefusalNoticeContext,
-    submission: { readonly user?: { readonly id?: string } },
-  ) => SlackAnswerResult;
+    submission: SlackTapSubmission,
+  ) => Promise<SlackAnswerResult>;
   readonly onTurnSettled: (event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>) => Promise<void>;
   readonly onSessionEnded: (event: SettledEvent, ctx: ThreadContext, next: () => Promise<void>) => Promise<void>;
   /** The door's whole configuration, so a test can check what is installed. */
@@ -227,39 +223,34 @@ export function slackDoor(settings: SlackDoorSettings): SlackDoor {
   const { role } = settings;
 
   /**
-   * Who may answer an approval or a question card: THE OWNER, and nobody else. Approve and Deny
-   * alike.
+   * A tap on a card (or a typed answer in eve's modal). The door's part is small: it says who
+   * tapped (Slack's own verified user id) and which cards the tap names, and hands both to the card
+   * layer (`decideTap`), which decides whether the tap counts and what to say if it does not. A
+   * refused person is told the layer's sentence, privately; the card is not touched and stays as
+   * it was.
    *
-   * Deliberately narrower than who may start a turn. `SLACK_ALLOWED_USER_IDS` can hold several
-   * trusted people, and any of them may talk to the agent; only the first of them, the owner,
-   * decides what the agent is allowed to do. It matters most for Deny: the tool's own check runs
-   * only when an approved call executes, so a Deny from someone else would never meet it.
-   *
-   * eve calls this for every tap on one of its controls and every typed answer in its modal, in the
-   * webhook handler, BEFORE the answer is delivered to the conversation. Returning `null` refuses
-   * the answer: nothing is delivered, nothing runs, and the card stays pending for the owner. The
-   * person refused is told so privately (`SLACK_TAP_REFUSAL`, `door-channels.ts`).
-   *
-   * It fails closed. No owner id (an unset or blank list, or one that cannot be read) refuses
-   * everybody.
+   * eve calls this for every tap on one of its controls, in the webhook handler, BEFORE the answer
+   * is delivered to the conversation. Returning `null` refuses the answer: nothing is delivered,
+   * nothing runs. Fails closed (the layer refuses a tap that names nobody).
    *
    * Setting `onAnswers` also makes eve stop reading a typed Slack message as an answer to an open
    * card. That is wanted, but it is not what turns typed approvals off: the framework patch does
    * that for every door, and this door does not rely on the side effect.
    */
-  function authorizeSlackAnswer(
+  async function authorizeSlackAnswer(
     ctx: { readonly defaultAuth: SessionAuthContext } & SlackRefusalNoticeContext,
-    submission: { readonly user?: { readonly id?: string } },
-  ): SlackAnswerResult {
-    const owner = slackOwnerUserId();
-    // An answer that names nobody (no user on the payload, or no id) is not the owner's.
-    const answeredBy = submission?.user?.id;
-    if (owner === undefined || typeof answeredBy !== "string" || answeredBy !== owner) {
-      console.warn(`${role} slack: an answer from someone other than the owner was refused; nothing was executed and the card is still pending`);
-      tellRefusedSlackTapper(ctx, answeredBy, role);
-      return null;
-    }
-    return { auth: ctx.defaultAuth };
+    submission: SlackTapSubmission,
+  ): Promise<SlackAnswerResult> {
+    const tapper = submission?.user?.id;
+    const cards = (submission?.answers ?? [])
+      .map((answer) => answer?.interactionId)
+      .filter((id): id is string => typeof id === "string" && id.length > 0)
+      .map((requestId) => ({ requestId }));
+    const verdict = await decideTap({ door: "slack", tapper: typeof tapper === "string" ? tapper : undefined, cards });
+    if (verdict.deliver) return { auth: ctx.defaultAuth };
+    console.warn(`${role} slack: an answer was not accepted (${verdict.why}); nothing was executed`);
+    tellRefusedSlackTapper(ctx, tapper, role, verdict.sentence);
+    return null;
   }
 
   /**
@@ -329,11 +320,40 @@ export function slackDoor(settings: SlackDoorSettings): SlackDoor {
     await answerFailure(event, ctx, next);
   }
 
+  /**
+   * `interaction.opened`. eve posts the card in its own handler; once it has, this reads where the
+   * card sits (eve keeps it in the channel's state) and writes that into the card record, with
+   * whether the card was shown whole. This is the door's adapter function 3 (the card address); the
+   * rule about what an address is for lives in the card layer. Never throws: a card whose address
+   * is missing is an unknown card to the layer, and a failure costs one log line.
+   */
+  async function onInteractionOpened(
+    event: { readonly data: { readonly interactionId?: string; readonly request?: { readonly kind?: string } } },
+    ctx: { readonly channel?: { readonly state?: unknown } },
+    next: () => Promise<void>,
+  ): Promise<void> {
+    await next();
+    try {
+      const requestId = event.data.interactionId;
+      const kind = event.data.request?.kind;
+      if (typeof requestId !== "string" || (kind !== "approval" && kind !== "question")) return;
+      const cards = (ctx.channel?.state as { interactionCards?: ReadonlyArray<{ channelId?: string; ts?: string; requests?: ReadonlyArray<{ interactionId?: string }> }> } | undefined)?.interactionCards;
+      const posted = cards?.find((card) => card.requests?.some((r) => r.interactionId === requestId));
+      if (typeof posted?.channelId !== "string" || typeof posted.ts !== "string") return;
+      const asked = kind === "approval" ? askedCallOf(ctx, requestId) : undefined;
+      const shownWhole = kind === "approval" && asked !== undefined ? slackCardShownWhole(asked.name, asked.input) : kind === "question";
+      await recordCardPosted(getPool(), { requestId, door: "slack", address: { channel: posted.channelId, message: posted.ts }, shownWhole });
+    } catch (error) {
+      console.warn(`${role} slack: could not record where a card was posted`, slackFailureCode(error));
+    }
+  }
+
   /** The door's own renderer. Each handler wraps eve's default for that event and calls `next()`
    *  for everything it does not answer itself. */
   const doorRenderer = defineSlackRenderer({
     events: {
       ...(settings.events ?? {}),
+      "interaction.opened": onInteractionOpened,
       "turn.settled": onTurnSettled,
       "session.ended": onSessionEnded,
     } as Parameters<typeof defineSlackRenderer>[0]["events"],
@@ -354,7 +374,7 @@ export function slackDoor(settings: SlackDoorSettings): SlackDoor {
     onAppMention: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, claimReply(message)) ? null : admitSlackMessage(ctx, message),
     onDirectMessage: async (ctx, message) => await interceptSlackClaim(message, undefined, process.env, claimReply(message)) ? null : admitDirect(ctx, message),
     onMessageEdited: ignoreSlackMessageEdit,
-    // The third way in: a tap on a card. Narrower than the two above: the owner only.
+    // The third way in: a tap on a card. The card layer decides whether it counts.
     onAnswers: authorizeSlackAnswer,
     renderers: [approvalCardRenderer, doorRenderer],
   };

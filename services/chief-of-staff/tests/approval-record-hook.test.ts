@@ -18,14 +18,29 @@ describe("the approval-record hook (eve 1.0 interaction events)", () => {
     }]);
   });
 
-  it("ignores a question or a sign-in — only a tool approval is a card", async () => {
+  it("ignores a sign-in; a question is written as a card of its own kind, not as an approval", async () => {
     const asked: unknown[] = [];
-    const h = makeApprovalRecord({ record: (a) => { asked.push(a); } });
+    const questions: unknown[] = [];
+    const h = makeApprovalRecord({ record: (a) => { asked.push(a); }, question: (a) => { questions.push(a); } });
     const s = eveSession();
     s.call("call-q", "ask_question", {});
     await h["interaction.opened"](s.open("q-1", "call-q", "question"), { ...base, view: s.view });
     await h["interaction.opened"](s.open("q-2", "call-q", "sign-in"), { ...base, view: s.view });
     expect(asked).toEqual([]);
+    expect(questions).toEqual([expect.objectContaining({ requestId: "q-1", agent: "fixture-agent" })]);
+  });
+
+  it("writes down the door a card was raised on and the person it was put to, from who started the conversation", async () => {
+    const origins: unknown[] = [];
+    const h = makeApprovalRecord({ record: () => {}, origin: (a) => { origins.push(a); } });
+    const s = eveSession();
+    s.call("call-1", "gmail_send", { to: ["a@x.example"] });
+    const slack = { authenticator: "slack-webhook", principalType: "user", attributes: { author_type: "user", user_id: "U1" } };
+    await h["interaction.opened"](s.open("req-1", "call-1"), { ...base, session: { id: "s1", auth: { initiator: slack } }, view: s.view });
+    s.call("call-2", "gmail_send", { to: ["a@x.example"] });
+    await h["interaction.opened"](s.open("req-2", "call-2"), { ...base, view: s.view });
+    // A card with no door initiator (a scheduled job) gets no door.
+    expect(origins).toEqual([{ requestId: "req-1", door: "slack", putTo: "U1" }]);
   });
 
   it("records nothing for a card whose tool the session view does not know", async () => {
@@ -69,14 +84,18 @@ describe("the approval-record hook (eve 1.0 interaction events)", () => {
     expect(answers.filter((a) => a["outcome"] === "approved").map((a) => a["requestId"])).toEqual(["accepted-approve"]);
   });
 
-  it("does not record the end of a question", async () => {
+  it("records the end of a question as answered or not, and never as an approval", async () => {
     const answers: unknown[] = [];
-    const h = makeApprovalRecord({ answer: (a) => { answers.push(a); } });
+    const ends: unknown[] = [];
+    const h = makeApprovalRecord({ answer: (a) => { answers.push(a); }, questionEnd: (a) => { ends.push(a); } });
     const s = eveSession();
     s.call("call-q", "ask_question", {});
     s.open("q-1", "call-q", "question");
     await h["interaction.settled"](s.settle("q-1", "accepted", "yes"), { ...base, view: s.view });
+    s.open("q-2", "call-q", "question");
+    await h["interaction.settled"](s.settle("q-2", "withdrawn"), { ...base, view: s.view });
     expect(answers).toEqual([]);
+    expect(ends).toEqual([{ requestId: "q-1", answered: true }, { requestId: "q-2", answered: false }]);
   });
 
   it("never throws on an event shape it cannot read", async () => {

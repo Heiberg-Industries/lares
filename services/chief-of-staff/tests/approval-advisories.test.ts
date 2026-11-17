@@ -19,7 +19,10 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The card record: the tap in the case below names no card the record knows.
+vi.mock("@lares/agent-kit/db", () => ({ getPool: () => ({ query: async () => ({ rows: [] }) }) }));
 
 import {
   ApprovalPayloadChangedError,
@@ -80,7 +83,7 @@ function ledgerWithRow(overrides: Partial<AskRow> = {}): {
 }
 
 describe("(1) what is shown is not what runs", () => {
-  it("'Exec approval display truncation could hide the command being approved' — a shortened card says so", () => {
+  it("'Exec approval display truncation could hide the command being approved' — a shortened card says so", async () => {
     const out = detailsForApproval("gmail_send", {
       to: ["a@x.example"],
       subject: "Long",
@@ -92,7 +95,7 @@ describe("(1) what is shown is not what runs", () => {
     expect(out).toMatch(/— shortened — \d+ characters are not shown\.$/);
   });
 
-  it("a send names every recipient, never 'and 3 more' alone", () => {
+  it("a send names every recipient, never 'and 3 more' alone", async () => {
     const out = detailsForApproval("gmail_send", {
       to: ["a@x.example", "b@x.example", "c@x.example", "d@x.example"],
       subject: "Q3",
@@ -117,7 +120,7 @@ describe("(2) the approval is not bound to the exact payload", () => {
     expect(settled).toEqual(["payload-changed"]);
   });
 
-  it("'Shell wrapper argv could change between approval and execution' — the fingerprint covers every field", () => {
+  it("'Shell wrapper argv could change between approval and execution' — the fingerprint covers every field", async () => {
     // Not just the recipient: an added, unreviewed field must move the hash too, or a wrapper
     // that appends a field the card never showed would slip through unnoticed.
     const shown = payloadFingerprint("gmail_send", { to: ["a@x.example"], subject: "Q3" });
@@ -131,7 +134,7 @@ describe("(2) the approval is not bound to the exact payload", () => {
 });
 
 describe("(3) the approver's identity is not checked", () => {
-  it("'QQBot native approval buttons did not enforce configured approver identity' — a tap from another id is refused", () => {
+  it("'QQBot native approval buttons did not enforce configured approver identity' — a tap from another id is refused", async () => {
     const env = { TELEGRAM_PRINCIPAL_ID: "111" } as NodeJS.ProcessEnv;
     const raw = JSON.stringify({
       update_id: 1,
@@ -142,10 +145,10 @@ describe("(3) the approver's identity is not checked", () => {
         data: `${HITL_CALLBACK_PREFIX}0`,
       },
     });
-    expect(refusedApprovalTap(raw, env)).toEqual({ callbackQueryId: "cb1", chatId: "111" });
+    expect(await refusedApprovalTap(raw, env)).toEqual({ callbackQueryId: "cb1", chatId: "111" });
   });
 
-  it("'Slack plugin approvals used the exec approver gate for plugin actions' — one gate, named per tool", () => {
+  it("'Slack plugin approvals used the exec approver gate for plugin actions' — one gate, named per tool", async () => {
     // The structural rule, re-asserted here directly over the real catalogue/tool files —
     // not by trusting board-wiring.test.ts, which is a separate test.
     const dirs = [join(here, "..", "agent", "tools"), join(here, "..", "catalogue")];
@@ -209,7 +212,7 @@ describe("(4) an approval lives longer or wider than what was reviewed", () => {
 });
 
 describe("what this installation has NOT closed, stated rather than hidden", () => {
-  it("eve discards the Telegram tapper's identity; ours is checked at the door, not by the framework", () => {
+  it("eve discards the Telegram tapper's identity; ours is checked at the door, not by the framework", async () => {
     // eve's own Telegram HITL resume carries `auth: null` — no tapper identity at all — and
     // approverFrom's initiator fallback is the workaround, not the framework doing this for us.
     // Calling the real function proves the fallback still works; reading the file proves the
@@ -227,7 +230,7 @@ describe("what this installation has NOT closed, stated rather than hidden", () 
     expect(src).toContain("INITIATOR");
   });
 
-  it("a reusable grant (eve's once()) is used by no tool in this repo — a grep, so it stays true", () => {
+  it("a reusable grant (eve's once()) is used by no tool in this repo — a grep, so it stays true", async () => {
     // Matches actual USE as an approval policy (`approval: once(...)`, the same shape every
     // tool's real policy is assigned in, e.g. `approval: always()` / `approval: approvalFor(...)`)
     // rather than a bare `once(` substring — echo_note.ts's own header says, in prose, "not

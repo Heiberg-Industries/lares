@@ -271,6 +271,32 @@ when the layer is built.
    over (rule 6). Rule 9 says a new door adds no sentence. Does a new door reuse one general
    sentence, or may it add its variant to the kit?
 
+## Build status (18 November 2026)
+
+The card rules (decision rules 1 to 4) are built. The Context table above describes the code
+before the build.
+
+- The kit holds them in `card-layer.ts` (the door table, the decision whether a tap counts, the
+  rule for a shortened card) and `card-sentences.ts` (every sentence; no imports, so the console's
+  browser code reads it too). A door adapter calls `decideTap`: Slack in `slack-door.ts`, Telegram
+  in `lib/telegram-tap-gate.ts`, web chat in the console's `lib/chat-proxy.ts`.
+- Who may answer: an approval, the owner; a question, the person it was put to; a card the record
+  does not know, the owner (the tap goes to eve) and nobody else. Web chat keeps failing closed on
+  an unknown card for everybody (open question 1, unchanged).
+- The card record (`approval_asks`, database file `038_approval_card_record.sql`) holds the door,
+  the card address (chat and message), the person the card was put to, whether it was shown whole,
+  and the kind of card (approval or question). The kit hook writes the door and the person when a
+  card opens; the door writes the address once it has posted the card.
+- A late or second tap on a settled card is dropped in eve's delivery step by a second hunk in
+  `patches/eve.patch` (`harness/hitl/stale-responses.js`), and the doors ask the layer first so
+  the person is told the "no longer waiting" sentence. Web chat still keeps its short in-memory
+  claim list for two answers at the same instant, because the hunk covers only a card that has
+  already settled (Unverified 4).
+- A shortened card (the owner's decision of 16 November 2026): the door offers no Approve and
+  says where the whole card can be read, from the door table. Telegram follows it today. Slack
+  still keeps Approve on a card it cut; its table row says it does not show a long card whole until
+  the Slack renderer draws one across blocks.
+
 ## Cross-references
 
 - ADR-0016 §2 and ADR-0021 §7 — the pinned, patched framework and sending patches upstream.

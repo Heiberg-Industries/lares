@@ -6,9 +6,10 @@
  *
  *   1. A REPLY TO THE AGENT MUST REACH THE AGENT. See `@lares/agent-kit/telegram-reply-fix` for
  *      what eve does with a reply to a bot message, and why the marker is cleared on the way in.
- *   2. A TAP THAT MAY NOT BE ANSWERED IS STOPPED HERE (`lib/telegram-tap-gate.ts`), before it is
- *      forwarded: an approval-card tap from somebody who is not an allowed approver, and any tap
- *      the gate does not recognise.
+ *   2. A TAP THAT DOES NOT COUNT IS STOPPED HERE (`lib/telegram-tap-gate.ts`, which asks the card
+ *      layer), before it is forwarded: a tap from somebody who may not answer, a tap on a card that
+ *      is no longer waiting, and any tap the gate does not recognise. The sentence the person is
+ *      told is the layer's.
  *   3. ONE CONVERSATION PER CALENDAR DAY. Retiring a session by its exact id is the only way to
  *      give this chat one conversation per day in the home time zone (see
  *      `lib/telegram-rotation.ts`). On the first message of a new day this door ends the session
@@ -39,8 +40,6 @@ import { callTelegramApi } from "../../lib/telegram-send.js";
 import {
   refusedTap,
   secretMatches,
-  TAP_REFUSAL,
-  TAP_UNRECOGNISED,
   tapCapturePaths,
   tapShape,
 } from "../../lib/telegram-tap-gate.js";
@@ -110,7 +109,7 @@ export default defineChannel({
       // The decision does not wait on `authentic`: it is a pure reading of the body, and a tap
       // that would be refused is not forwarded even when the secret could not be checked here.
       // Only the ANSWER to the tapper needs a request Telegram really sent.
-      const refused = refusedTap(body) ?? refusedTap(raw);
+      const refused = (await refusedTap(body)) ?? (await refusedTap(raw));
       if (refused) {
         if (!authentic) {
           // Not ours to answer, and not forwarded either. 401 is what the framework's own route
@@ -132,7 +131,7 @@ export default defineChannel({
             method: "answerCallbackQuery",
             body: {
               callback_query_id: refused.callbackQueryId,
-              text: refused.reason === "not-allowed" ? TAP_REFUSAL : TAP_UNRECOGNISED,
+              text: refused.sentence,
               show_alert: true,
             },
           });

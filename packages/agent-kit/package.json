@@ -145,6 +145,8 @@
     "./approval-policy": "./src/approval-policy.ts",
     "./slack-approval-card": "./src/slack-approval-card.ts",
     "./slack-door": "./src/slack-door.ts",
+    "./card-layer": "./src/card-layer.ts",
+    "./card-sentences": "./src/card-sentences.ts",
     "./definition-model": "./src/definition-model.ts",
     "./model-invocation": "./src/model-invocation.ts",
     "./owner-job": "./src/owner-job.ts",

@@ -26,9 +26,8 @@ import {
 } from "./ChatTranscript";
 import { agentNotRunning, notRunningSay } from "../lib/agent-reachability";
 import { conversationTooLongOf, limitReplyOf } from "../lib/limit-reply";
+import { CARD_NO_LONGER_WAITING, CARD_UNCHECKED } from "@lares/agent-kit/card-sentences";
 import {
-  ANSWER_NOT_USED,
-  ANSWER_UNCHECKED,
   chatSessionKey,
   CONSOLE_REFUSAL_HEADER,
   ENDED_SAY,
@@ -62,7 +61,7 @@ function proxySentence(error: unknown): string | null {
 
 /** The proxy's two refusals of an answer that leave the conversation open (see `hasError`). */
 function answerKeptOpen(sentence: string | null): sentence is string {
-  return sentence === ANSWER_NOT_USED || sentence === ANSWER_UNCHECKED;
+  return sentence === CARD_NO_LONGER_WAITING || sentence === CARD_UNCHECKED;
 }
 
 /**

@@ -58,13 +58,12 @@ import {
   refusedTap,
   secretMatches,
   SIGN_IN_CALLBACK_PREFIX,
-  TAP_REFUSAL,
-  TAP_UNRECOGNISED,
   tapCapturePaths,
   tapLane,
   tapShape,
 } from "../lib/telegram-tap-gate.js";
 import webhook from "../agent/channels/telegram-webhook.js";
+import { CARD_NO_LONGER_WAITING, CARD_REFUSED, CARD_UNCHECKED, CARD_UNRECOGNISED } from "@lares/agent-kit/card-sentences";
 
 // The front door only ACTS on an update Telegram really sent: it compares the request's secret
 // header with the installation's webhook secret, read from a file. Throwaway files stand in.
@@ -159,12 +158,12 @@ const tap = (fromId: number, data: unknown, over: Record<string, unknown> = {}) 
   });
 
 describe("an approval tap, in the installed eve's own format", () => {
-  it("eve still prefixes a card's callback data the way the gate expects", () => {
+  it("eve still prefixes a card's callback data the way the gate expects", async () => {
     expect(hitl.TELEGRAM_HITL_CALLBACK_PREFIX).toBe(HITL_CALLBACK_PREFIX);
     expect(authorization.TELEGRAM_AUTHORIZATION_CALLBACK_PREFIX).toBe(SIGN_IN_CALLBACK_PREFIX);
   });
 
-  it("every button eve puts on an approval card is recognised as an approval tap", () => {
+  it("every button eve puts on an approval card is recognised as an approval tap", async () => {
     // Twenty cards: forty buttons, so the base-36 counter runs past 9 into letters and into two
     // characters (eve:0 … eve:z, eve:10 …). A gate that only knew digits would wave those through.
     const { buttons, state } = eveButtons(20);
@@ -180,7 +179,7 @@ describe("an approval tap, in the installed eve's own format", () => {
     expect(callbacks[buttons[1]!.callback_data]).toEqual({ optionId: "approve", interactionId: "interaction-0" });
   });
 
-  it("eve reads the fixture as a button tap carrying that same data", () => {
+  it("eve reads the fixture as a button tap carrying that same data", async () => {
     const approve = eveButtons().buttons.find((b) => b.text === "Approve")!;
     const parsed = inbound.parseTelegramUpdate(JSON.parse(tap(STRANGER, approve.callback_data)));
     expect(parsed?.kind).toBe("callback_query");
@@ -188,9 +187,9 @@ describe("an approval tap, in the installed eve's own format", () => {
     expect(parsed?.callbackQuery?.from.id).toBe(String(STRANGER));
   });
 
-  it("refuses a non-owner's tap on Approve, and on Deny", () => {
+  it("refuses a non-owner's tap on Approve, and on Deny", async () => {
     for (const button of eveButtons().buttons) {
-      expect(refusedTap(tap(STRANGER, button.callback_data), env), button.text).toEqual({
+      expect(await refusedTap(tap(STRANGER, button.callback_data), env), button.text).toMatchObject({
         callbackQueryId: "cb1",
         chatId: String(OWNER),
         reason: "not-allowed",
@@ -198,67 +197,67 @@ describe("an approval tap, in the installed eve's own format", () => {
     }
   });
 
-  it("lets the owner's own tap through", () => {
+  it("lets the owner's own tap through", async () => {
     for (const button of eveButtons().buttons) {
-      expect(refusedTap(tap(OWNER, button.callback_data), env), button.text).toBeNull();
+      expect(await refusedTap(tap(OWNER, button.callback_data), env), button.text).toBeNull();
     }
   });
 
-  it("refusedApprovalTap gives the same verdict in the shape it has always had, without the reason", () => {
+  it("refusedApprovalTap gives the same verdict in the shape it has always had, without the reason", async () => {
     const approve = eveButtons().buttons[1]!.callback_data;
-    expect(refusedApprovalTap(tap(STRANGER, approve), env)).toEqual({ callbackQueryId: "cb1", chatId: String(OWNER) });
-    expect(refusedApprovalTap(tap(OWNER, "eve2:0"), env)).toEqual({ callbackQueryId: "cb1", chatId: String(OWNER) });
-    expect(refusedApprovalTap(tap(OWNER, approve), env)).toBeNull();
-    expect(refusedApprovalTap("{not json", env)).toBeNull();
+    expect(await refusedApprovalTap(tap(STRANGER, approve), env)).toEqual({ callbackQueryId: "cb1", chatId: String(OWNER) });
+    expect(await refusedApprovalTap(tap(OWNER, "eve2:0"), env)).toEqual({ callbackQueryId: "cb1", chatId: String(OWNER) });
+    expect(await refusedApprovalTap(tap(OWNER, approve), env)).toBeNull();
+    expect(await refusedApprovalTap("{not json", env)).toBeNull();
   });
 });
 
 describe("who may tap, and what counts as a tap the gate knows", () => {
   const card = () => eveButtons().buttons[1]!.callback_data;
 
-  it("refuses a tap it cannot attribute at all — a card tap with no sender", () => {
-    expect(refusedTap(tap(OWNER, card(), { from: undefined }), env)).toMatchObject({ reason: "not-allowed" });
-    expect(refusedTap(tap(OWNER, card(), { from: "111" }), env)).toMatchObject({ reason: "not-allowed" });
-    expect(refusedTap(tap(OWNER, card(), { from: { is_bot: false } }), env)).toMatchObject({ reason: "not-allowed" });
+  it("refuses a tap it cannot attribute at all — a card tap with no sender", async () => {
+    expect(await refusedTap(tap(OWNER, card(), { from: undefined }), env)).toMatchObject({ reason: "not-allowed" });
+    expect(await refusedTap(tap(OWNER, card(), { from: "111" }), env)).toMatchObject({ reason: "not-allowed" });
+    expect(await refusedTap(tap(OWNER, card(), { from: { is_bot: false } }), env)).toMatchObject({ reason: "not-allowed" });
   });
 
-  it("refuses a bot's tap even when its id is on the list", () => {
-    expect(refusedTap(tap(OWNER, card(), { from: { id: OWNER, is_bot: true } }), env)).toMatchObject({ reason: "not-allowed" });
+  it("refuses a bot's tap even when its id is on the list", async () => {
+    expect(await refusedTap(tap(OWNER, card(), { from: { id: OWNER, is_bot: true } }), env)).toMatchObject({ reason: "not-allowed" });
   });
 
-  it("reads a string id, and survives a tap with no chat", () => {
+  it("reads a string id, and survives a tap with no chat", async () => {
     const raw = JSON.stringify({ callback_query: { id: "cb4", from: { id: String(STRANGER) }, data: card() } });
-    expect(refusedTap(raw, env)).toEqual({ callbackQueryId: "cb4", chatId: null, reason: "not-allowed" });
+    expect(await refusedTap(raw, env)).toMatchObject({ callbackQueryId: "cb4", chatId: null, reason: "not-allowed" });
     const owners = JSON.stringify({ callback_query: { id: "cb5", from: { id: String(OWNER) }, data: card() } });
-    expect(refusedTap(owners, env)).toBeNull();
+    expect(await refusedTap(owners, env)).toBeNull();
   });
 
-  it("admits nobody when the allowlist is unset — fail closed, like every other principal read", () => {
-    expect(refusedTap(tap(OWNER, card()), {} as NodeJS.ProcessEnv)).toMatchObject({ reason: "not-allowed" });
-    expect(refusedTap(tap(OWNER, card()), { TELEGRAM_PRINCIPAL_ID: "  " } as NodeJS.ProcessEnv)).toMatchObject({ reason: "not-allowed" });
+  it("admits nobody when the allowlist is unset — fail closed, like every other principal read", async () => {
+    expect(await refusedTap(tap(OWNER, card()), {} as NodeJS.ProcessEnv)).toMatchObject({ reason: "not-allowed" });
+    expect(await refusedTap(tap(OWNER, card()), { TELEGRAM_PRINCIPAL_ID: "  " } as NodeJS.ProcessEnv)).toMatchObject({ reason: "not-allowed" });
   });
 
-  it("gates eve's sign-in button like a card: an allowed approver only", () => {
+  it("gates eve's sign-in button like a card: an allowed approver only", async () => {
     expect(tapLane(`${SIGN_IN_CALLBACK_PREFIX}${OWNER}`)).toBe("sign-in");
-    expect(refusedTap(tap(OWNER, `${SIGN_IN_CALLBACK_PREFIX}${OWNER}`), env)).toBeNull();
-    expect(refusedTap(tap(STRANGER, `${SIGN_IN_CALLBACK_PREFIX}${OWNER}`), env)).toMatchObject({ reason: "not-allowed" });
+    expect(await refusedTap(tap(OWNER, `${SIGN_IN_CALLBACK_PREFIX}${OWNER}`), env)).toBeNull();
+    expect(await refusedTap(tap(STRANGER, `${SIGN_IN_CALLBACK_PREFIX}${OWNER}`), env)).toMatchObject({ reason: "not-allowed" });
   });
 
-  it("never touches the proposal-button lane, which checks identity itself", () => {
+  it("never touches the proposal-button lane, which checks identity itself", async () => {
     for (const data of ["np:a:61", "np:r:61", "ap:a:7", "ap:r:7"]) {
       expect(tapLane(data)).toBe("proposal");
-      expect(refusedTap(tap(STRANGER, data), env), data).toBeNull();
-      expect(refusedTap(tap(OWNER, data), env), data).toBeNull();
+      expect(await refusedTap(tap(STRANGER, data), env), data).toBeNull();
+      expect(await refusedTap(tap(OWNER, data), env), data).toBeNull();
     }
   });
 
-  it("never touches a message, and never throws on a body it cannot read", () => {
-    expect(refusedTap(JSON.stringify({ message: { chat: { id: OWNER }, text: "hei" } }), env)).toBeNull();
-    expect(refusedTap(JSON.stringify({ edited_message: { chat: { id: OWNER }, text: "hei" } }), env)).toBeNull();
-    expect(refusedTap("{not json", env)).toBeNull();
-    expect(refusedTap("", env)).toBeNull();
-    expect(refusedTap("null", env)).toBeNull();
-    expect(refusedTap("[]", env)).toBeNull();
+  it("never touches a message, and never throws on a body it cannot read", async () => {
+    expect(await refusedTap(JSON.stringify({ message: { chat: { id: OWNER }, text: "hei" } }), env)).toBeNull();
+    expect(await refusedTap(JSON.stringify({ edited_message: { chat: { id: OWNER }, text: "hei" } }), env)).toBeNull();
+    expect(await refusedTap("{not json", env)).toBeNull();
+    expect(await refusedTap("", env)).toBeNull();
+    expect(await refusedTap("null", env)).toBeNull();
+    expect(await refusedTap("[]", env)).toBeNull();
   });
 });
 
@@ -281,34 +280,34 @@ describe("a tap the gate does not recognise is refused, whoever tapped (fail clo
     ["data that is an object", { optionId: "approve" }],
   ];
 
-  it.each(UNRECOGNISED)("%s: refused for a stranger", (_name, data) => {
+  it.each(UNRECOGNISED)("%s: refused for a stranger", async (_name, data) => {
     expect(tapLane(data)).toBe("unrecognised");
-    expect(refusedTap(tap(STRANGER, data), env)).toMatchObject({ callbackQueryId: "cb1", reason: "not-allowed" });
+    expect(await refusedTap(tap(STRANGER, data), env)).toMatchObject({ callbackQueryId: "cb1", reason: "not-allowed" });
   });
 
-  it.each(UNRECOGNISED)("%s: refused for the owner too", (_name, data) => {
-    expect(refusedTap(tap(OWNER, data), env)).toEqual({
+  it.each(UNRECOGNISED)("%s: refused for the owner too", async (_name, data) => {
+    expect(await refusedTap(tap(OWNER, data), env)).toMatchObject({
       callbackQueryId: "cb1",
       chatId: String(OWNER),
       reason: "unrecognised",
     });
   });
 
-  it("a callback_query that is not an object is a tap nobody can attribute: refused", () => {
+  it("a callback_query that is not an object is a tap nobody can attribute: refused", async () => {
     for (const shape of ['"eve:0"', "42", "true", "[1]"]) {
       const raw = `{"update_id":1,"callback_query":${shape}}`;
-      expect(refusedTap(raw, env), shape).toEqual({ callbackQueryId: "", chatId: null, reason: "unrecognised" });
+      expect(await refusedTap(raw, env), shape).toMatchObject({ callbackQueryId: "", chatId: null, reason: "unrecognised" });
     }
   });
 
-  it("an update carrying BOTH a message and a tap is judged as the tap", () => {
+  it("an update carrying BOTH a message and a tap is judged as the tap", async () => {
     // eve reads `message` first and would ignore the tap; the gate must not let the one hide the
     // other from it, in case that order ever changes.
     const raw = JSON.stringify({
       message: { message_id: 2, chat: { id: OWNER, type: "private" }, text: "hei" },
       callback_query: { id: "cb9", from: { id: STRANGER }, data: eveButtons().buttons[1]!.callback_data },
     });
-    expect(refusedTap(raw, env)).toMatchObject({ callbackQueryId: "cb9", reason: "not-allowed" });
+    expect(await refusedTap(raw, env)).toMatchObject({ callbackQueryId: "cb9", reason: "not-allowed" });
   });
 });
 
@@ -380,7 +379,7 @@ describe("the webhook front door, with the tap gate in it", () => {
     expect(warned).toHaveBeenCalledTimes(1);
     // One direct Bot API call, through the proxied fetch: the answer to the tap.
     expect(bot.calls).toEqual([
-      { method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: TAP_REFUSAL, show_alert: true } },
+      { method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: CARD_REFUSED, show_alert: true } },
     ]);
   });
 
@@ -393,10 +392,10 @@ describe("the webhook front door, with the tap gate in it", () => {
     expect(response.status).toBe(200);
     expect(forwarded).toEqual([]);
     expect(bot.calls).toEqual([
-      { method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: TAP_UNRECOGNISED, show_alert: true } },
+      { method: "answerCallbackQuery", body: { callback_query_id: "cb1", text: CARD_UNRECOGNISED, show_alert: true } },
     ]);
     // The owner is never told they are not the owner.
-    expect(TAP_UNRECOGNISED).not.toBe(TAP_REFUSAL);
+    expect(CARD_UNRECOGNISED).not.toBe(CARD_REFUSED);
   });
 
   it("leaves a proposal button to its own lane: forwarded untouched, whoever tapped", async () => {
@@ -524,7 +523,7 @@ describe("the webhook front door, with the tap gate in it", () => {
     expect(ended).toEqual([]);
   });
 
-  it("compares the secret without caring about length, and never matches an empty one", () => {
+  it("compares the secret without caring about length, and never matches an empty one", async () => {
     expect(secretMatches("fixture-secret", "fixture-secret")).toBe(true);
     expect(secretMatches("fixture-secre", "fixture-secret")).toBe(false);
     expect(secretMatches("fixture-secret-and-more", "fixture-secret")).toBe(false);
@@ -560,7 +559,7 @@ describe("the live probe's capture: one tap's shape, on request, and nothing els
       },
     });
 
-  it("tapShape copies the ids, the chat type and the callback data — never text, names or usernames", () => {
+  it("tapShape copies the ids, the chat type and the callback data — never text, names or usernames", async () => {
     const shape = tapShape(realTap(STRANGER, "eve:1"));
     expect(shape).toEqual({
       update_id: 77,
@@ -577,7 +576,7 @@ describe("the live probe's capture: one tap's shape, on request, and nothing els
     }
   });
 
-  it("tapShape drops a field that is not a plain value, and is null for anything that is not a tap", () => {
+  it("tapShape drops a field that is not a plain value, and is null for anything that is not a tap", async () => {
     const odd = JSON.stringify({ callback_query: { id: { nested: SECRET_TEXT }, from: { id: [1] }, data: { text: SECRET_TEXT } } });
     expect(JSON.stringify(tapShape(odd))).not.toContain(SECRET_TEXT);
     expect(tapShape(JSON.stringify({ message: { chat: { id: OWNER }, text: SECRET_TEXT } }))).toBeNull();
@@ -585,10 +584,10 @@ describe("the live probe's capture: one tap's shape, on request, and nothing els
     expect(tapShape("null")).toBeNull();
   });
 
-  it("the gate reaches the same verdict on the captured shape as on the update it came from", () => {
+  it("the gate reaches the same verdict on the captured shape as on the update it came from", async () => {
     for (const [fromId, data] of [[OWNER, "eve:1"], [STRANGER, "eve:1"], [OWNER, "probe:tap"], [STRANGER, "np:a:61"]] as const) {
       const raw = realTap(fromId, data);
-      expect(refusedTap(JSON.stringify(tapShape(raw)), env), `${fromId} ${data}`).toEqual(refusedTap(raw, env));
+      expect(await refusedTap(JSON.stringify(tapShape(raw)), env), `${fromId} ${data}`).toEqual(await refusedTap(raw, env));
     }
   });
 
@@ -672,3 +671,43 @@ describe("the live probe's capture: one tap's shape, on request, and nothing els
     });
   });
 });
+
+// ── The gate asks the card layer (ADR-0025): the Telegram adapter's part of the shared contract ──
+describe("the gate hands the tap to the card layer and says only the layer's sentences", () => {
+  const SECOND = 333;
+  const both = { TELEGRAM_PRINCIPAL_ID: `${OWNER},${SECOND}` } as NodeJS.ProcessEnv;
+  const record = (row: Record<string, unknown> | null) => ({
+    seen: [] as unknown[][],
+    async query(_sql: string, values: unknown[]) {
+      this.seen.push(values);
+      return { rows: row === null ? [] : [{ request_id: "r1", kind: "approval", door: "telegram", put_to: null, shown_whole: true, acting_member_id: null, outcome: null, used_at: null, ...row }] };
+    },
+  });
+
+  it("looks the card up by the chat and the message the button sits on", async () => {
+    const db = record({});
+    expect(await refusedTap(tap(OWNER, "eve:1"), both, db)).toBeNull();
+    expect(db.seen).toEqual([["telegram", String(OWNER), "7"]]);
+  });
+
+  it("refuses a second allowed person's tap on an approval, with the kit's sentence", async () => {
+    expect(await refusedTap(tap(SECOND, "eve:1"), both, record({}))).toMatchObject({ sentence: CARD_REFUSED });
+  });
+
+  it("tells a late or second tap on a settled card the kit's 'no longer waiting' sentence and forwards nothing", async () => {
+    const refused = await refusedTap(tap(OWNER, "eve:1"), both, record({ outcome: "approved" }));
+    expect(refused).toMatchObject({ callbackQueryId: "cb1", sentence: CARD_NO_LONGER_WAITING });
+  });
+
+  it("an unknown card: the owner's tap goes through to eve, a second person's is refused", async () => {
+    expect(await refusedTap(tap(OWNER, "eve:1"), both, record(null))).toBeNull();
+    expect(await refusedTap(tap(SECOND, "eve:1"), both, record(null))).toMatchObject({ sentence: CARD_REFUSED });
+  });
+
+  it("a record that cannot be read lets only the owner through", async () => {
+    const broken = { async query(): Promise<never> { throw new Error("down"); } };
+    expect(await refusedTap(tap(OWNER, "eve:1"), both, broken)).toBeNull();
+    expect(await refusedTap(tap(SECOND, "eve:1"), both, broken)).toMatchObject({ sentence: CARD_UNCHECKED });
+  });
+});
+

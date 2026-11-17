@@ -50,7 +50,8 @@ import {
   type SlackInteractionCard,
   type SlackInteractionCardParts,
 } from "eve/channels/slack";
-import { coversApproval, detailsForApproval, shortenedNotice } from "./approval-summary.js";
+import { coversApproval, detailsForApproval, shortenedNotice, summarizeApproval } from "./approval-summary.js";
+import { textShownWhole } from "./card-layer.js";
 
 /** Slack refuses a section whose text is longer than this. The kit stays under it on its own
  *  (`DETAILS_MAX_LENGTH`); this is the check that it did. */
@@ -139,6 +140,22 @@ export function approvalInteractionCard(
   // A summarised tool with nothing more to show: the card alone, without the raw input.
   if (draft === undefined) return { controls: next(withoutCallInput(card)).controls };
   return compactCardWith(card, next, draft);
+}
+
+/**
+ * Whether the Slack card for this call shows everything it is about: the title and the text under
+ * it, with nothing cut. It follows the same branches as {@link approvalInteractionCard}, so the
+ * record of a posted card says what the card said. (Slack cuts at its section limit and says so on
+ * the card; a text with the kit's cut notice in it was cut.)
+ */
+export function slackCardShownWhole(toolName: string, input: unknown): boolean {
+  const title = summarizeApproval(toolName, input);
+  if (title !== undefined && !textShownWhole(title)) return false;
+  const shown = (text: string | undefined) => text === undefined || textShownWhole(text);
+  if (!coversApproval(toolName)) return shown(wholeInputText(input));
+  const draft = detailsForApproval(toolName, input);
+  if (draft !== undefined && draft.length > SLACK_SECTION_TEXT_LIMIT) return shown(wholeInputText(input));
+  return shown(draft);
 }
 
 /** The renderer the Slack door installs. */

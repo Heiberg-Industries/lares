@@ -151,3 +151,41 @@ export function settledApproval(event: unknown, ctx: unknown): SettledApproval |
 
 /** The `answered_via` text the ledger gets when nobody decided. */
 export const NOBODY_DECIDED = "nobody-decided";
+
+/** A question card as a hook sees it when it opens. */
+export interface OpenedQuestion {
+  interactionId: string;
+  prompt: string;
+}
+
+/** The question card an `interaction.opened` event carries, or undefined when it is not a question. */
+export function openedQuestion(event: unknown): OpenedQuestion | undefined {
+  try {
+    const data = asRecord(asRecord(event)?.["data"]);
+    const request = asRecord(data?.["request"]);
+    if (request?.["kind"] !== "question") return undefined;
+    const interactionId = asString(data?.["interactionId"]);
+    if (interactionId === undefined) return undefined;
+    return { interactionId, prompt: typeof request["prompt"] === "string" ? request["prompt"] : "" };
+  } catch {
+    return undefined;
+  }
+}
+
+/** How a question card ended: undefined when the interaction is not a question; otherwise whether
+ *  a person answered it (`accepted`). Anything else means nobody did. */
+export function settledQuestion(event: unknown, ctx: unknown): { interactionId: string; answered: boolean } | undefined {
+  try {
+    const data = asRecord(asRecord(event)?.["data"]);
+    const interactionId = asString(data?.["interactionId"]);
+    const result = asString(data?.["outcome"]);
+    if (interactionId === undefined || result === undefined) return undefined;
+    const view = viewOf(ctx);
+    if (view === undefined) return undefined;
+    const row = interactionOf(view, interactionId);
+    if (row === undefined || row.request.kind !== "question") return undefined;
+    return { interactionId, answered: result === "accepted" };
+  } catch {
+    return undefined;
+  }
+}

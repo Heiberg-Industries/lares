@@ -25,13 +25,6 @@ async function say(reply:DoorReply|undefined,text:string){
  if(!reply)return;
  try{await reply(text);}catch(err){console.error('door: could not send the fixed reply',err instanceof Error?err.message:'unknown error');}
 }
-/**
- * What a person who may not answer a card on Slack is told when they tap it: privately, in an
- * ephemeral reply only they see. One fixed sentence that is true for every card on a role's Slack
- * door (approval and question alike are the owner's alone) and names nothing about the card, who
- * asked, or the tapper. Shared by every role's Slack door, so the doors cannot drift apart.
- */
-export const SLACK_TAP_REFUSAL='Only the owner of this bot can answer this. Nothing was done.';
 /** The part of eve's Slack answer context the refusal note uses: the card's own thread. */
 export interface SlackRefusalNoticeContext{readonly thread?:{postEphemeral?(userId:string,message:string):Promise<unknown>}}
 /**
@@ -48,20 +41,21 @@ export function slackFailureCode(error:unknown):string{
  return 'unknown error';
 }
 /**
- * Tells a person whose tap on a card was refused, and only them, that nothing was done. Started,
+ * Tells a person whose tap on a card was refused, and only them, the sentence the card layer gave
+ * (`card-sentences.ts`; this function writes none). Started,
  * never awaited: the refusal is already decided and returned, so this cannot change it, and it does
  * not touch the card (an ephemeral is a new message; nothing is edited, repainted or deleted). It
  * keeps no state, so repeated taps send one note each and leave nothing behind. A failure to send
  * is logged in one line that names nobody (the Slack error code only), and the refusal stands.
  * `door` names the role in that line, for example `chief-of-staff`.
  */
-export function tellRefusedSlackTapper(ctx:SlackRefusalNoticeContext|undefined,tapper:unknown,door:string):void{
+export function tellRefusedSlackTapper(ctx:SlackRefusalNoticeContext|undefined,tapper:unknown,door:string,sentence:string):void{
  // A tap that names nobody has nobody to tell.
  if(typeof tapper!=='string'||tapper.length===0)return;
  const thread=ctx?.thread;
  if(typeof thread?.postEphemeral!=='function')return;
  Promise.resolve()
-  .then(()=>thread.postEphemeral!(tapper,SLACK_TAP_REFUSAL))  .catch((error:unknown)=>{
+  .then(()=>thread.postEphemeral!(tapper,sentence))  .catch((error:unknown)=>{
    console.warn(`${door} slack: could not tell a person their tap on a card was not accepted; the card is unchanged and still pending`,slackFailureCode(error));
   });
 }

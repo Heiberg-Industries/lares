@@ -196,6 +196,99 @@ export async function recordAnswer(
 }
 
 /**
+ * Writes down where a card came from: the door it was raised on and the person it was put to (the
+ * one who started the conversation). Written when the card opens; a value already there is kept.
+ * `shownWhole` is given by a door whose cards are always whole (web chat); the others write it when
+ * they post. Questions are put to a person; an approval is answered by the owner whoever it was put to, so
+ * for an approval `putTo` only says who asked.
+ *
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
+ */
+export async function recordCardOrigin(
+  db: Queryable,
+  a: { requestId: string; door: string; putTo?: string; shownWhole?: boolean },
+): Promise<void> {
+  try {
+    await db.query(
+      `UPDATE approval_asks SET door = COALESCE(door, $2), put_to = COALESCE(put_to, $3),
+                                shown_whole = COALESCE(shown_whole, $4)
+       WHERE request_id = $1`,
+      [a.requestId, a.door, a.putTo ?? null, a.shownWhole ?? null],
+    );
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/** Where a card sits on a platform: the chat it is in and its message id, both strings (Slack: the
+ *  channel id and the message `ts`; Telegram: the chat id and the message id). The record stores
+ *  it as JSON and finds a card by it. */
+export interface CardAddress { readonly channel: string; readonly message: string }
+
+/**
+ * Writes down, once the door has posted a card, where it sits and whether it was shown whole
+ * (nothing cut). The first address wins. A card whose row does not exist yet (the door was faster
+ * than the record) is left without an address; a tap on it is then an unknown card, which the
+ * layer handles (the owner's goes through, a member's is refused).
+ *
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
+ */
+export async function recordCardPosted(
+  db: Queryable,
+  a: { requestId: string; door: string; address: CardAddress; shownWhole: boolean },
+): Promise<void> {
+  try {
+    await db.query(
+      `UPDATE approval_asks SET door = COALESCE(door, $2), card_address = $3::jsonb, shown_whole = $4
+       WHERE request_id = $1 AND card_address IS NULL`,
+      [a.requestId, a.door, JSON.stringify(a.address), a.shownWhole],
+    );
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/**
+ * Writes down a question card (a request for words or a choice that is not an approval). It is a
+ * row of its own kind: no tool call stands behind it, so the call id is derived from the request
+ * id and the payload hash is of the prompt. The card record lists questions so that a late tap on
+ * one is told apart from a tap on a card nobody knows.
+ *
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
+ */
+export async function recordQuestion(
+  db: Queryable,
+  a: { requestId: string; agent: string; prompt: string; door?: string; putTo?: string },
+): Promise<void> {
+  try {
+    await db.query(
+      `INSERT INTO approval_asks (request_id, call_id, agent, tool, payload_hash, kind, door, put_to)
+       VALUES ($1, $2, $3, 'question', $4, 'question', $5, $6)
+       ON CONFLICT DO NOTHING`,
+      [a.requestId, `question:${a.requestId}`, a.agent, payloadFingerprint("question", a.prompt), a.door ?? null, a.putTo ?? null],
+    );
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/** Settles a question card: `answered` when a person answered it, `ignored` when nobody did. */
+export async function recordQuestionEnd(
+  db: Queryable,
+  a: { requestId: string; answered: boolean },
+): Promise<void> {
+  try {
+    await db.query(
+      `UPDATE approval_asks SET answered_at = now(), outcome = $2
+       WHERE request_id = $1 AND kind = 'question' AND outcome IS NULL`,
+      [a.requestId, a.answered ? "answered" : "ignored"],
+    );
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/**
  * Reads the card for a call id, or null when there is none — a missing table, a missing row, or
  * an unreadable database all answer null rather than throwing.
  *
