@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   answeredVia, approvalLedger, askForCall, payloadFingerprint, recordAnswer, recordAsk,
-  recordCardOrigin, recordCardPosted, recordQuestion, recordQuestionEnd,
+  applyPostedCard, recordCardOrigin, recordCardPosted, recordQuestion, recordQuestionEnd, resetPostedBeforeRowForTests,
   resetApprovalLedgerWarningForTests,
 } from "../src/approval-ledger.js";
 import { readApprovalCounts } from "../src/approval-stats.js";
@@ -193,8 +193,15 @@ describe("the card record: door, address, person and question cards", () => {
     expect(await readApprovalCounts(db)).toEqual([]);
   });
 
-  it("recording a card whose row does not exist yet changes nothing and does not throw", async () => {
-    await expect(recordCardPosted(db, { requestId: "nope", door: "slack", address: { channel: "C", message: "1" }, shownWhole: true })).resolves.toBeUndefined();
-    expect(await read("nope")).toBeUndefined();
+  it("a door that posts before the record hook has made the row is not lost: the address is kept and written when the row appears", async () => {
+    resetPostedBeforeRowForTests();
+    await expect(recordCardPosted(db, { requestId: "late-row", door: "slack", address: { channel: "C2", message: "2.3" }, shownWhole: true })).resolves.toBeUndefined();
+    expect(await read("late-row")).toBeUndefined(); // nothing to write to yet, and nothing thrown
+    await recordAsk(db, { ...ask, requestId: "late-row", callId: "call-late" });
+    await applyPostedCard(db, "late-row");
+    expect(await read("late-row")).toMatchObject({ door: "slack", card_address: { channel: "C2", message: "2.3" }, shown_whole: true });
+    // Applying twice, or for a card nobody posted, does nothing.
+    await applyPostedCard(db, "late-row");
+    await applyPostedCard(db, "never-posted");
   });
 });

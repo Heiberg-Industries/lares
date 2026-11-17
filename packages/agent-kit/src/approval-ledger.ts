@@ -225,27 +225,62 @@ export async function recordCardOrigin(
  *  it as JSON and finds a card by it. */
 export interface CardAddress { readonly channel: string; readonly message: string }
 
+type PostedCard = { requestId: string; door: string; address: CardAddress; shownWhole: boolean };
+
+/** Addresses a door wrote before the card's row existed, kept until the record hook writes the row
+ *  (both run on the same event, in either order). Bounded; the oldest goes first. */
+const postedBeforeRow = new Map<string, PostedCard>();
+const POSTED_BEFORE_ROW_MAX = 256;
+
+async function writePosted(db: Queryable, a: PostedCard): Promise<number | undefined> {
+  const result = await db.query(
+    `UPDATE approval_asks SET door = COALESCE(door, $2), card_address = $3::jsonb, shown_whole = $4
+     WHERE request_id = $1 AND card_address IS NULL`,
+    [a.requestId, a.door, JSON.stringify(a.address), a.shownWhole],
+  );
+  return (result as { rowCount?: number | null }).rowCount ?? undefined;
+}
+
 /**
  * Writes down, once the door has posted a card, where it sits and whether it was shown whole
- * (nothing cut). The first address wins. A card whose row does not exist yet (the door was faster
- * than the record) is left without an address; a tap on it is then an unknown card, which the
- * layer handles (the owner's goes through, a member's is refused).
+ * (nothing cut). The first address wins. The door and the record hook both act on the card's
+ * opening and may run in either order: when the door is first there is no row yet, so the address
+ * is kept in memory and {@link applyPostedCard} writes it as soon as the hook has made the row.
+ * Nothing is lost silently: a card whose row never appears is logged once when it is dropped.
  *
  * BEST-EFFORT. Never throws; warns once per process when the table is missing.
  */
-export async function recordCardPosted(
-  db: Queryable,
-  a: { requestId: string; door: string; address: CardAddress; shownWhole: boolean },
-): Promise<void> {
+export async function recordCardPosted(db: Queryable, a: PostedCard): Promise<void> {
   try {
-    await db.query(
-      `UPDATE approval_asks SET door = COALESCE(door, $2), card_address = $3::jsonb, shown_whole = $4
-       WHERE request_id = $1 AND card_address IS NULL`,
-      [a.requestId, a.door, JSON.stringify(a.address), a.shownWhole],
-    );
+    if ((await writePosted(db, a)) === 0) {
+      postedBeforeRow.set(a.requestId, a);
+      if (postedBeforeRow.size > POSTED_BEFORE_ROW_MAX) {
+        const oldest = postedBeforeRow.keys().next().value as string;
+        postedBeforeRow.delete(oldest);
+        console.warn("approval-ledger: a posted card never got a record row, so its address was dropped; a tap on it is an unknown card");
+      }
+    }
   } catch (err) {
     warnAboutApprovalAsks(err);
   }
+}
+
+/** Called by the record hook right after it has made a card's row: writes the address a door
+ *  posted first, if there is one. Best-effort; never throws. */
+export async function applyPostedCard(db: Queryable, requestId: string): Promise<void> {
+  const kept = postedBeforeRow.get(requestId);
+  if (kept === undefined) return;
+  postedBeforeRow.delete(requestId);
+  try {
+    await writePosted(db, kept);
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/** Empties the kept addresses. Test-only. */
+export function resetPostedBeforeRowForTests(): void {
+  postedBeforeRow.clear();
 }
 
 /**

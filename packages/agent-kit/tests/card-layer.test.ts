@@ -9,14 +9,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { CARD_DOORS, cardOffersApprove, decideTap, findCard, isCardDoor, placesShowingWhole, textShownWhole, type CardDb } from "../src/card-layer.js";
+import { CARD_DOORS, decideTap, findCard, isCardDoor, placesShowingWhole, textShownWhole, type CardDb } from "../src/card-layer.js";
 import * as sentences from "../src/card-sentences.js";
 import { shortenedCardSentence } from "../src/card-sentences.js";
 
+// The doors come from the layer's table, so a door added there is run through every case below.
+const ownerDoors = Object.entries(CARD_DOORS).filter(([, row]) => row.answeredBy === "owner").map(([name]) => name);
+const memberDoors = Object.entries(CARD_DOORS).filter(([, row]) => row.answeredBy === "card-member").map(([name]) => name);
 const OWNER = "U_OWNER";
-const MEMBER = "U_MEMBER";
-const owners: Record<string, string> = { slack: OWNER, telegram: "100" };
-const ownerOf = (door: string) => owners[door];
+const ownerOf = (door: string) => `${OWNER}-${door}`;
 
 interface Row {
   request_id: string; kind: string; door: string | null; put_to: string | null; shown_whole: boolean | null;
@@ -42,8 +43,9 @@ const card = (over: Partial<Row> & { request_id: string }): Row => ({
 });
 
 describe("the door table", () => {
-  it("every door in the table is covered by this contract, and an unknown door is no door", () => {
-    expect(Object.keys(CARD_DOORS).sort()).toEqual(["console", "slack", "telegram"]);
+  it("every door in the table is run through this contract, and an unknown door is no door", () => {
+    expect([...ownerDoors, ...memberDoors].sort()).toEqual(Object.keys(CARD_DOORS).sort());
+    expect(Object.keys(CARD_DOORS).length).toBeGreaterThanOrEqual(3);
     expect(isCardDoor("whatsapp")).toBe(false);
     expect(isCardDoor("toString")).toBe(false);
   });
@@ -54,9 +56,9 @@ describe("the door table", () => {
   });
 });
 
-describe.each(["slack", "telegram"] as const)("the rules on %s", (door) => {
-  const owner = owners[door]!;
-  const member = door === "slack" ? MEMBER : "200";
+describe.each(ownerDoors)("the rules on %s", (door) => {
+  const owner = ownerOf(door);
+  const member = `U_MEMBER-${door}`;
   const lookup = (id: string) => ({ requestId: id });
 
   it("a tap from nobody the door can name starts nothing", async () => {
@@ -128,38 +130,31 @@ describe.each(["slack", "telegram"] as const)("the rules on %s", (door) => {
   });
 });
 
-describe("the rules on web chat", () => {
+describe.each(memberDoors)("the rules on %s, where each conversation is one member's", (door) => {
   const lookup = { requestId: "a", agent: "agent", sessionId: "s", memberId: "m1" };
-  const db = (over: Partial<Row> = {}) => fakeRecord([card({ request_id: "a", door: "console", acting_member_id: "m1", ...over })]);
+  const db = (over: Partial<Row> = {}) => fakeRecord([card({ request_id: "a", door, acting_member_id: "m1", ...over })]);
 
   it("the member the card was raised for may answer a waiting card", async () => {
-    expect(await decideTap({ door: "console", tapper: "m1", cards: [lookup] }, { db: db() })).toEqual({ deliver: true });
+    expect(await decideTap({ door, tapper: "m1", cards: [lookup] }, { db: db() })).toEqual({ deliver: true });
   });
   it("another member may not", async () => {
-    expect((await decideTap({ door: "console", tapper: "m2", cards: [lookup] }, { db: db() })).deliver).toBe(false);
+    expect((await decideTap({ door, tapper: "m2", cards: [lookup] }, { db: db() })).deliver).toBe(false);
   });
   it("a settled card is no longer waiting", async () => {
-    expect(await decideTap({ door: "console", tapper: "m1", cards: [lookup] }, { db: db({ outcome: "approved" }) }))
+    expect(await decideTap({ door, tapper: "m1", cards: [lookup] }, { db: db({ outcome: "approved" }) }))
       .toEqual({ deliver: false, why: "settled", sentence: sentences.CARD_NO_LONGER_WAITING });
   });
-  it("a card with no record fails closed for everyone with the same sentence as before", async () => {
-    expect(await decideTap({ door: "console", tapper: "m1", cards: [lookup] }, { db: fakeRecord([]) }))
+  it("a card with no record fails closed for everyone, owner or not, with the same sentence as before", async () => {
+    expect(await decideTap({ door, tapper: "m1", cards: [lookup] }, { db: fakeRecord([]) }))
       .toMatchObject({ deliver: false, why: "settled", sentence: sentences.CARD_NO_LONGER_WAITING });
   });
   it("an unreadable record is not sent on", async () => {
-    expect(await decideTap({ door: "console", tapper: "m1", cards: [lookup] }, { db: fakeRecord([], true) }))
+    expect(await decideTap({ door, tapper: "m1", cards: [lookup] }, { db: fakeRecord([], true) }))
       .toMatchObject({ deliver: false, why: "unchecked" });
   });
 });
 
 describe("a shortened card (D-6)", () => {
-  it("offers Approve only when the card is known to have been shown whole", () => {
-    expect(cardOffersApprove(true)).toBe(true);
-    expect(cardOffersApprove(false)).toBe(false);
-    expect(cardOffersApprove(null)).toBe(false);
-    expect(cardOffersApprove(undefined)).toBe(false);
-  });
-
   it("recognises the notices a cut leaves", () => {
     expect(textShownWhole("A short card")).toBe(true);
     expect(textShownWhole("body\n\n— shortened — 12 characters are not shown.")).toBe(false);
@@ -167,11 +162,18 @@ describe("a shortened card (D-6)", () => {
     expect(textShownWhole("body…(truncated)")).toBe(false);
   });
 
-  it("points to the doors that show a card whole, in the order of the table", () => {
-    expect(placesShowingWhole()).toEqual(["web chat"]);
-    expect(shortenedCardSentence(["Slack", "web chat"], "https://console.example/waiting?request=r"))
-      .toBe("The request above is shortened, so it cannot be approved here. Open it in Slack or web chat, where it shows in full, to approve it. In web chat: https://console.example/waiting?request=r\nDeny still works here.");
-    expect(shortenedCardSentence(["Slack"], "https://console.example/x")).not.toContain("https://");
+  it("points to the places that show a card whole, in the order of the table, in words that are true of each", () => {
+    expect(placesShowingWhole()).toEqual([{ where: "the Waiting on you page in the console", hasLink: true }]);
+    expect(shortenedCardSentence(placesShowingWhole(), "https://console.example/waiting?request=r"))
+      .toBe("The request above is shortened, so it cannot be approved here. Open it in the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: https://console.example/waiting?request=r\nDeny still works here.");
+    // Without an address, the sentence still names the page and invents no link.
+    expect(shortenedCardSentence(placesShowingWhole(), null)).not.toContain("http");
+    expect(shortenedCardSentence(placesShowingWhole(), null)).toContain("Waiting on you page in the console");
+    // Once Slack shows a long card whole its row says so, and the same words name it first.
+    const slack = { where: "Slack", hasLink: false };
+    expect(shortenedCardSentence([slack, ...placesShowingWhole()], "https://console.example/x"))
+      .toBe("The request above is shortened, so it cannot be approved here. Open it in Slack or the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: https://console.example/x\nDeny still works here.");
+    expect(shortenedCardSentence([slack], "https://console.example/x")).not.toContain("https://");
     expect(shortenedCardSentence([], null)).toBe("The request above is shortened, so it cannot be approved here. Deny still works here.");
   });
 });

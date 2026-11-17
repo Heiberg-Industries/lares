@@ -171,6 +171,19 @@ describe("exportPerson — everything about one member", () => {
     }
   }, 240_000);
 
+  it("exports the card records put to the person under their door id, and none put to the other person", async () => {
+    await db.pool.query(
+      `INSERT INTO approval_asks (request_id, call_id, agent, tool, payload_hash, kind, door, put_to)
+       VALUES ('card-q-owner', 'call-q1', 'fixture-agent', 'question', 'h', 'question', 'slack', 'U_FIXTURE_SLACK'),
+              ('card-q-second', 'call-q2', 'fixture-agent', 'question', 'h', 'question', 'slack', 'U_FIXTURE2_SLACK')`,
+    );
+    const report = await exportPerson(db.pool, { person: FIXTURE_OWNER, outDir, vaults: [] });
+    expect(report.refusals).toEqual([]);
+    const ids = rows("approval_asks").map((r) => r.request_id);
+    expect(ids).toContain("card-q-owner");
+    expect(ids).not.toContain("card-q-second");
+  }, 240_000);
+
   it("never writes token or key material, and says which columns it withheld", async () => {
     await db.pool.query("UPDATE oauth_tokens SET refresh_token_enc = $1 WHERE principal = $2", [
       TOKEN_MARKER,

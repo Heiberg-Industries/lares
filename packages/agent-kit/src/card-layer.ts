@@ -26,45 +26,72 @@
  * done, private chat or shared room, and when a conversation is replaced.
  */
 import { getPool } from "./db.js";
-import { ownerPrincipalId, type ChannelName } from "./principals.js";
+import { ownerPrincipalId } from "./principals.js";
 import {
   CARD_NO_LONGER_WAITING,
   CARD_REFUSED,
   CARD_UNCHECKED,
+  CONSOLE_WAITING_PAGE_NAME,
   WEB_CHAT_NAME,
+  type ShortenedCardPlace,
 } from "./card-sentences.js";
 import type { CardAddress } from "./approval-ledger.js";
 
-/** What the layer knows about a door. */
+/** What the layer knows about a door. A door is one row here and an adapter; nothing else in the
+ *  layer names a door. */
 export interface CardDoor {
-  /** The name a person reads, in sentences about where to open a request. */
+  /** The name of the door a person reads. */
   readonly label: string;
-  /** Whether the door shows a long card whole (every field, nothing cut). A door that does not
-   *  is where a shortened card gets no Approve. */
+  /** Where a person is sent to read and approve a card this door had to shorten, in words that are
+   *  true of that place ("Slack" for a door that shows a long card whole; the console's page for
+   *  the door that does not hold the conversation). Only read when {@link showsLongCardWhole}. */
+  readonly whereToOpen: string;
+  /** Whether {@link whereToOpen} has a page address the sentence can give (the console does). */
+  readonly opensWithLink: boolean;
+  /** Whether the door shows a long card whole (every field, nothing cut). A door that does not is
+   *  where a shortened card gets no Approve. */
   readonly showsLongCardWhole: boolean;
   /** Whether the door can show buttons at all (ADR-0025 rule 5, item 5). A door that cannot never
    *  lets typed text answer an approval. */
   readonly canShowButtons: boolean;
+  /** Who may answer an approval card: the installation's owner on this door, or the member the
+   *  card was raised for (a door whose conversations are each one member's). */
+  readonly answeredBy: "owner" | "card-member";
+  /** What a tap on a card the record does not know does: the owner's goes through to eve and
+   *  nobody else's does, or the card counts as no longer waiting for everybody. */
+  readonly unknownCard: "owner-goes-through" | "not-waiting";
+  /** The owner's id on this door, when {@link answeredBy} is "owner". */
+  readonly ownerId?: (env?: NodeJS.ProcessEnv) => string | undefined;
 }
 
 /**
  * One row per door that shows cards. In the order a person is pointed to when a card is too long:
- * Slack first, Telegram, web chat last. Slack's flag is false until Slack draws a long card whole
- * across blocks; flipping it is the whole change.
+ * Slack first, Telegram, the console last. Slack's flag is false until Slack draws a long card
+ * whole across blocks; flipping it (and nothing else) makes the sentence name Slack.
  */
 export const CARD_DOORS: Readonly<Record<string, CardDoor>> = Object.freeze({
-  slack: { label: "Slack", showsLongCardWhole: false, canShowButtons: true },
-  telegram: { label: "Telegram", showsLongCardWhole: false, canShowButtons: true },
-  console: { label: WEB_CHAT_NAME, showsLongCardWhole: true, canShowButtons: true },
+  slack: {
+    label: "Slack", whereToOpen: "Slack", opensWithLink: false, showsLongCardWhole: false, canShowButtons: true,
+    answeredBy: "owner", unknownCard: "owner-goes-through", ownerId: (env) => ownerPrincipalId("slack", env),
+  },
+  telegram: {
+    label: "Telegram", whereToOpen: "Telegram", opensWithLink: false, showsLongCardWhole: false, canShowButtons: true,
+    answeredBy: "owner", unknownCard: "owner-goes-through", ownerId: (env) => ownerPrincipalId("telegram", env),
+  },
+  console: {
+    label: WEB_CHAT_NAME, whereToOpen: CONSOLE_WAITING_PAGE_NAME, opensWithLink: true, showsLongCardWhole: true, canShowButtons: true,
+    answeredBy: "card-member", unknownCard: "not-waiting",
+  },
 });
 
 export function isCardDoor(door: unknown): door is string {
   return typeof door === "string" && Object.hasOwn(CARD_DOORS, door);
 }
 
-/** The names of the doors that show a long card whole, best first. */
-export function placesShowingWhole(): string[] {
-  return Object.values(CARD_DOORS).filter((d) => d.showsLongCardWhole).map((d) => d.label);
+/** Where a person is sent to read a card too long for the door it came on: the doors that show a
+ *  long card whole, best first. The input of {@link shortenedCardSentence}. */
+export function placesShowingWhole(): ShortenedCardPlace[] {
+  return Object.values(CARD_DOORS).filter((d) => d.showsLongCardWhole).map((d) => ({ where: d.whereToOpen, hasLink: d.opensWithLink }));
 }
 
 /** The markers a cut leaves in a card's text: the kit's own notices (`approval-summary.ts`) and
@@ -74,14 +101,6 @@ const CUT_MARKERS = /— shortened —|\(shortened[,)]|…\(truncated\)/;
 /** True when the text of a card shows the whole of what it is about. */
 export function textShownWhole(text: string): boolean {
   return !CUT_MARKERS.test(text);
-}
-
-/**
- * Whether a card that was shown with this fact offers Approve. A card whose record does not say
- * "whole" (not known) counts as cut: it never gets Approve by default.
- */
-export function cardOffersApprove(shownWhole: boolean | null | undefined): boolean {
-  return shownWhole === true;
 }
 
 /* ------------------------------------------------------------------------------------------- *
@@ -173,59 +192,55 @@ export type TapVerdict =
 
 export interface CardLayerDeps {
   readonly db?: CardDb;
-  /** The owner's id on a door. Default: the first id on the door's allow-list. */
+  /** The owner's id on a door, replacing the row's. Default: the row's `ownerId`. */
   readonly ownerOf?: (door: string) => string | undefined;
 }
 
 const REFUSED: TapVerdict = { deliver: false, why: "refused", sentence: CARD_REFUSED };
 
-/** The owner of an installation on a chat door. Web chat has no owner id of this kind. */
-function defaultOwnerOf(door: string): string | undefined {
-  return door === "slack" || door === "telegram" ? ownerPrincipalId(door as ChannelName) : undefined;
-}
-
 /**
  * Whether a tap counts. Fails closed on everything it does not understand: an unknown door, a tap
  * that names nobody, a record it cannot read for anybody but the owner.
  *
- * Web chat's tapper is the signed-in member and its rule is the card's own: the member the card
- * was raised for (`actingMemberId`). It has no owner id and no unknown card.
+ * What differs between doors is in the door's row ({@link CardDoor}): who answers an approval and
+ * what an unknown card means. A door whose cards are the conversation member's answers only from
+ * the member the card was raised for (`actingMemberId`).
  */
 export async function decideTap(tap: Tap, deps: CardLayerDeps = {}): Promise<TapVerdict> {
   if (!isCardDoor(tap.door)) return REFUSED;
+  const door = CARD_DOORS[tap.door]!;
   const tapper = typeof tap.tapper === "string" && tap.tapper.length > 0 ? tap.tapper : undefined;
   if (tapper === undefined) return REFUSED;
-  const isConsole = tap.door === "console";
+  const ownerAnswers = door.answeredBy === "owner";
   let ownerId: string | undefined;
   try {
-    ownerId = isConsole ? undefined : (deps.ownerOf ?? defaultOwnerOf)(tap.door);
+    ownerId = ownerAnswers ? (deps.ownerOf ?? ((name: string) => CARD_DOORS[name]?.ownerId?.()))(tap.door) : undefined;
   } catch {
     ownerId = undefined; // an owner id that cannot be read names nobody
   }
   const isOwner = ownerId !== undefined && ownerId === tapper;
+  const ownerGoesThrough = door.unknownCard === "owner-goes-through" && isOwner;
 
-  // No card named: the tap is on a card nobody can name. The owner's goes to eve, which decides.
-  if (tap.cards.length === 0) return !isConsole && isOwner ? { deliver: true } : REFUSED;
+  // No card named: the tap is on a card nobody can name.
+  if (tap.cards.length === 0) return ownerGoesThrough ? { deliver: true } : REFUSED;
 
   for (const lookup of tap.cards) {
     let card: CardRecord | null;
     try {
       card = await findCard(deps.db ?? getPool(), lookup);
     } catch {
-      // The record cannot be read. The owner's tap still goes to eve (which refuses anything that
-      // is not allowed and drops a late answer); everybody else's is held back.
-      if (!isConsole && isOwner) continue;
+      // The record cannot be read. Where the owner's tap may go to eve unchecked, it does (eve
+      // refuses anything that is not allowed and drops a late answer); everybody else is held back.
+      if (ownerGoesThrough) continue;
       return { deliver: false, why: "unchecked", sentence: CARD_UNCHECKED };
     }
     if (card === null) {
-      // Not in the record. Elsewhere the owner's tap passes to eve. Web chat fails closed for
-      // everyone and says what it always said: the request is not waiting.
-      if (isConsole) return { deliver: false, why: "settled", sentence: CARD_NO_LONGER_WAITING };
-      if (isOwner) continue;
+      if (door.unknownCard === "not-waiting") return { deliver: false, why: "settled", sentence: CARD_NO_LONGER_WAITING };
+      if (ownerGoesThrough) continue;
       return REFUSED;
     }
     if (!card.waiting) return { deliver: false, why: "settled", sentence: CARD_NO_LONGER_WAITING };
-    const mayAnswer = isConsole
+    const mayAnswer = !ownerAnswers
       ? card.actingMemberId !== null && card.actingMemberId === tapper
       : card.kind === "question"
         ? card.putTo !== null ? card.putTo === tapper : isOwner

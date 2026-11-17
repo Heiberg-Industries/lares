@@ -535,10 +535,10 @@ describe("4. a card that could not show everything points to the console", () =>
     it("the note says it cannot be approved here, where it can, and that Deny still works", () => {
       const withLink = shortenedCardNote(LINK);
       expect(withLink).toContain("cannot be approved here");
-      expect(withLink).toContain(`Open it in web chat, where it shows in full, to approve it. In web chat: ${LINK}`);
+      expect(withLink).toContain(`Open it in the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: ${LINK}`);
       expect(withLink).toContain("Deny still works here.");
       const without = shortenedCardNote(null);
-      expect(without).toContain("Open it in web chat, where it shows in full, to approve it.");
+      expect(without).toContain("Open it in the Waiting on you page in the console, where it shows in full, to approve it.");
       expect(without).not.toContain("http");
       expect(without).toContain("Deny still works here.");
     });

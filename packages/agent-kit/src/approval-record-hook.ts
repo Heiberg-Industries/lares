@@ -36,11 +36,12 @@ import { attachExactApproval, settleExactInput } from "./approval-execution.js";
 import { hasConsoleTurnAuthorityTag } from "./console-turn-authority.js";
 import { getPool } from "./db.js";
 import {
-  payloadFingerprint, recordAnswer, recordAsk, recordCardOrigin, recordQuestion, recordQuestionEnd,
+  applyPostedCard, payloadFingerprint, recordAnswer, recordAsk, recordCardOrigin, recordQuestion, recordQuestionEnd,
   type AskOutcome,
 } from "./approval-ledger.js";
 import { NOBODY_DECIDED, openedApproval, openedQuestion, settledApproval, settledQuestion } from "./approval-events.js";
 import { doorRowOf } from "./door-kinds.js";
+import { CARD_DOORS } from "./card-layer.js";
 
 // The role hooks that sit beside this one read cards the same way; the package exports this file.
 export { openedApproval, settledApproval };
@@ -61,8 +62,8 @@ function warn(where: string, err: unknown): void {
  *  initiator (who started it, never who answered). A web chat card has no platform id: its member
  *  is on the row already. A card with no door initiator (a scheduled job) has neither. */
 export function cardOriginOf(ctx: unknown): { door: string; putTo?: string; shownWhole?: boolean } | undefined {
-  // Web chat shows a card whole: every field, nothing cut.
-  if (hasConsoleTurnAuthorityTag(ctx)) return { door: "console", shownWhole: true };
+  // A bound console conversation is web chat. Whether its cards are shown whole is the door's row.
+  if (hasConsoleTurnAuthorityTag(ctx)) return { door: "console", ...(CARD_DOORS["console"]?.showsLongCardWhole ? { shownWhole: true } : {}) };
   const session = (ctx as { session?: { initiator?: unknown; auth?: { initiator?: unknown } | null } } | undefined)?.session;
   const initiator = session?.auth?.initiator ?? session?.initiator;
   const row = doorRowOf(initiator);
@@ -102,11 +103,14 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
     deps.origin ??
     (async (a) => {
       await recordCardOrigin(getPool(), a);
+      // The door may have posted this card before its row existed: write that address now.
+      await applyPostedCard(getPool(), a.requestId);
     });
   const question =
     deps.question ??
     (async (a) => {
       await recordQuestion(getPool(), a);
+      await applyPostedCard(getPool(), a.requestId);
     });
   const questionEnd =
     deps.questionEnd ??

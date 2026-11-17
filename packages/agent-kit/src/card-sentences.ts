@@ -39,20 +39,34 @@ export const CARD_PROMPT_OUTCOME_TEXT = { answered: "Answered", closed: "No long
 /** What a note about a shortened card is changed to once its request is decided. */
 export const CARD_NOTE_CLOSED_TEXT = "The request above is closed.";
 
-/** The name of web chat in a sentence; the layer's door table uses the same words. */
+/** The name of web chat in a sentence. */
 export const WEB_CHAT_NAME = "web chat";
+
+/** The console page where a card raised on any door is shown whole and can be answered. It is not
+ *  web chat (the Chat page holds its own conversations), so a sentence that sends a person there
+ *  names this page. */
+export const CONSOLE_WAITING_PAGE_NAME = "the Waiting on you page in the console";
+
+/** A place a person can read and approve a card too long for the door it came on. */
+export interface ShortenedCardPlace {
+  /** In words that are true of that place, after "Open it in". */
+  readonly where: string;
+  /** Whether the sentence can give a page address for it. */
+  readonly hasLink: boolean;
+}
 
 /**
  * Said under a card the door had to shorten: it offers no Approve, and says where the whole of it
- * can be read and approved. `places` are the names of the doors that show a long card whole, best
- * first (the layer chooses them). `webChatLink` is the page address of this request in web chat,
- * used only when web chat is one of the places. Deny still works on a shortened card; that is the
- * layer's rule, so the sentence may say it.
+ * can be read and approved. `places` are the doors that show a long card whole, best first (the
+ * layer chooses them from its table). `link` is the page address of this request, given only when
+ * one of the places has pages. Deny still works on a shortened card; that is the layer's rule, so
+ * the sentence may say it.
  */
-export function shortenedCardSentence(places: readonly string[], webChatLink: string | null): string {
+export function shortenedCardSentence(places: readonly ShortenedCardPlace[], link: string | null): string {
   const lead = "The request above is shortened, so it cannot be approved here.";
   if (places.length === 0) return `${lead} Deny still works here.`;
-  const where = places.length === 1 ? places[0]! : `${places.slice(0, -1).join(", ")} or ${places.at(-1)}`;
-  const link = webChatLink !== null && places.includes(WEB_CHAT_NAME) ? ` In web chat: ${webChatLink}` : "";
-  return `${lead} Open it in ${where}, where it shows in full, to approve it.${link}\nDeny still works here.`;
+  const names = places.map((p) => p.where);
+  const where = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
+  const page = link !== null && places.some((p) => p.hasLink) ? ` The page for this request: ${link}` : "";
+  return `${lead} Open it in ${where}, where it shows in full, to approve it.${page}\nDeny still works here.`;
 }

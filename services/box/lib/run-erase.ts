@@ -158,8 +158,7 @@ export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
       return await execute();
     }catch(err){
       if(committed&&opts.nativeCustody)return {...committed.result,transactionOutcome:"commit-acknowledged",journalWarning:"The database erase committed, but native cleanup custody needs inspection.",nativeCleanup:{status:'blocked',remaining:null}};
-      const outcome=(err as {outcome?:string}).outcome;
-      if(outcome==='commit-acknowledged'&&opts.nativeCustody&&partial)return {...partial,transactionOutcome:'commit-acknowledged',journalWarning:'The database erase committed, but native cleanup custody needs inspection.',nativeCleanup:{status:'blocked',remaining:null}};
+      const outcome=(err as {outcome?:string}).outcome;      if(outcome==='commit-acknowledged'&&opts.nativeCustody&&partial)return {...partial,transactionOutcome:'commit-acknowledged',journalWarning:'The database erase committed, but native cleanup custody needs inspection.',nativeCleanup:{status:'blocked',remaining:null}};
       if(err instanceof ErasureRefused)return {...err.result,transactionOutcome:(outcome as RunEraseResult["transactionOutcome"])??"rollback-acknowledged"};
       if(partial?.dbReport.refusals.length)return {...partial,transactionOutcome:(outcome as RunEraseResult["transactionOutcome"])??"rollback-acknowledged"};
       if(outcome==='commit-acknowledged'&&partial)return {...partial,transactionOutcome:"commit-acknowledged",journalWarning:"The database commit was acknowledged, but its final journal record could not be confirmed. Inspect custody before another financial operation."};

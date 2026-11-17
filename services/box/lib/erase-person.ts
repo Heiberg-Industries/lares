@@ -153,7 +153,28 @@ const EXTRA_PERSON_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   // "owner_email (the claim email) is a second, unenforced person-identifying column worth
   //  checking by hand." An email address is one of the spellings the register holds.
   agent_door_connections: ["owner_email"],
+  // The card record names the person a card was put to by the door's own user id (a Slack or
+  // Telegram id), the way `user_aliases` holds it (sql/038_approval_card_record.sql, `put_to`).
+  // The row also holds the card's chat and message address, so the whole row goes.
+  approval_asks: ["put_to"],
 };
+
+/**
+ * The extra columns above that hold a door's own user id rather than the register's id. Their
+ * entry's own column is `registry` (the canonical id), which would never match a Slack id, so for
+ * these tables the match list is widened to every alias too ({@link spellingsForEntry}). Matching
+ * the registry column against aliases as well can only find more of this person's rows: no alias
+ * is also a canonical id.
+ */
+const DOOR_ID_EXTRA_TABLES: ReadonlySet<string> = new Set(["approval_asks"]);
+
+/** The spellings an entry's match clause is bound to: its own id kind, widened to the person's
+ *  door ids where a second column of the entry holds one. One rule for erase, export and the
+ *  first-owner check, next to {@link matchClause}. */
+export function spellingsForEntry(person: PersonIdentity, entry: ScopedTable): readonly string[] {
+  const own = spellingsFor(person, entry.idKind!);
+  return DOOR_ID_EXTRA_TABLES.has(entry.table) ? [...new Set([...own, ...spellingsFor(person, "principal")])] : own;
+}
 
 /**
  * What this routine did NOT reach — rendered on EVERY report, including a clean one, because the
@@ -621,7 +642,7 @@ async function buildPlan(
   const heldIds: string[] = [];
   for (const table of HELD_ID_SOURCES) {
     const entry = MEMBER_SCOPE.find((t) => t.table === table)!;
-    const spellings = spellingsFor(person, entry.idKind!);
+    const spellings = spellingsForEntry(person, entry);
     const { rows } = await db.query<{ id: string }>(
       `SELECT id::text AS id FROM ${entry.table} WHERE ${matchClause(entry)}`,
       [spellings],
@@ -726,7 +747,7 @@ async function buildPlan(
   // 5 — the register itself, aliases first.
   for (const table of REGISTER_TABLES) {
     const entry = MEMBER_SCOPE.find((t) => t.table === table)!;
-    const spellings = spellingsFor(person, entry.idKind!);
+    const spellings = spellingsForEntry(person, entry);
     const rows = await countWhere(
       db,
       `SELECT count(*)::int AS n FROM ${entry.table} WHERE ${matchClause(entry)}`,
@@ -757,7 +778,7 @@ async function memberStep(
   entry: ScopedTable,
   person: PersonIdentity,
 ): Promise<PlannedStep> {
-  const spellings = spellingsFor(person, entry.idKind!);
+  const spellings = spellingsForEntry(person, entry);
   // A mailbox card linked to this person is removed in step 3.5, so it is not also counted here
   // as a card whose editor's name is replaced ($2 is the person's id in both queries below).
   const linkedElsewhere = entry.table === "voice_profile" ? " AND owner_member_id IS DISTINCT FROM $2" : "";

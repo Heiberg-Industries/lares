@@ -293,9 +293,14 @@ before the build.
   claim list for two answers at the same instant, because the hunk covers only a card that has
   already settled (Unverified 4).
 - A shortened card (the owner's decision of 16 November 2026): the door offers no Approve and
-  says where the whole card can be read, from the door table. Telegram follows it today. Slack
-  still keeps Approve on a card it cut; its table row says it does not show a long card whole until
-  the Slack renderer draws one across blocks.
+  says where the whole card can be read, from the door table (each row says where a person is sent,
+  in words that are true of that place: today the console's "Waiting on you" page). The layer owns
+  the "shown whole" mark on the card record and the sentence; it does not remove the button. On
+  Telegram eve's patched card does that; Slack still keeps Approve on a card it cut, and its table
+  row says it does not show a long card whole until the Slack renderer draws one across blocks.
+- A door is a row in the layer's table (who answers an approval, what an unknown card means, the
+  owner's id, where a long card is read) plus an adapter; the layer names no door in its logic.
+- Erasing a person also removes the card records put to them (`put_to`), matched on every alias.
 
 ## Cross-references
 

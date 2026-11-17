@@ -663,7 +663,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "acting_member_id",
     idKind: "registry",
     createdBy: `${BOX}/015_exact_approval_execution.sql`,
-    reason: "Strict rows retain original actor and matching resolver metadata. Legacy rows have no actor and remain legacy evidence.",
+    reason: "Strict rows retain original actor and matching resolver metadata. Legacy rows have no actor and remain legacy evidence. put_to (sql/038_approval_card_record.sql) also names a person: the door user id a card was put to, matched on every alias of the person, and the whole row goes with the card address it holds.",
   },
 
   {

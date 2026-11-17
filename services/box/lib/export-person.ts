@@ -63,6 +63,7 @@ import { MEMBER_SCOPE, type ScopeClass, type ScopedTable } from "./member-scope.
 import {
   eraseHandlingFor,
   matchClause,
+  spellingsForEntry,
   HELD_ID_SOURCES,
   REGISTER_TABLES,
   tablesThatMustExist,
@@ -70,7 +71,6 @@ import {
 import { findPersonFiles, resolvesWithin } from "./erase-person-vault.js";
 import {
   resolvePerson,
-  spellingsFor,
   IdentityRegisterMissing,
   PersonAmbiguous,
   PersonNotFound,
@@ -381,7 +381,7 @@ export async function exportPerson(
         const source = MEMBER_SCOPE.find((t) => t.table === table)!;
         const { rows } = await db.query<{ id: string }>(
           `SELECT id::text AS id FROM ${source.table} WHERE ${matchClause(source)}`,
-          [spellingsFor(person, source.idKind!)],
+          [spellingsForEntry(person, source)],
         );
         heldIds.push(...rows.map((r) => r.id));
       }
@@ -518,7 +518,7 @@ async function selectFor(
   };
   const { rows } = await db.query<Record<string, unknown>>(
     `SELECT ${budgetColumns[entry.table] ?? '*'} FROM ${entry.table} WHERE ${matchClause(entry)}`,
-    [spellingsFor(person, entry.idKind!)],
+    [spellingsForEntry(person, entry)],
   );
   return rows;
 }

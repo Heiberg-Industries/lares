@@ -231,6 +231,28 @@ describe("erase-person — the database half", () => {
     }
   }, 240_000);
 
+  it("removes the card records put to the person under their door ids (Slack alias or old handle), with the card's address, and keeps the other person's", async () => {
+    const insert = (id: string, putTo: string, kind: string) => db.pool.query(
+      `INSERT INTO approval_asks (request_id, call_id, agent, tool, payload_hash, kind, door, put_to, card_address)
+       VALUES ($1, $2, 'fixture-agent', $3, 'h', $4, 'slack', $5, '{"channel":"D1","message":"1.2"}')`,
+      [id, `call-${id}`, kind === "question" ? "question" : "gmail_send", kind, putTo],
+    );
+    await insert("card-q-owner", "U_FIXTURE_SLACK", "question"); // the owner's Slack alias
+    await insert("card-a-owner", "U_fixture", "approval"); // the owner's old handle
+    await insert("card-q-second", "U_FIXTURE2_SLACK", "question");
+
+    const preview = await erasePerson(db.pool, { person: FIXTURE_OWNER, dryRun: true });
+    const planned = preview.planned.find((d) => d.table === "approval_asks");
+    expect(planned?.rows, "the preview counts the card records").toBeGreaterThanOrEqual(2);
+
+    const report = await journaledErase(FIXTURE_OWNER);
+    expect(report.refusals).toEqual([]);
+    const left = await db.pool.query<{ request_id: string }>(
+      "SELECT request_id FROM approval_asks WHERE request_id LIKE 'card-%' ORDER BY request_id",
+    );
+    expect(left.rows.map((r) => r.request_id)).toEqual(["card-q-second"]);
+  }, 240_000);
+
   it("reaches memory_proposals through the ids it resolved, before those ids are deleted", async () => {
     await seedMemoryProposals();
 
