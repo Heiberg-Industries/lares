@@ -791,9 +791,9 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
       expect(answered, "the door never turns typed text into an answer").toEqual([]);
       expect(sent).toHaveLength(1);
       expect(String(sent[0]!.message)).toContain("approve");
-      // eve attaches the text a typed reply may answer an open card with under this key. The
-      // door's `onAnswers` makes eve attach an empty one.
-      expect(sent[0]!.options["__eveInputText"]).toBe("");
+      // eve passes the text a typed reply may answer an open card with as `answerText` (since eve
+      // 1.0.1; it was the `__eveInputText` key before). The door's `onAnswers` makes it empty.
+      expect(sent[0]!.options["answerText"]).toBe("");
     });
 
     it("for contrast: a door with no answer check lets eve attach the typed text as a possible answer", async () => {
@@ -812,7 +812,7 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
       });
       await Promise.all(pending);
       expect(sent).toHaveLength(1);
-      expect(sent[0]!["__eveInputText"]).toBe("approve");
+      expect(sent[0]!["answerText"]).toBe("approve");
     });
 
     it("a stranger typing \"approve\" starts nothing at all", async () => {
@@ -861,9 +861,10 @@ describe("chief-of-staff Slack door, a mention in a shared channel", () => {
     // A claimed person speaking through this door gets the door's model route.
     for (const [k, v] of Object.entries(MANAGED)) vi.stubEnv(k, v);
     expect(modelAuthorityRoute({ auth: { initiator: auth, current: auth } })).toBe("door");
-    // The Slack calls made, by name: the status line, the channel lookup (eve asks because the
-    // event carries no channel type) and the thread read.
-    expect(calls.map((c) => c.method)).toEqual(["assistant.threads.setStatus", "conversations.info", "conversations.replies"]);
+    // The Slack calls made, by name: the status line and the channel lookup (eve asks because the
+    // event carries no channel type). Since eve 1.0.1 a mention that starts its thread no longer
+    // reads the thread.
+    expect(calls.map((c) => c.method)).toEqual(["assistant.threads.setStatus", "conversations.info"]);
   });
 
   it("a stranger's mention starts nothing: nothing is delivered, no turn, and Slack hears only the status line and its clearing", async () => {

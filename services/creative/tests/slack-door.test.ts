@@ -397,6 +397,9 @@ describe("what the door installs on eve 1.0", () => {
     expect(openText).toContain("Here is the draft.");
     expect(openText).not.toContain("Tool input");
     expect(openText).not.toContain("bodyText");
+    // eve's own card shows the raw input as a `rich_text` preview; this door's card never does.
+    expect(openText).not.toContain("rich_text");
+    expect(JSON.stringify(open.fallback)).toContain("bodyText");
     expect(open.parts.details).toBeUndefined();
     const buttons = (open.parts.controls.blocks[0] as { actions: { text: { text: string } }[] }).actions.map((a) => a.text.text);
     expect(buttons).toEqual(["Deny", "Approve"]);
@@ -408,6 +411,8 @@ describe("what the door installs on eve 1.0", () => {
     expect(answeredText).toContain("*Subject:* Draft for review");
     expect(answeredText).toContain("Here is the draft.");
     expect(answeredText).not.toContain("eve_input:");
+    expect(answeredText).not.toContain("bodyText");
+    expect(answeredText).not.toContain("rich_text");
   });
 
   it("a tool without a Lares summary keeps eve's own card", async () => {
@@ -423,7 +428,10 @@ describe("what the door installs on eve 1.0", () => {
       destination: "thread", audience: "private", view: {},
     } as never, undefined);
     expect(rendered.parts).toEqual(rendered.fallback);
-    expect(JSON.stringify(rendered.parts.details)).toContain("Tool input");
+    // eve 1.0.1 shows the raw input as a preview inside the card, beside the buttons.
+    const shown = JSON.stringify(rendered.parts.controls);
+    expect(shown).toContain("rich_text");
+    expect(shown).toContain("target");
   });
 });
 
@@ -702,7 +710,8 @@ describe("the creative Slack door, through its webhook route", () => {
     expect(answered).toEqual([]);
     expect(sent).toHaveLength(1);
     expect(String(sent[0]!.message)).toContain("approve");
-    expect(sent[0]!.options["__eveInputText"]).toBe("");
+    // eve passes the typed-answer text as `answerText` (since eve 1.0.1); `onAnswers` empties it.
+    expect(sent[0]!.options["answerText"]).toBe("");
   });
 
   it("a stranger typing \"approve\" starts nothing at all", async () => {
@@ -747,9 +756,10 @@ describe("the creative Slack door, a mention in a shared channel", () => {
     expect(startedIn({ session: { auth: { initiator: auth, current: auth } } })).toBe("shared-room");
     for (const [k, v] of Object.entries(MANAGED)) vi.stubEnv(k, v);
     expect(modelAuthorityRoute({ auth: { initiator: auth, current: auth } })).toBe("door");
-    // The Slack calls made, by name: the status line, the channel lookup (eve asks because the
-    // event carries no channel type) and the thread read.
-    expect(calls.map((c) => c.method)).toEqual(["assistant.threads.setStatus", "conversations.info", "conversations.replies"]);
+    // The Slack calls made, by name: the status line and the channel lookup (eve asks because the
+    // event carries no channel type). Since eve 1.0.1 a mention that starts its thread no longer
+    // reads the thread.
+    expect(calls.map((c) => c.method)).toEqual(["assistant.threads.setStatus", "conversations.info"]);
   });
 
   it("a stranger's mention starts nothing: nothing is delivered, no turn, and Slack hears only the status line and its clearing", async () => {

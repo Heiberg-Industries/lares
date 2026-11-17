@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import type { SlackInteractionCard, SlackInteractionCardParts } from "eve/channels/slack";
 
 import {
+  coversApproval,
   registerOutsideConnections,
   resetOutsideConnectionsForTests,
   summarizeApproval,
@@ -79,10 +80,42 @@ function render(interaction: Interaction, answeredBy?: string): { parts: SlackIn
 const blocksOf = (parts: SlackInteractionCardParts) => parts.controls.blocks as readonly Block[];
 const text = (value: unknown) => JSON.stringify(value);
 
-/** The labels and values of eve's buttons, in the order shown. */
+type Button = { text: { text: string }; value: string; action_id: string };
+
+/** The labels and values of eve's buttons, in the order shown: on a compact `card` they are its
+ *  `actions`, on eve's approval `container` they are the `actions` block among its children. */
 function buttons(parts: SlackInteractionCardParts): { label: string; value: string }[] {
-  const card = blocksOf(parts).find((b) => b.type === "card") as { actions?: { text: { text: string }; value: string }[] } | undefined;
-  return (card?.actions ?? []).map((a) => ({ label: a.text.text, value: a.value }));
+  const found: Button[] = [];
+  for (const block of blocksOf(parts)) {
+    if (block.type === "card") found.push(...((block.actions as Button[] | undefined) ?? []));
+    if (block.type === "container") {
+      for (const child of (block.child_blocks as Block[] | undefined) ?? []) {
+        if (child.type === "actions") found.push(...((child.elements as Button[] | undefined) ?? []));
+      }
+    }
+  }
+  return found.map((a) => ({ label: a.text.text, value: a.value }));
+}
+
+/** What a click does: each button's action id and value, order aside. */
+function controlsOf(parts: SlackInteractionCardParts): string[] {
+  const found: string[] = [];
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) return value.forEach(walk);
+    if (typeof value !== "object" || value === null) return;
+    const node = value as Record<string, unknown>;
+    if (typeof node.action_id === "string") found.push(`${node.action_id}=${String(node.value)}`);
+    Object.values(node).forEach(walk);
+  };
+  walk(parts.controls.blocks);
+  return found.sort();
+}
+
+/** eve's own card for the same request with the call's input taken out: the compact card the
+ *  renderer asks eve for, for a summarised tool. */
+function compactCardFor(interaction: Interaction): SlackInteractionCardParts {
+  const { input: _input, ...call } = interaction.call!;
+  return renderRequestCard(composeInteractionCards([]), cardFor({ ...interaction, call } as Interaction), undefined).fallback as never;
 }
 
 const MAIL = {
@@ -122,18 +155,23 @@ describe("an email approval card", () => {
       { label: "Approve", value: "approve" },
     ]);
 
-    // The raw arguments are gone: no separate "Tool input" message, no code block, no JSON keys.
+    // The raw arguments are gone: no "Tool input" message, no input preview, no JSON keys.
     expect(parts.details).toBeUndefined();
     expect(text(parts)).not.toContain("Tool input");
     expect(text(parts)).not.toContain("```");
+    expect(text(parts)).not.toContain("rich_text");
     expect(text(parts)).not.toContain("bodyText");
-    // eve's default, which this replaces, did carry them.
-    expect(text(fallback.details)).toContain("bodyText");
+    // eve's default, which this replaces, did carry them (since eve 1.0.1 inside the card).
+    expect(text(fallback)).toContain("bodyText");
   });
 
-  it("leaves eve's buttons exactly as eve rendered them", () => {
-    const { parts, fallback } = render(approval("gmail_send", MAIL));
-    expect(blocksOf(parts)[0]).toEqual(fallback.controls.blocks[0]);
+  it("keeps exactly eve's buttons, drawn as eve draws them for the same request without input", () => {
+    const interaction = approval("gmail_send", MAIL);
+    const { parts, fallback } = render(interaction);
+    // A click does what it would have done on eve's own card.
+    expect(controlsOf(parts)).toEqual(controlsOf(fallback));
+    // The card above the draft is eve's own compact card, untouched.
+    expect(blocksOf(parts)[0]).toEqual(compactCardFor(interaction).controls.blocks[0]);
   });
 
   it("carries the draft in the notification text too, so a preview is not the title alone", () => {
@@ -203,37 +241,76 @@ describe("a summarised tool with nothing more to show", () => {
     const reason = 'Cancellation mail from the hotel, 18 Aug 2026: "Your reservation has been cancelled".';
     const interaction = approval("calendar_delete_event", { eventId: "e1", reason });
     expect(interaction.request.prompt).toContain(reason);
-    const { parts, fallback } = render(interaction);
-    expect(blocksOf(parts)).toEqual(fallback.controls.blocks);
+    const { parts } = render(interaction);
+    expect(blocksOf(parts)).toEqual(compactCardFor(interaction).controls.blocks);
+    expect(text(parts)).toContain("Your reservation has been cancelled");
     expect(parts.details).toBeUndefined();
   });
 });
 
+// The rule this file exists for: on a card for a tool Lares summarises, the owner reads Lares's
+// text and never the call's raw arguments, while the request is open and after it ends.
+describe("a summarised tool's card never shows the raw tool input", () => {
+  const CASES: [string, Record<string, unknown>][] = [
+    ["gmail_send", MAIL],
+    ["gmail_draft", MAIL],
+    ["meeting_followup_send", { ...MAIL, notionPageId: "page-raw-1", seriesKey: "series-raw-1", meetingTitle: "Weekly sync" }],
+    ["calendar_delete_event", { eventId: "evt-raw-1", notify: false }],
+    ["remind_set", { message: "Call the bank", dueAt: "2026-09-01T08:00:00Z" }],
+  ];
+  const endings: [string, Partial<Interaction>][] = [
+    ["open", {}],
+    ["approved", settled("accepted", "approve")],
+    ["denied", settled("declined", "deny")],
+    ["ended", settled("withdrawn")],
+  ];
+
+  it.each(CASES)("%s", (tool, input) => {
+    expect(coversApproval(tool), tool).toBe(true);
+    // eve's own card does show the raw input, so this test can see it if it ever comes back.
+    expect(text(render(approval(tool, input)).fallback)).toContain(Object.keys(input)[0]);
+    for (const [name, ending] of endings) {
+      const { parts } = render(approval(tool, input, ending), name === "open" ? undefined : "U0000000000");
+      const shown = text(parts);
+      for (const key of Object.keys(input)) expect(shown, `${tool} ${name}: key ${key}`).not.toContain(`"${key}"`);
+      expect(shown, `${tool} ${name}`).not.toContain("rich_text");
+      expect(shown, `${tool} ${name}`).not.toContain("```");
+      expect(shown, `${tool} ${name}`).not.toContain("Tool input");
+      expect(parts.details, `${tool} ${name}`).toBeUndefined();
+      // Lares's own title names the event id; the meeting-note ids are only in the raw input.
+      for (const raw of ["page-raw-1", "series-raw-1"]) expect(shown, `${tool} ${name}`).not.toContain(raw);
+    }
+  });
+});
+
 describe("a tool without a Lares summary keeps eve's own card", () => {
-  it("is eve's default, raw input in the collapsed block and all", () => {
+  it("is eve's default, with eve's preview of the raw input inside the card", () => {
     const { parts, fallback } = render(approval("some_tool_nobody_summarised", { target: "x" }));
     expect(parts).toEqual(fallback);
 
-    const container = (parts.details?.blocks as readonly Block[] | undefined)?.find((b) => b.type === "container") as
-      { title?: { text: string }; default_collapsed?: boolean } | undefined;
-    expect(container?.title?.text).toBe("Tool input");
-    expect(container?.default_collapsed).toBe(true);
-    expect(text(container)).toContain("target");
+    // eve 1.0.1: one `container` holding the title, the input preview and the buttons.
+    const container = blocksOf(parts).find((b) => b.type === "container") as { child_blocks?: Block[] } | undefined;
+    expect(container?.child_blocks?.map((b) => b.type)).toEqual(["rich_text", "actions"]);
+    expect(text(container?.child_blocks?.[0])).toContain("target");
     expect(buttons(parts)).toEqual([
-      { label: "Deny", value: "deny" },
       { label: "Approve", value: "approve" },
+      { label: "Deny", value: "deny" },
     ]);
   });
 
   // An outside tool's title shortens values and drops arguments, and the request was built by a
-  // model for a server nobody reviewed. The whole input has to stay on the card.
-  it("an outside tool keeps every argument and the whole long value", () => {
+  // model for a server nobody reviewed, so its card stays eve's own: every argument listed. Since
+  // eve 1.0.1 eve's preview cuts a value at 500 characters and marks the cut with "..." (it lists
+  // up to ten arguments and about 1,500 characters in all, then says how many more there are).
+  it("an outside tool keeps eve's card: every argument listed, a long value cut with a mark", () => {
     registerOutsideConnections(["registry"]);
     const input = { a1: "x".repeat(500) + "TAIL_MARKER", a2: 2, a3: 3, a4: 4, a5: 5, a6: 6, a7: 7, a8: "EIGHTH_ARG" };
     const { parts, fallback } = render(approval("registry__create_note", input));
     expect(parts).toEqual(fallback);
-    expect(text(parts.details)).toContain("TAIL_MARKER");
-    expect(text(parts.details)).toContain("EIGHTH_ARG");
+    for (const key of Object.keys(input)) expect(text(parts)).toContain(`"${key}"`);
+    expect(text(parts)).toContain("EIGHTH_ARG");
+    expect(text(parts)).toContain("x...");
+    expect(text(parts)).not.toContain("TAIL_MARKER");
   });
 
   it("a question is not an approval: untouched", () => {
@@ -266,11 +343,27 @@ describe("the renderer never breaks a card", () => {
     }
   });
 
-  it("calls eve's default exactly once and hands it the card unchanged", () => {
+  it("calls eve's default exactly once, with the input taken out for a summarised tool and nothing else changed", () => {
     const card = cardFor(approval("gmail_send", MAIL));
+    const before = JSON.stringify(card);
     const next = vi.fn((_card: SlackInteractionCard): SlackInteractionCardParts => ({
       controls: { blocks: [{ type: "card" }], text: "title" },
       details: { blocks: [{ type: "container" }], text: "raw" },
+    }));
+    const parts = approvalInteractionCard(card, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    const { input: _input, ...call } = card.interaction.call!;
+    expect(next).toHaveBeenCalledWith({ ...card, interaction: { ...card.interaction, call } });
+    // The card eve answers with is the real one: the renderer's input is left as it was.
+    expect(JSON.stringify(card)).toBe(before);
+    // A raw-input message, if eve ever sends one again, is dropped.
+    expect(parts.details).toBeUndefined();
+  });
+
+  it("hands a tool without a Lares summary to eve's default unchanged", () => {
+    const card = cardFor(approval("some_tool_nobody_summarised", { target: "x" }));
+    const next = vi.fn((_card: SlackInteractionCard): SlackInteractionCardParts => ({
+      controls: { blocks: [{ type: "card" }], text: "title" },
     }));
     approvalInteractionCard(card, next);
     expect(next).toHaveBeenCalledTimes(1);
