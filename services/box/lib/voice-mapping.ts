@@ -109,10 +109,18 @@ async function hasProfiles(db: Pick<PoolClient, "query">): Promise<boolean> {
 
 export class VoiceMappingNotReady extends Error {}
 
+/** What the owner asked for on the command line. */
+export interface VoiceMappingOptions {
+  maps?: ReadonlyArray<{ mailbox: string; accountId: string }>;
+  /** Who gets the shared default card when it is held because the owner is not clear. */
+  defaultOwner?: string;
+}
+
 export async function planVoiceMapping(
   db: Pick<PoolClient, "query">,
-  maps: ReadonlyArray<{ mailbox: string; accountId: string }> = [],
+  opts: VoiceMappingOptions = {},
 ): Promise<VoiceMappingPlan> {
+  const maps = opts.maps ?? [];
   if (!(await hasProfiles(db))) {
     throw new VoiceMappingNotReady("This database does not have person voice profiles yet: the update that adds them " +
       "(037_person_voice_profiles.sql) has not been applied. Update Lares first.");
@@ -143,19 +151,24 @@ export async function planVoiceMapping(
   if (!def) {
     defaultCard = { present: false, copyTo: null, line: "There is no shared default card, so there is nothing to copy into a profile." };
   } else {
-    const agent = (await db.query<{ owner_member_id: string }>(`SELECT owner_member_id FROM agent_access WHERE agent_name = $1`, [def.learn_key])).rows[0];
-    if (owners.length === 0) {
+    // The installation owner. Nothing records whose the shared card is, so exactly one active
+    // owner decides it; otherwise the owner names one with --default-owner.
+    const copy = (member: string, how: string): DefaultPlan => existingProfiles.has(member)
+      ? { present: true, copyTo: null, line: `${member} already has a profile. It is left as it is; the shared default card is not copied again.` }
+      : { present: true, copyTo: member, line: `The shared default card (its text and its English and Norwegian model choices) is copied into a new profile for ${how}, ${member}.` };
+    if (opts.defaultOwner !== undefined) {
+      if (owners.includes(opts.defaultOwner)) {
+        defaultCard = copy(opts.defaultOwner, "the installation owner you named with --default-owner");
+      } else {
+        defaultCard = { present: true, copyTo: null, line: `Held: you named ${opts.defaultOwner} with --default-owner, but ${opts.defaultOwner} is not an active member with the owner role.` };
+        blocking.push(`--default-owner: ${opts.defaultOwner} is not an active member with the owner role, so the shared default card cannot be given to them.`);
+      }
+    } else if (owners.length === 0) {
       defaultCard = { present: true, copyTo: null, line: "Held: no active installation owner was found, so the shared default card was not given to anyone." };
     } else if (owners.length > 1) {
-      defaultCard = { present: true, copyTo: null, line: `Held: there are ${owners.length} active installation owners, so it is not clear whose the shared default card is.` };
-    } else if (!agent) {
-      defaultCard = { present: true, copyTo: null, line: `Held: the shared default card's learn settings name the agent "${def.learn_key}", which is not set up here, so it cannot confirm whose card this is.` };
-    } else if (agent.owner_member_id !== owners[0]) {
-      defaultCard = { present: true, copyTo: null, line: `Held: the installation owner is ${owners[0]}, but the agent "${def.learn_key}" belongs to ${agent.owner_member_id}, so it is not clear whose the shared default card is.` };
-    } else if (existingProfiles.has(owners[0]!)) {
-      defaultCard = { present: true, copyTo: null, line: `${owners[0]} already has a profile. It is left as it is; the shared default card is not copied again.` };
+      defaultCard = { present: true, copyTo: null, line: `Held: there are ${owners.length} active installation owners (${owners.join(", ")}), so it is not clear whose the shared default card is. To give it to one of them, add --default-owner <member id>.` };
     } else {
-      defaultCard = { present: true, copyTo: owners[0]!, line: `The shared default card (its text and its English and Norwegian model choices) is copied into a new profile for the installation owner, ${owners[0]}.` };
+      defaultCard = copy(owners[0]!, "the installation owner");
     }
   }
   /** The common card a member would have after this run. */
@@ -164,8 +177,9 @@ export async function planVoiceMapping(
 
   // ── Which mailboxes there are ────────────────────────────────────────────────────────────
   const names = new Set<string>();
+  // `default` is the shared card, never a mailbox, even if an example was ever filed under that name.
   for (const p of profiles) if (p.id !== "default") names.add(p.id);
-  for (const g of groups) if (g.mailbox !== LEGACY_BLENDED) names.add(g.mailbox);
+  for (const g of groups) if (g.mailbox !== LEGACY_BLENDED && g.mailbox !== "default") names.add(g.mailbox);
   const mapped = new Map<string, string>();
   for (const m of maps) {
     if (!names.has(m.mailbox)) throw new VoiceMappingUsageError(`--map names ${m.mailbox}, but no voice card or examples are filed under that mailbox.`);
@@ -204,8 +218,9 @@ export async function planVoiceMapping(
         decision = { kind: "linked", memberId: account.owner_member_id, accountId: account.id, how: "map", ...(note ? { note } : {}) };
       }
     } else {
-      const exact = accounts.filter((a) => a.has_credential && a.email_address === mailbox);
-      const loose = accounts.filter((a) => a.has_credential && a.email_address !== null && a.email_address !== mailbox && a.email_address.toLowerCase() === mailbox.toLowerCase());
+      const google = accounts.filter((a) => a.connector_id === "google" && a.has_credential);
+      const exact = google.filter((a) => a.email_address === mailbox);
+      const loose = google.filter((a) => a.email_address !== null && a.email_address !== mailbox && a.email_address.toLowerCase() === mailbox.toLowerCase());
       if (exact.length === 1) decision = { kind: "linked", memberId: exact[0]!.owner_member_id, accountId: exact[0]!.id, how: "address" };
       else if (exact.length > 1) decision = { kind: "held", reason: `${exact.length} connected accounts have exactly this address (${exact.map((a) => `account ${a.id} of ${a.owner_member_id}`).join("; ")}), for example because two members connected the same Google account. Choose one with --map ${mailbox}=<account id>.` };
       else if (loose.length > 0) decision = { kind: "held", reason: `A connected account has this address only when capital and small letters are treated as the same (${loose.map((a) => `account ${a.id}`).join(", ")}). Lares does not link on that alone; to link it, use --map ${mailbox}=<account id>.` };
@@ -263,11 +278,11 @@ export async function planVoiceMapping(
   }
   for (const m of mailboxes) if (m.decision.kind === "conflict") blocking.push(`${m.mailbox}: ${m.decision.reason}`);
 
+  // A learn marked "running" is marked "interrupted" even while the agent is up. That is safe: a learn
+  // that really is in progress writes its own status again when it finishes or fails
+  // (chief-of-staff lib/voice-learn.ts, runVoiceLearn), and a write to the same card while this run is
+  // open makes the run stop with nothing changed. The report says so when the schedule is active.
   const running = profiles.filter((p) => p.learn_status === "running").map((p) => p.id);
-  if (running.length > 0 && learnRecentlyActive) {
-    blocking.push("A learn is marked as running, and an agent's voice-learning schedule checked in during the last five minutes, " +
-      "so it may really be learning right now. Wait until it finishes, or stop the agent, and run this again.");
-  }
 
   const sum = (f: (g: ExemplarGroup) => boolean) => groups.filter(f).reduce((n, g) => n + g.n, 0);
   return {
@@ -295,11 +310,11 @@ export type ApplyOutcome =
   | { kind: "failed"; reason: string };
 
 /** Read-only: the plan, from one consistent snapshot. */
-export async function dryRunVoiceMapping(pool: Pool, maps: ReadonlyArray<{ mailbox: string; accountId: string }> = []): Promise<VoiceMappingPlan> {
+export async function dryRunVoiceMapping(pool: Pool, opts: VoiceMappingOptions = {}): Promise<VoiceMappingPlan> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-    return await planVoiceMapping(client, maps);
+    return await planVoiceMapping(client, opts);
   } finally {
     await client.query("ROLLBACK").catch(() => undefined);
     client.release();
@@ -307,12 +322,12 @@ export async function dryRunVoiceMapping(pool: Pool, maps: ReadonlyArray<{ mailb
 }
 
 /** The plan again, inside one serializable transaction; writes; checks; commits or changes nothing. */
-export async function applyVoiceMapping(pool: Pool, maps: ReadonlyArray<{ mailbox: string; accountId: string }> = []): Promise<ApplyOutcome> {
+export async function applyVoiceMapping(pool: Pool, opts: VoiceMappingOptions = {}): Promise<ApplyOutcome> {
   const client = await pool.connect();
   let committed = false;
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
-    const plan = await planVoiceMapping(client, maps);
+    const plan = await planVoiceMapping(client, opts);
     if (plan.blocking.length > 0) return { kind: "refused", plan };
 
     let linkedCards = 0, linkedExamples = 0;
@@ -355,7 +370,10 @@ export async function applyVoiceMapping(pool: Pool, maps: ReadonlyArray<{ mailbo
     return { kind: "applied", plan, linkedCards, linkedExamples, profileCreated, interrupted };
   } catch (err) {
     if (err instanceof VoiceMappingUsageError || err instanceof VoiceMappingNotReady) throw err;
-    return { kind: "failed", reason: `The database stopped the run (${err instanceof Error ? err.message : String(err)}), so nothing was changed.` };
+    // 40001 / 40P01: another write to the same rows (for example a voice learn) got there first.
+    const code = (err as { code?: unknown }).code;
+    const again = code === "40001" || code === "40P01" ? " Something else changed the same rows at the same moment; run the same command again." : "";
+    return { kind: "failed", reason: `The database stopped the run (${err instanceof Error ? err.message : String(err)}), so nothing was changed.${again}` };
   } finally {
     if (!committed) await client.query("ROLLBACK").catch(() => undefined);
     client.release();
@@ -404,6 +422,13 @@ export function renderVoiceMappingReport(plan: VoiceMappingPlan, mode: "dry-run"
     if (m.learnRunning) out.push(`- A learn is marked as running. ${mode === "applied" ? "It was" : "It would be"} marked interrupted and is not restarted.`);
     if (m.modelOverrides.length > 0) out.push("- Its card names its own model choices. They are kept on the card; today only the shared default card's model choices are used.");
     for (const v of m.voices) out.push(`- ${v.line}`);
+  }
+  if (plan.running.length > 0 && plan.learnRecentlyActive) {
+    out.push("");
+    out.push("An agent's voice-learning schedule checked in during the last five minutes. It does that every minute while the agent " +
+      "runs, so a learn marked as running may really be in progress, or may be left over from a learn that was cut off (for " +
+      "example by a restart). Marking it interrupted is safe either way: a learn that is really in progress writes its own " +
+      "status again when it finishes or fails.");
   }
   const defaultRunning = plan.running.includes("default");
   if (defaultRunning) {

@@ -758,11 +758,14 @@ async function memberStep(
   person: PersonIdentity,
 ): Promise<PlannedStep> {
   const spellings = spellingsFor(person, entry.idKind!);
+  // A mailbox card linked to this person is removed in step 3.5, so it is not also counted here
+  // as a card whose editor's name is replaced ($2 is the person's id in both queries below).
+  const linkedElsewhere = entry.table === "voice_profile" ? " AND owner_member_id IS DISTINCT FROM $2" : "";
   const where = matchClause(entry);
   const rows = await countWhere(
     db,
-    `SELECT count(*)::int AS n FROM ${entry.table} WHERE ${where}`,
-    [spellings],
+    `SELECT count(*)::int AS n FROM ${entry.table} WHERE ${where}${linkedElsewhere}`,
+    linkedElsewhere ? [spellings, person.id] : [spellings],
   );
 
   if (eraseHandlingFor(entry) === "retire-and-redact-budget-liability") {
@@ -783,8 +786,9 @@ async function memberStep(
   }
 
   if (entry.idKind === "actor") {
+    const erasedParam = linkedElsewhere ? "$3" : "$2";
     const sets = personColumnsOf(entry)
-      .map((c) => `${c} = CASE WHEN ${c} = ANY($1::text[]) THEN $2::text ELSE ${c} END`)
+      .map((c) => `${c} = CASE WHEN ${c} = ANY($1::text[]) THEN ${erasedParam}::text ELSE ${c} END`)
       .join(", ");
     return {
       plan: {
@@ -795,8 +799,8 @@ async function memberStep(
       },
       rows,
       write: {
-        sql: `UPDATE ${entry.table} SET ${sets} WHERE ${where}`,
-        params: [spellings, ERASED],
+        sql: `UPDATE ${entry.table} SET ${sets} WHERE ${where}${linkedElsewhere}`,
+        params: linkedElsewhere ? [spellings, person.id, ERASED] : [spellings, ERASED],
       },
     };
   }

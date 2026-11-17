@@ -373,6 +373,23 @@ describe("erase-person — the database half", () => {
     expect(report.outstanding.join("\n")).toMatch(/The 1 sample of the learned writing voice that is not linked to any member/);
   }, 240_000);
 
+  it("counts a linked mailbox card the person edited once in the preview, as removed", async () => {
+    // The member edited their own linked card in the console, so its editor column names them too.
+    await db.pool.query(`INSERT INTO voice_profile (id, core, owner_member_id, connected_account_id, updated_by)
+      VALUES ('second@example.invalid', 'Second voice.', $1, 'fixture-account-2', $1)`, [FIXTURE_SECOND]);
+    const preview = await erasePerson(db.pool, { person: FIXTURE_SECOND, dryRun: true });
+    const voice = preview.planned.filter((p) => p.table === "voice_profile");
+    // Once, as removed; not also as a card whose editor's name is replaced (a place with no rows is not listed).
+    expect(voice).toEqual([
+      expect.objectContaining({ rows: 1, how: "removed — the writing card of a mailbox linked to this person" }),
+    ]);
+    // The real run does what the preview said: the card is gone, nothing renamed in its place.
+    const done = await journaledErase(FIXTURE_SECOND);
+    expect(done.refusals).toEqual([]);
+    expect((await db.pool.query("SELECT count(*)::int AS n FROM voice_profile WHERE id = 'second@example.invalid'")).rows[0]!.n).toBe(0);
+    expect(done.deleted.filter((p) => p.table === "voice_profile").reduce((n, p) => n + p.rows, 0)).toBe(1);
+  }, 240_000);
+
   it("knows what to do with every member and resolved table in the inventory", () => {
     const unhandled = MEMBER_SCOPE.filter(
       (t) => (t.scope === "member" || t.scope === "resolved") && eraseHandlingFor(t) === null,

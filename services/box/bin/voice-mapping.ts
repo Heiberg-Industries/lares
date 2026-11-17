@@ -1,6 +1,6 @@
 // services/box/bin/voice-mapping.ts — `lares voices map`, inside the engine image.
 //
-//   voice-mapping.ts [--apply] [--map <mailbox>=<account id>]...
+//   voice-mapping.ts [--apply] [--map <mailbox>=<account id>]... [--default-owner <member id>]
 //
 // Links today's mailbox writing voices to connected accounts and members, and copies the shared
 // default card into the installation owner's profile (lib/voice-mapping.ts says exactly what and
@@ -15,18 +15,21 @@ import {
 } from "../lib/voice-mapping.js";
 
 const HELP = [
-  "lares voices map [--apply] [--map <mailbox>=<account id>]...",
+  "lares voices map [--apply] [--map <mailbox>=<account id>]... [--default-owner <member id>]",
   "",
   "Links each mailbox's writing card and examples to the connected account it belongs to, and so",
   "to that account's member. Without --apply it only prints a report and changes nothing.",
   "",
   "  --map <mailbox>=<account id>  Link a held mailbox to this account. Repeatable.",
+  "  --default-owner <member id>   Give the shared default card to this installation owner, when",
+  "                                there is more than one active owner.",
   "  --apply                       Make the changes in the report, all together, and check them.",
 ].join("\n");
 
 export async function main(argv: readonly string[], deps: { db?: Pool; out: (s: string) => void; error: (s: string) => void }): Promise<number> {
   let apply = false;
   const maps: { mailbox: string; accountId: string }[] = [];
+  let defaultOwner: string | undefined;
   try {
     for (let i = 0; i < argv.length; i++) {
       const a = argv[i]!;
@@ -38,14 +41,22 @@ export async function main(argv: readonly string[], deps: { db?: Pool; out: (s: 
         maps.push(parseMapArgument(v));
         continue;
       }
+      if (a === "--default-owner") {
+        const v = argv[++i]?.trim();
+        if (!v) throw new VoiceMappingUsageError("--default-owner needs a member id.");
+        if (defaultOwner !== undefined && defaultOwner !== v) throw new VoiceMappingUsageError("--default-owner can name only one member.");
+        defaultOwner = v;
+        continue;
+      }
       throw new VoiceMappingUsageError(`I do not know the option ${a}.`);
     }
     if (!deps.db) throw new Error("no database connection");
+    const opts = { maps, ...(defaultOwner !== undefined ? { defaultOwner } : {}) };
     if (!apply) {
-      deps.out(renderVoiceMappingReport(await dryRunVoiceMapping(deps.db, maps), "dry-run"));
+      deps.out(renderVoiceMappingReport(await dryRunVoiceMapping(deps.db, opts), "dry-run"));
       return 0;
     }
-    const outcome = await applyVoiceMapping(deps.db, maps);
+    const outcome = await applyVoiceMapping(deps.db, opts);
     if (outcome.kind === "applied") { deps.out(renderVoiceMappingReport(outcome.plan, "applied")); return 0; }
     if (outcome.kind === "refused") { deps.out(renderVoiceMappingReport(outcome.plan, "refused")); return 78; }
     deps.error(`voices map: ${outcome.reason}`);

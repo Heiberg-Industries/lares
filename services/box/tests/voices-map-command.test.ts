@@ -37,10 +37,12 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 describe("lares voices map", () => {
   it("explains itself and refuses bad usage without starting anything", () => {
     for (const args of [["voices"], ["voices", "list"], ["voices", "map", "--surprise"], ["voices", "map", "--map"],
-      ["voices", "map", "--map", "no-equals-sign"], ["voices", "map", "--map", "=acct-1"], ["voices", "map", "--map", "owner@example.invalid="]]) {
+      ["voices", "map", "--map", "no-equals-sign"], ["voices", "map", "--map", "=acct-1"], ["voices", "map", "--map", "owner@example.invalid="],
+      ["voices", "map", "--default-owner"], ["voices", "map", "--default-owner", ""]]) {
       expect(lares(...args).status, args.join(" ")).toBe(64);
     }
-    expect(lares("voices").stderr).toContain("lares voices map [--map <mailbox>=<account id>]... [--apply]");
+    expect(lares("voices").stderr).toContain("lares voices map [--map <mailbox>=<account id>]... [--default-owner <member id>] [--apply]");
+    expect(lares("voices", "map", "--default-owner").stderr).toContain("--default-owner needs a member id. Nothing was changed.");
     expect(lares("voices", "map", "--surprise").stderr).toContain("I do not know the option --surprise for voices map. Nothing was changed.");
     expect(existsSync(record)).toBe(false);
   });
@@ -72,6 +74,22 @@ describe("lares voices map", () => {
     const args = readFileSync(record, "utf8").split("\n").filter(Boolean);
     const at = args.indexOf("/app/services/box/bin/voice-mapping.ts");
     expect(args.slice(at + 1)).toEqual(["--map", "owner@example.invalid=acct-1", "--apply", "--map", "b@example.invalid=acct-2"]);
+  });
+
+  it("passes --default-owner through", () => {
+    expect(lares("voices", "map", "--default-owner", "member-example").status).toBe(0);
+    const args = readFileSync(record, "utf8").split("\n").filter(Boolean);
+    expect(args.slice(args.indexOf("/app/services/box/bin/voice-mapping.ts") + 1)).toEqual(["--default-owner", "member-example"]);
+  });
+
+  it("shows the engine's help without the database, even before the install is finished", () => {
+    rmSync(secret);
+    const result = lares("voices", "map", "--help");
+    expect(result.status, result.stderr).toBe(0);
+    const args = readFileSync(record, "utf8").split("\n").filter(Boolean);
+    expect(args).toContain("none");
+    expect(args.join("\n")).not.toContain("database-password");
+    expect(args.slice(args.indexOf("/app/services/box/bin/voice-mapping.ts") + 1)).toEqual(["--help"]);
   });
 
   it("passes the engine's refusal code back", () => {

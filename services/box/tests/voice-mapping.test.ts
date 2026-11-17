@@ -231,19 +231,19 @@ describe("the mapping report and apply", () => {
   });
 
   it("links a held mailbox the owner names with --map, and refuses an account that cannot be a mailbox", async () => {
-    let plan = await dryRunVoiceMapping(pool, [{ mailbox: "shared@example.invalid", accountId: "acct-shared-2" }, { mailbox: "gone@example.invalid", accountId: "acct-spare" }]);
+    let plan = await dryRunVoiceMapping(pool, { maps: [{ mailbox: "shared@example.invalid", accountId: "acct-shared-2" }, { mailbox: "gone@example.invalid", accountId: "acct-spare" }] });
     expect(decision(plan, "shared@example.invalid")).toMatchObject({ kind: "linked", memberId: "member-2", accountId: "acct-shared-2", how: "map" });
     expect(decision(plan, "gone@example.invalid")).toMatchObject({ kind: "linked", how: "map",
       note: "The account's stored Google address is spare@example.invalid, not gone@example.invalid; it is linked because you asked." });
     expect(plan.blocking).toEqual([]);
 
-    plan = await dryRunVoiceMapping(pool, [{ mailbox: "gone@example.invalid", accountId: "acct-nocred" }]);
+    plan = await dryRunVoiceMapping(pool, { maps: [{ mailbox: "gone@example.invalid", accountId: "acct-nocred" }] });
     expect(plan.blocking).toEqual(["gone@example.invalid: You asked to link it to account acct-nocred, but that account has no Google sign-in stored in Lares, so it cannot be a mailbox."]);
-    plan = await dryRunVoiceMapping(pool, [{ mailbox: "gone@example.invalid", accountId: "acct-missing" }]);
+    plan = await dryRunVoiceMapping(pool, { maps: [{ mailbox: "gone@example.invalid", accountId: "acct-missing" }] });
     expect(plan.blocking).toEqual(["gone@example.invalid: You asked to link it to account acct-missing, but Lares has no connected account with that id."]);
 
     // Two mailboxes on one account: both are problems, and --apply is refused with nothing changed.
-    const outcome = await applyVoiceMapping(pool, [{ mailbox: "gone@example.invalid", accountId: "acct-member" }]);
+    const outcome = await applyVoiceMapping(pool, { maps: [{ mailbox: "gone@example.invalid", accountId: "acct-member" }] });
     expect(outcome.kind).toBe("refused");
     if (outcome.kind === "refused") {
       expect(decision(outcome.plan, "member@example.invalid")).toMatchObject({ kind: "conflict", reason: "It and gone@example.invalid would both be linked to account acct-member. One account has one mailbox card." });
@@ -252,46 +252,72 @@ describe("the mapping report and apply", () => {
     expect(await rows(pool, `SELECT count(*)::int AS n FROM voice_profile WHERE owner_member_id IS NOT NULL`)).toEqual([{ n: 0 }]);
     expect(await rows(pool, `SELECT learn_status FROM voice_profile WHERE id = 'owner@example.invalid'`)).toEqual([{ learn_status: "running" }]);
 
-    await expect(dryRunVoiceMapping(pool, [{ mailbox: "nobody@example.invalid", accountId: "acct-member" }])).rejects.toBeInstanceOf(VoiceMappingUsageError);
+    await expect(dryRunVoiceMapping(pool, { maps: [{ mailbox: "nobody@example.invalid", accountId: "acct-member" }] })).rejects.toBeInstanceOf(VoiceMappingUsageError);
     expect(() => parseMapArgument("no-equals-sign")).toThrow(VoiceMappingUsageError);
     expect(parseMapArgument("a=b@example.invalid=acct-1")).toEqual({ mailbox: "a=b@example.invalid", accountId: "acct-1" });
   });
 
   it("does not move a linked mailbox", async () => {
     await applyVoiceMapping(pool);
-    const plan = await dryRunVoiceMapping(pool, [{ mailbox: "owner@example.invalid", accountId: "acct-spare" }]);
+    const plan = await dryRunVoiceMapping(pool, { maps: [{ mailbox: "owner@example.invalid", accountId: "acct-spare" }] });
     expect(plan.blocking).toEqual(["owner@example.invalid: You asked to link it to account acct-spare, but it is already linked to account acct-owner. This command does not move a linked mailbox."]);
   });
 
-  it("holds the default card when the owner is not clear", async () => {
-    await pool.query(`INSERT INTO agent_definitions (name, definition, hash, status) VALUES ('writer-agent', '{}', 'fixture', 'valid')`);
-    await pool.query(`INSERT INTO agent_access (agent_name, owner_member_id, organisation_id) VALUES ('writer-agent', 'member-2', 'org-a')`);
-    await pool.query(`UPDATE voice_profile SET learn_key = 'writer-agent' WHERE id = 'default'`);
-    let plan = await dryRunVoiceMapping(pool);
-    expect(plan.defaultCard).toEqual({ present: true, copyTo: null,
-      line: 'Held: the installation owner is owner-1, but the agent "writer-agent" belongs to member-2, so it is not clear whose the shared default card is.' });
-    // With no default owner, a mailbox whose card is blank has no common card to fall back on.
-    expect(plan.mailboxes.find((m) => m.mailbox === "member@example.invalid")!.voices[0]!.line).toMatch(/different text/);
+  it("gives the default card to the one active owner, holds it otherwise, and takes --default-owner for the held case", async () => {
+    // The learn settings name an agent nobody has: that no longer matters (nothing keeps that column current).
     await pool.query(`UPDATE voice_profile SET learn_key = 'missing-agent' WHERE id = 'default'`);
-    plan = await dryRunVoiceMapping(pool);
-    expect(plan.defaultCard.line).toBe('Held: the shared default card\'s learn settings name the agent "missing-agent", which is not set up here, so it cannot confirm whose card this is.');
+    let plan = await dryRunVoiceMapping(pool);
+    expect(plan.defaultCard).toEqual({ present: true, copyTo: "owner-1",
+      line: "The shared default card (its text and its English and Norwegian model choices) is copied into a new profile for the installation owner, owner-1." });
+
     await pool.query(`INSERT INTO orgs (id, display_name) VALUES ('org-b', 'Second organisation')`);
     await pool.query(`INSERT INTO users (id, display_name, org_id, org_role, status) VALUES ('owner-b', 'Second owner', 'org-b', 'owner', 'active')`);
     plan = await dryRunVoiceMapping(pool);
-    expect(plan.defaultCard.line).toBe("Held: there are 2 active installation owners, so it is not clear whose the shared default card is.");
-    expect(await applyVoiceMapping(pool)).toMatchObject({ kind: "applied", profileCreated: false });
+    expect(plan.defaultCard).toEqual({ present: true, copyTo: null,
+      line: "Held: there are 2 active installation owners (owner-1, owner-b), so it is not clear whose the shared default card is. To give it to one of them, add --default-owner <member id>." });
+    // With the default card held, a mailbox whose card is blank has no common card to fall back on.
+    expect(plan.mailboxes.find((m) => m.mailbox === "member@example.invalid")!.voices[0]!.line).toMatch(/different text/);
+    expect(plan.blocking).toEqual([]);
+
+    plan = await dryRunVoiceMapping(pool, { defaultOwner: "member-2" });
+    expect(plan.defaultCard.line).toBe("Held: you named member-2 with --default-owner, but member-2 is not an active member with the owner role.");
+    expect(plan.blocking).toEqual(["--default-owner: member-2 is not an active member with the owner role, so the shared default card cannot be given to them."]);
+    expect((await applyVoiceMapping(pool, { defaultOwner: "nobody" })).kind).toBe("refused");
     expect(await rows(pool, `SELECT count(*)::int AS n FROM person_voice_profiles`)).toEqual([{ n: 0 }]);
+
+    const outcome = await applyVoiceMapping(pool, { defaultOwner: "owner-b" });
+    expect(outcome).toMatchObject({ kind: "applied", profileCreated: true });
+    if (outcome.kind === "applied") expect(outcome.plan.defaultCard.line).toBe("The shared default card (its text and its English and Norwegian model choices) is copied into a new profile for the installation owner you named with --default-owner, owner-b.");
+    expect(await rows(pool, `SELECT owner_member_id, core FROM person_voice_profiles`)).toEqual([{ owner_member_id: "owner-b", core: "Owner core." }]);
+
   });
 
-  it("refuses to mark a learn interrupted while an agent's voice learning may be running", async () => {
+  it("holds the default card when there is no active owner", async () => {
+    await pool.query(`ALTER TABLE users DISABLE TRIGGER USER`);
+    await pool.query(`UPDATE users SET status = 'removed' WHERE id = 'owner-1'`);
+    await pool.query(`ALTER TABLE users ENABLE TRIGGER USER`);
+    const plan = await dryRunVoiceMapping(pool);
+    expect(plan.defaultCard.line).toBe("Held: no active installation owner was found, so the shared default card was not given to anyone.");
+  });
+
+  it("marks a running learn interrupted even while the agent's schedule is checking in, and says why that is safe", async () => {
     await pool.query(`INSERT INTO heartbeat (agent, updated_at) VALUES ('chief-of-staff/voice-learn/tick', now())
       ON CONFLICT (agent) DO UPDATE SET updated_at = now()`);
-    const outcome = await applyVoiceMapping(pool);
-    expect(outcome.kind).toBe("refused");
-    if (outcome.kind === "refused") expect(outcome.plan.blocking).toEqual(["A learn is marked as running, and an agent's voice-learning schedule checked in during the last five minutes, so it may really be learning right now. Wait until it finishes, or stop the agent, and run this again."]);
-    expect(await rows(pool, `SELECT count(*)::int AS n FROM voice_profile WHERE owner_member_id IS NOT NULL OR learn_status = 'interrupted'`)).toEqual([{ n: 0 }]);
-    await pool.query(`UPDATE heartbeat SET updated_at = now() - interval '10 minutes'`);
+    const plan = await dryRunVoiceMapping(pool);
+    expect(plan.blocking).toEqual([]);
+    expect(renderVoiceMappingReport(plan, "dry-run")).toContain("An agent's voice-learning schedule checked in during the last five minutes. It does that every minute while the agent runs, so a learn marked as running may really be in progress, or may be left over from a learn that was cut off (for example by a restart). Marking it interrupted is safe either way: a learn that is really in progress writes its own status again when it finishes or fails.");
+    expect(await applyVoiceMapping(pool)).toMatchObject({ kind: "applied", interrupted: 1 });
+    expect(await rows(pool, `SELECT learn_status FROM voice_profile WHERE id = 'owner@example.invalid'`)).toEqual([{ learn_status: "interrupted" }]);
+  });
+
+  it("matches by address only Google accounts, and never treats a mailbox named default as a mailbox", async () => {
+    await account(pool, "acct-other", "member-2", "gone@example.invalid", "other-provider");
+    await example(pool, "default", "d1");
+    const plan = await dryRunVoiceMapping(pool);
+    expect(decision(plan, "gone@example.invalid")).toMatchObject({ kind: "held", reason: expect.stringMatching(/^No connected account in Lares has this address/) });
+    expect(plan.mailboxes.map((m) => m.mailbox)).not.toContain("default");
     expect((await applyVoiceMapping(pool)).kind).toBe("applied");
+    expect(await rows(pool, `SELECT owner_member_id FROM voice_exemplar WHERE mailbox = 'default'`)).toEqual([{ owner_member_id: null }]);
   });
 
   it("undoes everything when the check after the changes does not match", async () => {
@@ -306,6 +332,15 @@ describe("the mapping report and apply", () => {
   });
 });
 
+describe("a run that collides with another write", () => {
+  it("says to run the same command again", async () => {
+    const collision = Object.assign(new Error("could not serialize access due to concurrent update"), { code: "40001" });
+    const fakePool = { connect: async () => ({ query: async (sql: string) => { if (sql.startsWith("BEGIN")) throw collision; return { rows: [] }; }, release: () => undefined }) } as unknown as Pool;
+    expect(await applyVoiceMapping(fakePool)).toEqual({ kind: "failed",
+      reason: "The database stopped the run (could not serialize access due to concurrent update), so nothing was changed. Something else changed the same rows at the same moment; run the same command again." });
+  });
+});
+
 describe("the command", () => {
   const run = async (argv: string[], db?: Pool) => {
     const out: string[] = [], error: string[] = [];
@@ -317,6 +352,8 @@ describe("the command", () => {
     expect(await run(["--surprise"])).toMatchObject({ code: 64, error: "voices map: I do not know the option --surprise. Nothing was changed." });
     expect((await run(["--map"])).code).toBe(64);
     expect((await run(["--map", "nothing"])).code).toBe(64);
+    expect(await run(["--default-owner"])).toMatchObject({ code: 64, error: "voices map: --default-owner needs a member id. Nothing was changed." });
+    expect(await run(["--default-owner", "a", "--default-owner", "b"])).toMatchObject({ code: 64, error: "voices map: --default-owner can name only one member. Nothing was changed." });
     expect((await run(["--help"])).out).toContain("lares voices map [--apply]");
   });
 

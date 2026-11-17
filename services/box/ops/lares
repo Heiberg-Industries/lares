@@ -20,7 +20,8 @@
 #                                                       plan (nothing is written); add --apply --confirm
 #                                                       <plan-id> to bring exactly that plan into the Vault
 #   lares owner-bootstrap                               pin a verified first-owner identity
-#   lares voices map [--map <mailbox>=<account id>]...  report which member and connected account each
+#   lares voices map [--map <mailbox>=<account id>]... [--default-owner <member id>]
+#                                                       report which member and connected account each
 #                                                       mailbox's writing voice belongs to (nothing is
 #                                                       written); add --apply to link them
 #   lares backups  [setup-backups.sh options]           switch on or check backups (setup-backups.sh)
@@ -76,7 +77,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares vault import <folder> [--map <file>] [--shared <folder>]... [--private <folder>]... [--skip <glob>]...
                                    [--origin owner|agent|synced] [--include-conversations] [--apply --confirm <plan-id>]
        lares owner-bootstrap
-       lares voices map [--map <mailbox>=<account id>]... [--apply]
+       lares voices map [--map <mailbox>=<account id>]... [--default-owner <member id>] [--apply] [--help]
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
        lares budget recover [--check]
        lares budget setup [--installation-limit <usd>] [--person-limit <usd>] [--prices <in,out,cache-read,cache-write>] [--yes]
@@ -481,12 +482,17 @@ cmd_vault() {
 # lares voices map: link today's mailbox writing voices to members (bin/voice-mapping.ts). A report
 # unless --apply is given; the engine program makes and checks the changes in one transaction.
 cmd_voices() {
-  [ "${1:-}" = map ] || { printf 'lares: the voices command is: lares voices map [--map <mailbox>=<account id>]... [--apply]\n' >&2; usage; exit "$EX_USAGE"; }
+  [ "${1:-}" = map ] || { printf 'lares: the voices command is: lares voices map [--map <mailbox>=<account id>]... [--default-owner <member id>] [--apply]\n' >&2; usage; exit "$EX_USAGE"; }
   shift
   local -a eargs=()
+  local help=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --apply) eargs+=("$1"); shift ;;
+      --help|-h) help=1; shift ;;
+      --default-owner)
+        [ "$#" -ge 2 ] && [ -n "$2" ] || die "--default-owner needs a member id. Nothing was changed." "$EX_USAGE"
+        eargs+=(--default-owner "$2"); shift 2 ;;
       --map)
         [ "$#" -ge 2 ] || die "--map needs <mailbox>=<account id>. Nothing was changed." "$EX_USAGE"
         case "$2" in ?*=?*) ;; *) die "--map needs <mailbox>=<account id>, for example owner@example.invalid=acct-1. Nothing was changed." "$EX_USAGE" ;; esac
@@ -494,12 +500,14 @@ cmd_voices() {
       *) die "I do not know the option $1 for voices map. Nothing was changed." "$EX_USAGE" ;;
     esac
   done
-  local database_password_file="$PREFIX/etc/lares/secrets/database-password"
-  [ -f "$database_password_file" ] || die "this server has no database password file ($database_password_file). Finish the install first; nothing was changed." "$EX_REFUSED"
   BOX_DIR="$CUR/services/box"
   # shellcheck source=engine-run.sh
   . "$OPS/engine-run.sh"
   engine_resolve_image "$CUR/release.json" || die "this release has no engine image recorded ($BOX_DIR/engine-image). Run get-lares.sh again. Nothing was changed." "$EX_USAGE"
+  # The help text comes from the engine program itself, which needs no database for it.
+  if [ "$help" -eq 1 ]; then engine_run --network-none bin/voice-mapping.ts --help; return; fi
+  local database_password_file="$PREFIX/etc/lares/secrets/database-password"
+  [ -f "$database_password_file" ] || die "this server has no database password file ($database_password_file). Finish the install first; nothing was changed." "$EX_REFUSED"
   engine_run --ro "$database_password_file" \
     --env "DATABASE_PASSWORD_FILE=$database_password_file" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
