@@ -3,6 +3,8 @@
 import { approvalPolicy, type SessionAuthLike } from "@lares/agent-kit/approval-policy";
 import { principalFromAuth } from "@lares/agent-kit/principals";
 import { isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
+import { onManagedDoor } from "@lares/agent-kit/door-vault-turn";
+import { DOOR_NOTE_SAVE_NOT_POSSIBLE } from "@lares/agent-kit/door-vault-sentences";
 import { isApprovalRecheck, type ApprovedExecution } from "@lares/agent-kit/approval-execution";
 import { consoleAdmission, consoleResolverOnly, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 import { getPool } from "@lares/agent-kit/db";
@@ -92,6 +94,9 @@ const raisesNoCard = (decision: unknown) => decision === undefined || decision =
 const outwardRefusal = (name: string, ctx: unknown) => OUTWARD_AFTER_ANSWER_TOOLS.has(name) && !isApprovalRecheck(ctx)
   ? outwardActionAfterAnswerRefusal((ctx as ConsoleAuthorityContext | undefined)?.session as never) : undefined;
 
+const doorNoteSaveRefusal = (name: string, ctx: unknown) => name === "agent-kit__vault_write" && !isPrivateConsoleContext(ctx) && onManagedDoor(ctx)
+  ? { type: "denied" as const, reason: DOOR_NOTE_SAVE_NOT_POSSIBLE } : undefined;
+
 export const {
   approverFrom, assertApprover, assertOwnerAnswerer, assertApproval, nativeAnswerDecision,
   catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution,
@@ -108,7 +113,9 @@ export const {
   // A tool the owner set to run on its own ("autonomous") raises no card and is left as it is; one
   // that would ask first is refused in the reply to an answered request. At "gated" the authored
   // policy answers from the definition and the permissions table alone, before any provider call.
-  nativeRequest: (name, ctx, decision) => raisesNoCard(decision) ? decision : outwardRefusal(name, ctx) ?? decision,
+  // Saving a private note from a door of a managed runtime is not built yet: refuse it BEFORE any card (and
+  // also when the tool would run without one), so nobody approves a save that cannot run.
+  nativeRequest: (name, ctx, decision) => doorNoteSaveRefusal(name, ctx) ?? (raisesNoCard(decision) ? decision : outwardRefusal(name, ctx) ?? decision),
   // Web chat: every call of these tools asks first, so the refusal comes before the reservation.
   // The company CRM check is refused before any card or provider read; the adapter repeats it at
   // each later step.

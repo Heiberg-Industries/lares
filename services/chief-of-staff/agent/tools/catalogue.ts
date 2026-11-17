@@ -1,4 +1,6 @@
-import { verifyPrivateConsoleSession, privateToolAllowed, privateOnlyTool, isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
+import { verifyPrivateConsoleSession, privateToolAllowed, privateOnlyTool, isPrivateConsoleContext, doorVaultReadTool, managedDoorToolHidden } from "@lares/agent-kit/private-console-surface";
+import { doorVaultRead, doorVaultRoute, onManagedDoor } from "@lares/agent-kit/door-vault-turn";
+import { DOOR_NOTE_READ_FAILED } from "@lares/agent-kit/door-vault-sentences";
 import { sharedRoomAllows, startedIn } from "@lares/agent-kit/shared-room";
 import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution } from "../../lib/approvals.js";
@@ -39,6 +41,7 @@ import { consoleAdmission } from "@lares/agent-kit/console-turn-authority";
 import { managedIdentity } from "@lares/agent-kit/door-authority";
 import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
 import { vaultTurnCapability } from "../lib/vault-turn.js";
+import { ensureDoorVaultTurn } from "../lib/door-vault-pass.js";
 
 /** The four fields the resolver reads off a catalogue tool. `CatalogueEntry.tool` is typed as the
  *  kit's structural `ResolvableTool` (description + approval only) because eve's `Approval<…>`
@@ -67,14 +70,16 @@ export default defineDynamic(async (ctx) => {
   // changes) gets its own key, so a list saved without that rule is never reused for it. It is
   // offered only what the room rule lists (`@lares/agent-kit/shared-room`).
   const sharedRoom = startedIn(ctx) === "shared-room";
-  const decided: CatalogueDecision = await ctx.memo(["catalogue", ctx.session.id, isExactApprovalContext(ctx), ...(sharedRoom ? ["shared-room"] : [])], async () => {
+  // The claimed person in a private chat on a managed door may list, read and search private notes through Keeper.
+  const doorNotes = doorVaultRoute(ctx) !== undefined;
+  const decided: CatalogueDecision = await ctx.memo(["catalogue", ctx.session.id, isExactApprovalContext(ctx), ...(sharedRoom ? ["shared-room"] : []), ...(doorNotes ? ["door-notes"] : [])], async () => {
     const privateSession = await verifyPrivateConsoleSession(ctx);
     const { loaded } = await thisAgent(ctx.session.id);
     // Decided once, here; the guard at execution asks again (ownership can change mid-conversation).
     const callerIsOwner = privateSession ? await callerIsAgentOwner(ctx) : false;
     const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => privateSession
       ? privateToolAllowed("chief-of-staff", name, { callerIsOwner })
-      : !privateOnlyTool(name) && (!sharedRoom || sharedRoomAllows(name)));
+      : (!privateOnlyTool(name) || (doorNotes && doorVaultReadTool(name))) && !managedDoorToolHidden(ctx, name) && (!sharedRoom || sharedRoomAllows(name)));
     return { names };
   });
   return Object.fromEntries(
@@ -104,7 +109,7 @@ export default defineDynamic(async (ctx) => {
                 const admission=consoleAdmission(c.session?.auth?.current),own=managedIdentity(process.env),turnId=c.session?.turn?.id,sequence=c.session?.turn?.sequence;
                 if(admission?.purpose!=='human'||!own||!c.session?.id||typeof turnId!=='string'||!Number.isSafeInteger(sequence))throw new Error('Conversation authority is not available');
                 const turn=vaultTurnCapability({sessionId:c.session.id,turnId,sequence:sequence as number,incarnation:own.incarnation});
-                if(!turn||turn.expiresAt<=Date.now()||turn.turnId!==turnId||turn.sequence!==sequence)throw new Error('Conversation authority is not available');
+                if(!turn||turn.door||turn.expiresAt<=Date.now()||turn.turnId!==turnId||turn.sequence!==sequence)throw new Error('Conversation authority is not available');
                 const args=input as {area?:unknown;path?:unknown;offset?:unknown;folder?:unknown;cursor?:unknown;q?:unknown};
                 if((args.area!=='private'&&args.area!=='shared')||(name==='agent-kit__vault_read'&&typeof args.path!=='string')||(name==='agent-kit__vault_search'&&typeof args.q!=='string'))throw new Error('Vault access refused');
                 const identity={turnCapability:turn.capability,turnId,sequence,sessionId:c.session.id,memberId:admission.memberId,admissionNonce:admission.admissionNonce,area:args.area};
@@ -112,6 +117,13 @@ export default defineDynamic(async (ctx) => {
                 if(name==='agent-kit__vault_list')return vaultBrokerRequest('vault.read',{...identity,operation:'list',...(typeof args.folder==='string'?{folder:args.folder}:{}),...(Number.isSafeInteger(args.cursor)?{cursor:args.cursor}:{})});
                 return vaultBrokerRequest('vault.read',{...identity,operation:'read',path:args.path,...(Number.isSafeInteger(args.offset)?{offset:args.offset}:{})});
               }
+            }
+            // On a door of a managed runtime the agent's own files hold no private notes: the claimed person in a
+            // private chat reaches them through Keeper's pass; every other turn there is told so, never sent to the local folder.
+            if((name==='agent-kit__vault_list'||name==='agent-kit__vault_read'||name==='agent-kit__vault_search')&&!isPrivateConsoleContext(toolCtx)&&onManagedDoor(toolCtx)){
+              if(!doorVaultRoute(toolCtx))throw new Error(DOOR_NOTE_READ_FAILED);
+              const {route,point,capability}=await ensureDoorVaultTurn(toolCtx);
+              return doorVaultRead(route,point,capability,name==='agent-kit__vault_search'?'search':name==='agent-kit__vault_read'?'read':'list',input as never);
             }
             return tool.execute(input, toolCtx);
           },

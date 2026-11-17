@@ -4,7 +4,8 @@ import { consoleAdmission, requireConsoleSessionBinding, requireConsoleTurnAutho
   type ConsoleAuthorityContext, type ConsoleBinding } from './console-turn-authority.js';
 import { privateResumeAdmission, requirePersistedConsoleModelResume } from './private-console-resume.js';
 import { PgGrantStore } from './grant-store.js';
-import { currentDoor, managedIdentity, type ChatDoor } from './door-authority.js';
+import { managedIdentity, type ChatDoor } from './door-authority.js';
+import { requireDoorClaim, isValidDoorClaim } from './door-claim.js';
 import { payloadFingerprint } from './approval-ledger.js';
 import { ownerOnlyAgentStatement } from './owner-only-agent.js';
 
@@ -79,9 +80,7 @@ export async function captureOwnerJobAuthorityReference(db:SourceDatabase,ownerI
 
 const MEMBER_ID=/^[^\s,;\x00-\x1f\x7f]{1,256}$/;
 function validDoorTurnRequest(input:DoorTurnRequest):boolean {
-  return !!input&&(input.door==='slack'||input.door==='telegram')&&
-    typeof input.principal==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(input.principal)&&
-    typeof input.claimRevision==='string'&&/^[a-f0-9-]{36}$/.test(input.claimRevision)&&
+  return !!input&&isValidDoorClaim(input)&&
     typeof input.sessionId==='string'&&/^[A-Za-z0-9_-]{1,64}$/.test(input.sessionId)&&
     typeof input.turnId==='string'&&/^[A-Za-z0-9._:-]{1,128}$/.test(input.turnId)&&
     Number.isSafeInteger(input.sequence)&&input.sequence>=0;
@@ -109,21 +108,6 @@ export async function captureDoorBudgetAuthorityReference(db:SourceDatabase,inpu
   if(!grant)throw new Error('Stale grant');
   return {kind:'door',binding:{agent:own.name,incarnation:own.incarnation,sessionId:input.sessionId,memberId:ownerId,agentAccessRevision:grant.accessRevision,
     door:input.door,principal:input.principal,claimRevision:input.claimRevision},turnId:input.turnId,turnSequence:input.sequence};
-}
-
-/** The applied door claim is still exactly this one, and its payer is still an active owner of an
- * organisation whose current address is the one the claim was issued by (compared trimmed and
- * case-insensitively). The organisation gate comes first, as for every other authority. */
-async function requireDoorClaim(db:SourceDatabase,claim:{door:ChatDoor;principal:string;claimRevision:string;memberId:string},env:NodeJS.ProcessEnv):Promise<void> {
-  if(claim.door!=='slack'&&claim.door!=='telegram')throw new Error('Unsupported authority');
-  await gateConsoleOrganisation(db,claim.memberId,undefined,{lock:'share'});
-  const row=await currentDoor(claim.door,db,env);
-  if(!row||typeof row.principal!=='string'||row.principal!==claim.principal||row.revision!==claim.claimRevision||row.applied_revision!==claim.claimRevision||
-    typeof row.owner_email!=='string')throw new Error('Stale authority');
-  // The same owner rule as owner jobs (`requireActiveOwner`): a demoted owner no longer pays.
-  const payer=await db.query(`SELECT 1 FROM users WHERE id=$1 AND status='active' AND org_role='owner' AND org_id IS NOT NULL AND primary_email IS NOT NULL
-    AND lower(btrim(primary_email))=lower(btrim($2))`,[claim.memberId,row.owner_email]);
-  if(payer.rows.length!==1)throw new Error('Stale authority');
 }
 
 async function requireActiveOwner(db:SourceDatabase,ownerId:string):Promise<void> {

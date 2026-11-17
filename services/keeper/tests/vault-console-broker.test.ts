@@ -23,6 +23,7 @@ import { makeApprovalRecord } from '../../../packages/agent-kit/src/approval-rec
 import { eveSession } from '../../../packages/agent-kit/tests/helpers/eve-session.js';
 import { tracksApprovalAdapter } from '../../chief-of-staff/lib/tracks-approval.js';
 import { vaultNoteApprovalAdapter } from '../../chief-of-staff/lib/vault-note-write.js';
+import { DOORS } from '../../../packages/agent-kit/src/door-kinds.js';
 import { setVaultTurnCapability } from '../../chief-of-staff/agent/lib/vault-turn.js';
 
 const ids = vi.hoisted(() => ({
@@ -172,7 +173,7 @@ async function startBroker(database:Pool=pool){
   const secrets=join(root,'secrets');
   const { serveConsoleVaultBroker } = await import('../lib/vault-console-broker.js');
   return serveConsoleVaultBroker(database as never, join(root, 'secrets', 'console-vault-signing-key'), secrets, process.env.LARES_VAULT_RUNTIME_SOCKET!, {
-    consoleSocket: process.env.LARES_VAULT_CONSOLE_SOCKET,
+    designatedOwnerId: ids.member, consoleSocket: process.env.LARES_VAULT_CONSOLE_SOCKET,
     rootUid: process.getuid?.() ?? 0, socketUid: process.getuid?.() ?? 0, socketGid: process.getgid?.() ?? 0, turnClockForTests: () => ids.clock,
     outsideCustody:{approveExecution:(...args)=>ids.outsideApprove(...args),acceptedRuntimeTools:(...args)=>ids.outsideTools(...args),dispatchApproved:(...args)=>ids.outsideDispatch(...args)},
     vaultFilesForTests: { root: join(root, 'vault-files'), originRoot: join(root, 'vault-origins') },
@@ -1302,4 +1303,141 @@ it('in the shared area the digest cannot save outside articles/, write a note, r
   expect(ids.writes).toBe(0);
   expect(ids.trackFiles.get('reads/keep.md')?.content).toBe('k');
   expect(ids.trackFiles.has('articles/a-page.md')).toBe(true);
+});
+
+// ── A chat door's pass: the claimed person in a private chat, found by Keeper itself ───────────────
+// Door-neutral: every door in the door table runs the same checks. The pass names the door and the claim,
+// never a member; Keeper takes the member from its own configuration and rechecks on every read.
+const DOOR_KINDS = [...new Set(Object.values(DOORS).map(row => row.door))];
+const DOOR_REVISION = '6d1c0000-0000-4000-8000-000000000001';
+const DOOR_PRINCIPAL = 'U0DOORPERSON';
+const OWNER_EMAIL = 'owner@example.test';
+async function doorFixture(kind: string, over: { principal?: string; email?: string; revision?: string } = {}) {
+  await pool.query(`CREATE TABLE IF NOT EXISTS agent_doors(agent text NOT NULL,kind text NOT NULL,enabled boolean NOT NULL DEFAULT false,secret_set_at timestamptz,settings jsonb NOT NULL DEFAULT '{}'::jsonb,updated_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE IF NOT EXISTS agent_door_connections(agent text NOT NULL,kind text NOT NULL,incarnation uuid NOT NULL,revision uuid NOT NULL,owner_email text NOT NULL,code_hash text,expires_at timestamptz,attempts integer NOT NULL DEFAULT 0,principal text,org text,mailbox text,claimed_at timestamptz,applied_revision uuid,applied_connection jsonb,webhook_set_at timestamptz)`);
+  await pool.query('UPDATE users SET primary_email=$2 WHERE id=$1', [ids.member, over.email ?? OWNER_EMAIL]);
+  await pool.query('DELETE FROM agent_doors WHERE agent=$1 AND kind=$2', [agent, kind]);
+  await pool.query('DELETE FROM agent_door_connections WHERE agent=$1 AND kind=$2', [agent, kind]);
+  await pool.query('INSERT INTO agent_doors(agent,kind,enabled) VALUES($1,$2,true)', [agent, kind]);
+  const revision = over.revision ?? DOOR_REVISION;
+  await pool.query('INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,claimed_at,applied_revision) VALUES($1,$2,$3,$4,$5,$6,now(),$4)',
+    [agent, kind, incarnation, revision, OWNER_EMAIL, over.principal ?? DOOR_PRINCIPAL]);
+  const doors = DOOR_KINDS.map(k => ({ kind: k, enabled: true }));
+  await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb WHERE name=$1', [agent, JSON.stringify({ ...roleDefinition, doors })]);
+}
+const doorOpenInput = (kind: string, over: Record<string, unknown> = {}) => ({ door: kind, principal: DOOR_PRINCIPAL, claimRevision: DOOR_REVISION, chat: 'private',
+  sessionId: 'door_session_1', turnId: 'turn_0', sequence: 0, definition: { definition: roleDefinition, dutiesMd, voiceMd, hash: definitionHash }, ...over });
+const doorRead = (kind: string, capability: string, over: Record<string, unknown> = {}) => ({ turnCapability: capability, turnId: 'turn_0', sequence: 0, sessionId: 'door_session_1',
+  door: kind, principal: DOOR_PRINCIPAL, claimRevision: DOOR_REVISION, area: 'private', operation: 'list', ...over });
+async function openDoorPass(kind: string, over: Record<string, unknown> = {}): Promise<string> {
+  const opened = await runtime('door.turn.open', doorOpenInput(kind, over));
+  return opened.turnCapability as string;
+}
+const refusedByKeeper = (promise: Promise<unknown>) => expect(promise).rejects.toThrow('Vault reader unavailable');
+
+it('every door in the door table: the claimed person in a private chat lists, reads and searches only their own private area', async () => {
+  expect(DOOR_KINDS.length).toBeGreaterThan(0);
+  for (const kind of DOOR_KINDS) {
+    await doorFixture(kind);
+    const capability = await openDoorPass(kind);
+    expect(capability).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    await expect(runtime('vault.read', doorRead(kind, capability))).resolves.toMatchObject({ notes: ['owner.md'] });
+    await expect(runtime('vault.read', doorRead(kind, capability, { operation: 'read', path: 'owner.md' }))).resolves.toMatchObject({ path: 'owner.md', content: 'private note content' });
+    await expect(runtime('vault.read', doorRead(kind, capability, { operation: 'search', q: 'note' }))).resolves.toMatchObject({ hits: [] });
+    // The pass for one door and claim is no pass for another door.
+    for (const other of DOOR_KINDS.filter(k => k !== kind)) await refusedByKeeper(runtime('vault.read', doorRead(kind, capability, { door: other })));
+    await runtime('door.turn.close', { turnCapability: capability, turnId: 'turn_0', sequence: 0 });
+    await refusedByKeeper(runtime('vault.read', doorRead(kind, capability)));
+  }
+});
+
+it('a door pass is refused for the wrong principal, a stale claim, a demoted or removed owner, a shared room and a changed definition', async () => {
+  const kind = DOOR_KINDS[0]!;
+  await doorFixture(kind);
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind, { principal: 'U0SOMEONEELSE' })));
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind, { claimRevision: '6d1c0000-0000-4000-8000-000000000002' })));
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind, { chat: 'shared-room' })));
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind, { chat: undefined })));
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput('not-a-door')));
+  await refusedByKeeper(runtime('door.turn.open', { ...doorOpenInput(kind), memberId: ids.member }));
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind, { definition: { definition: roleDefinition, dutiesMd, voiceMd: 'changed', hash: definitionHash } })));
+  // The claim was issued by an address the owner no longer has.
+  await pool.query('UPDATE users SET primary_email=$2 WHERE id=$1', [ids.member, 'someone-else@example.test']);
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind)));
+  await pool.query('UPDATE users SET primary_email=$2 WHERE id=$1', [ids.member, OWNER_EMAIL]);
+  // A demoted owner, before and after the pass was given. Changing a role moves the member's access revision, so a
+  // pass given earlier stays dead even if the role is restored; a new pass can be had.
+  const capability = await openDoorPass(kind);
+  await pool.query("UPDATE users SET org_role='member' WHERE id=$1", [ids.member]);
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability)));
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind)));
+  await pool.query("UPDATE users SET org_role='owner' WHERE id=$1", [ids.member]);
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability)));
+  const renewed = await openDoorPass(kind);
+  await expect(runtime('vault.read', doorRead(kind, renewed))).resolves.toMatchObject({ notes: ['owner.md'] });
+  // The claim moved on (another revision was applied): the old pass is dead.
+  await pool.query("UPDATE agent_door_connections SET revision='6d1c0000-0000-4000-8000-000000000009',applied_revision='6d1c0000-0000-4000-8000-000000000009' WHERE agent=$1 AND kind=$2", [agent, kind]);
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, renewed)));
+});
+
+it('a door pass is refused after the use grant changed, with no area binding, once expired, and for another session or turn', async () => {
+  const kind = DOOR_KINDS[0]!;
+  await doorFixture(kind);
+  let capability = await openDoorPass(kind);
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability, { sessionId: 'door_session_2' })));
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability, { turnId: 'turn_1', sequence: 1 })));
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability, { memberId: ids.member })));
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability, { area: 'taste' })));
+  await refusedByKeeper(runtime('door.turn.close', { turnCapability: capability, turnId: 'turn_1', sequence: 1 }));
+  // The member's access to the agent changed after the pass was given.
+  await pool.query("UPDATE agent_access SET revision=nextval('resource_access_revision_seq') WHERE agent_name=$1", [agent]);
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability)));
+  // Expiry: five minutes on Keeper's clock.
+  capability = await openDoorPass(kind);
+  await expect(runtime('vault.read', doorRead(kind, capability))).resolves.toMatchObject({ notes: ['owner.md'] });
+  ids.clock += 5 * 60_000 + 1;
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability)));
+  ids.clock = Date.now();
+  // A removed member gets no pass at all (and a pass given earlier is dead).
+  await pool.query("UPDATE users SET status='removed' WHERE id=$1", [ids.member]);
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind)));
+});
+
+it('with no binding to the private area a door read of it is refused, and with none to any area there is no pass', async () => {
+  const kind = DOOR_KINDS[0]!;
+  await doorFixture(kind);
+  const capability = await openDoorPass(kind);
+  await pool.query("UPDATE vault_areas SET status='retired',revision=nextval('vault_access_revision_seq') WHERE kind='private'");
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, capability)));
+  await pool.query("UPDATE vault_areas SET status='retired',revision=nextval('vault_access_revision_seq') WHERE status='active'");
+  await refusedByKeeper(runtime('door.turn.open', doorOpenInput(kind)));
+});
+
+it('a web chat capability does not read as a door pass, and a door pass is no web chat capability', async () => {
+  const kind = DOOR_KINDS[0]!;
+  await doorFixture(kind);
+  const door = await openDoorPass(kind);
+  await refusedByKeeper(runtime('vault.read', { turnCapability: door, turnId: 'turn_0', sequence: 0, sessionId: 'door_session_1', memberId: ids.member, admissionNonce, operation: 'list', area: 'private' }));
+  const console = await openTurn(0);
+  await refusedByKeeper(runtime('vault.read', doorRead(kind, console.opened.turnCapability)));
+});
+
+it('a door pass reads a note saved in a real repository-backed Vault: only the private area of the claimed person, and searches find it', async () => {
+  await realAreasAndTurn();
+  const approved = await approvedExactTrack('agent-kit__vault_write', noteInput, vaultNoteApprovalAdapter);
+  await runtime('vault.write', { sessionId: session, memberId: ids.member, admissionNonce, approval: noteProof(approved), input: noteInput });
+  for (const kind of DOOR_KINDS) {
+    await doorFixture(kind);
+    const capability = await openDoorPass(kind);
+    const listed = await runtime('vault.read', doorRead(kind, capability));
+    expect(listed.notes).toContain('_inbox/oslo.md');
+    const note = await runtime('vault.read', doorRead(kind, capability, { operation: 'read', path: '_inbox/oslo.md' }));
+    expect(note.content).toContain('Trip to Oslo Wednesday');
+    const found = await runtime('vault.read', doorRead(kind, capability, { operation: 'search', q: 'Oslo' }));
+    expect(JSON.stringify(found)).toContain('oslo');
+    // The shared area is a different area: the private note is not in it.
+    const shared = await runtime('vault.read', doorRead(kind, capability, { area: 'shared' }));
+    expect(shared.notes).not.toContain('_inbox/oslo.md');
+    await refusedByKeeper(runtime('vault.read', doorRead(kind, capability, { operation: 'read', path: '../outside.md' })));
+  }
 });

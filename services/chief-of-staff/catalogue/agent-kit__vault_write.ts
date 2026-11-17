@@ -42,6 +42,8 @@
 // Keeper custody, not this runtime's store, so the call runs only from its exact approved card
 // and Keeper writes the file (`../lib/vault-note-write.ts`). Same description, input and approval.
 import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
+import { onManagedDoor } from "@lares/agent-kit/door-vault-turn";
+import { DOOR_NOTE_SAVE_NOT_POSSIBLE } from "@lares/agent-kit/door-vault-sentences";
 import { writeTool } from "@lares/agent-kit/note-write-tools";
 import { defineTool } from "eve/tools";
 
@@ -62,6 +64,8 @@ export default defineTool({
   inputSchema: native.inputSchema,
   approval: native.approval,
   async execute(input: unknown, ctx: unknown) {
+    // On a door of a managed runtime the agent's own files hold no private notes: refuse with the fixed sentence, whatever card there was.
+    if (onManagedDoor(ctx)) throw new Error(DOOR_NOTE_SAVE_NOT_POSSIBLE);
     if (!isExactApprovalContext(ctx)) return native.execute(input as never, ctx as never);
     const approved = await assertApproval(ctx as never, "agent-kit__vault_write", input);
     if (!approved) throw new Error("A Vault note needs the exact private Console approval");

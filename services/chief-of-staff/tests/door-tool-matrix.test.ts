@@ -32,7 +32,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const INCARNATION = "11111111-1111-4111-8111-111111111111";
 const NONCE = "a".repeat(43);
@@ -46,18 +46,19 @@ const WEB_MEMBER = "member-other";
 const WEB_STRANGER = "member-unknown";
 
 // Off unless a test turns it on: then web chat's turn holds a Vault capability and keeper's answers are recorded here.
-const keeper = vi.hoisted(() => ({ on: false, calls: [] as Array<{ op: string; input: Record<string, unknown> }> }));
+const keeper = vi.hoisted(() => ({ on: false, realPass: false, refuseDoorPass: false, calls: [] as Array<{ op: string; input: Record<string, unknown> }> }));
 vi.mock("@lares/agent-kit/vault-broker-client", async (original) => {
   const real = await original<typeof import("@lares/agent-kit/vault-broker-client")>();
   return { ...real, vaultBrokerRequest: async (op: string, input: Record<string, unknown>, ...rest: unknown[]) => {
     if (!keeper.on) return (real.vaultBrokerRequest as (...args: unknown[]) => unknown)(op, input, ...rest);
     keeper.calls.push({ op, input });
+    if (op === "door.turn.open") return keeper.refuseDoorPass ? Promise.reject(new Error("Vault reader unavailable (the keeper refused: grant)")) : { ok: true, turnCapability: "d".repeat(43), expiresAt: Date.now() + 60_000 };
     return input.operation === "search" ? { ok: true, hits: ["people/vera.md"], files: 2000 } : { ok: true, notes: ["people/vera.md"], nextCursor: 200 };
   } };
 });
 vi.mock("../agent/lib/vault-turn.js", async (original) => {
   const real = await original<typeof import("../agent/lib/vault-turn.js")>();
-  return { ...real, vaultTurnCapability: (...args: Parameters<typeof real.vaultTurnCapability>) => keeper.on
+  return { ...real, vaultTurnCapability: (...args: Parameters<typeof real.vaultTurnCapability>) => keeper.on && !keeper.realPass
     ? { turnId: "turn-1", sequence: 0, capability: "turn-capability", expiresAt: Date.now() + 60_000 } : real.vaultTurnCapability(...args) };
 });
 
@@ -65,8 +66,8 @@ const fake = vi.hoisted(() => {
   const asks = new Map<string, Record<string, unknown>>();
   const unexpected: string[] = [];
   const claims = [
-    { kind: "slack", principal: "U0OWNER", revision: "rev-slack", applied_revision: "rev-slack" },
-    { kind: "telegram", principal: "1001", revision: "rev-telegram", applied_revision: "rev-telegram" },
+    { kind: "slack", principal: "U0OWNER", revision: "5c1ac4e0-0000-4000-8000-000000000001", applied_revision: "5c1ac4e0-0000-4000-8000-000000000001" },
+    { kind: "telegram", principal: "1001", revision: "5c1ac4e0-0000-4000-8000-000000000002", applied_revision: "5c1ac4e0-0000-4000-8000-000000000002" },
   ];
   return {
     definition: undefined as unknown,
@@ -193,6 +194,8 @@ import { CATALOGUE } from "../catalogue/index.js";
 import { runDynamic, type MemoStore } from "../../../packages/agent-kit/tests/helpers/eve-dynamic.js";
 import { offeredBy, ownResolverFiles } from "../../../packages/agent-kit/tests/helpers/own-resolvers.js";
 import { frameworkMentionAuth } from "./helpers/slack-mention.js";
+import { clearSessionVaultTurnCapabilities } from "../agent/lib/vault-turn.js";
+import { DOOR_NOTE_READ_FAILED, DOOR_NOTE_SAVE_NOT_POSSIBLE, DOOR_NOTE_TOOL_UNAVAILABLE, DOOR_VAULT_SENTENCES } from "@lares/agent-kit/door-vault-sentences";
 import { approverFrom, assertApprover, catalogueApprovalResponse, humanTurnRefusal } from "../lib/approvals.js";
 import { calendarApprovalAdapter } from "../lib/calendar-approval.js";
 import { deadlineApprovalAdapter } from "../lib/deadlines-store.js";
@@ -202,6 +205,8 @@ import { vaultNoteApprovalAdapter } from "../lib/vault-note-write.js";
 // ─── The table ────────────────────────────────────────────────────────────────────────────────
 //
 // One row per tool, one column per door. Each cell answers both questions:
+// Note tools Keeper has no door road for: hidden on a managed door and refused with the door sentence.
+const DOOR_HIDDEN_NOTE_TOOLS = ["agent-kit__vault_backlinks", "agent-kit__vault_file", "agent-kit__vault_drop"];
 const R = "runs"; //             shown; a call goes straight through
 const C = "card"; //             shown; a call raises an approval card first
 const X = "shown, refused"; //   shown, but every call is refused
@@ -242,13 +247,13 @@ const TABLE: readonly Row[] = [
   ["calendar_update_event",               C,       H,       C,       C,       H],
   ["calendar_delete_event",               C,       H,       C,       C,       H],
   // Notes (the Vault). Found: Slack and Telegram search notes but cannot read or list them.
-  ["agent-kit__vault_read",               H,       H,       H,       R,       R],
-  ["agent-kit__vault_list",               H,       H,       H,       R,       R],
+  ["agent-kit__vault_read",               R,       H,       R,       R,       R],
+  ["agent-kit__vault_list",               R,       H,       R,       R,       R],
   ["agent-kit__vault_search",             R,       H,       R,       R,       R],
-  ["agent-kit__vault_backlinks",          R,       H,       R,       H,       H],
-  ["agent-kit__vault_write",              C,       H,       C,       C,       C],
-  ["agent-kit__vault_file",               C,       H,       C,       H,       H],
-  ["agent-kit__vault_drop",               C,       H,       C,       H,       H],
+  ["agent-kit__vault_backlinks",          H,       H,       H,       H,       H],
+  ["agent-kit__vault_write",              X,       H,       X,       C,       C],
+  ["agent-kit__vault_file",               H,       H,       H,       H,       H],
+  ["agent-kit__vault_drop",               H,       H,       H,       H,       H],
   ["save_note",                           R,       H,       R,       H,       H],
   ["atlas_proposals",                     R,       H,       R,       H,       H],
   ["atlas_resolve_proposal",              C,       H,       C,       H,       H],
@@ -527,9 +532,9 @@ beforeAll(() => {
   vi.stubEnv("LARES_AGENT_NAME", "helper");
   vi.stubEnv("LARES_AGENT_INCARNATION", INCARNATION);
   vi.stubEnv("LARES_SLACK_PRINCIPAL", SLACK_OWNER);
-  vi.stubEnv("LARES_SLACK_CLAIM_REVISION", "rev-slack");
+  vi.stubEnv("LARES_SLACK_CLAIM_REVISION", "5c1ac4e0-0000-4000-8000-000000000001");
   vi.stubEnv("LARES_TELEGRAM_PRINCIPAL", TELEGRAM_OWNER);
-  vi.stubEnv("LARES_TELEGRAM_CLAIM_REVISION", "rev-telegram");
+  vi.stubEnv("LARES_TELEGRAM_CLAIM_REVISION", "5c1ac4e0-0000-4000-8000-000000000002");
   fake.definition = parseDefinition(JSON.parse(readFileSync(new URL("../agent.json", import.meta.url), "utf8")));
   // No permissions-board row: each capability's level is the definition's own.
   setBoardDeps({ explicitLevel: async () => null, record: async () => {}, now: () => Date.now() });
@@ -675,7 +680,7 @@ describe("what each door shows and allows", () => {
       const { reasons } = await observe(key);
       // A shared room says why in words for the room, and points to a direct message only for a
       // tool the direct-message column shows; every other door keeps the console's wording.
-      const rule = (row: Row) => key !== "slackRoom" ? CONSOLE_AUTHORITY_REFUSED
+      const rule = (row: Row) => key !== "slackRoom" ? (key !== "webOwner" && key !== "webMember" && DOOR_HIDDEN_NOTE_TOOLS.includes(row[0]) ? DOOR_NOTE_TOOL_UNAVAILABLE : CONSOLE_AUTHORITY_REFUSED)
         : row[column("slackDm")] === H ? SHARED_ROOM_UNAVAILABLE : SHARED_ROOM_REFUSED;
       for (const row of TABLE) if (row[column(key)] === H) expect(reasons[row[0]], row[0]).toBe(rule(row));
     });
@@ -795,6 +800,72 @@ describe("web chat notes go to keeper", () => {
   });
 });
 
+describe("door notes go to keeper through the door pass", () => {
+  beforeEach(() => { keeper.realPass = true; });
+  afterEach(() => { keeper.realPass = false; keeper.on = false; keeper.refuseDoorPass = false; keeper.calls = []; });
+  for (const key of ["slackDm", "telegram"] as const) {
+    it(`${door(key).title}: a list, a read and a search are keeper requests with the pass and the claim, and no member`, async () => {
+      const { session } = await observe(key);
+      const tools = await resolveCatalogue(session) as unknown as Record<string, { execute(input: unknown, ctx: unknown): Promise<unknown> }>;
+      keeper.on = true;
+      expect(await tools["agent-kit__vault_search"]!.execute({ area: "private", q: "vera" }, session)).toEqual({ ok: true, hits: ["people/vera.md"], files: 2000 });
+      await tools["agent-kit__vault_list"]!.execute({ area: "private", folder: "people" }, session);
+      await tools["agent-kit__vault_read"]!.execute({ area: "private", path: "people/vera.md" }, session);
+      const opens = keeper.calls.filter((call) => call.op === "door.turn.open");
+      expect(opens).toHaveLength(1);
+      expect(opens[0]!.input).toMatchObject({ chat: "private", sessionId: session.session.id, turnId: "turn-1", sequence: 0 });
+      expect(Object.keys(opens[0]!.input)).not.toContain("memberId");
+      const reads = keeper.calls.filter((call) => call.op === "vault.read");
+      expect(reads.map((call) => call.input.operation)).toEqual(["search", "list", "read"]);
+      for (const call of reads) {
+        expect(call.input).toMatchObject({ turnCapability: "d".repeat(43), door: key === "slackDm" ? "slack" : "telegram", area: "private" });
+        expect(Object.keys(call.input)).not.toContain("memberId");
+        expect(Object.keys(call.input)).not.toContain("admissionNonce");
+      }
+    });
+
+    it(`${door(key).title}: when keeper refuses the pass, a read says so in the one sentence and the local folder is never tried`, async () => {
+      const { session } = await observe(key);
+      const tools = await resolveCatalogue(session) as unknown as Record<string, { execute(input: unknown, ctx: unknown): Promise<unknown> }>;
+      clearSessionVaultTurnCapabilities(session.session.id, INCARNATION);
+      keeper.on = true; keeper.refuseDoorPass = true;
+      for (const name of ["agent-kit__vault_list", "agent-kit__vault_read", "agent-kit__vault_search"]) {
+        await expect(tools[name]!.execute({ area: "private", path: "a.md", q: "x" }, session)).rejects.toThrow(DOOR_NOTE_READ_FAILED);
+      }
+    });
+
+    it(`${door(key).title}: a save is refused before any card with one sentence from the closed list`, async () => {
+      const { session } = await observe(key);
+      const outcome = await attempt(session, "agent-kit__vault_write", (await resolveCatalogue(session))["agent-kit__vault_write"]);
+      expect(outcome.call).toBe("refused");
+      expect(outcome.reason).toBe(DOOR_NOTE_SAVE_NOT_POSSIBLE);
+      expect(DOOR_VAULT_SENTENCES.has(outcome.reason!)).toBe(true);
+    });
+
+    it(`${door(key).title}: even a save that reached execution says the one sentence and never touches the local folder`, async () => {
+      const { session } = await observe(key);
+      const tools = await resolveCatalogue(session) as unknown as Record<string, { execute(input: unknown, ctx: unknown): Promise<unknown> }>;
+      await expect(tools["agent-kit__vault_write"]!.execute({ area: "private", title: "Oslo", body: "Trip" }, session)).rejects.toThrow(DOOR_NOTE_SAVE_NOT_POSSIBLE);
+    });
+  }
+
+  it("Slack · owner · mention in a shared channel: no note tool is shown, none is called, and no pass is asked for", async () => {
+    const { session, shown } = await observe("slackRoom");
+    keeper.on = true;
+    expect(shown.filter((tool) => tool.startsWith("agent-kit__vault_"))).toEqual([]);
+    for (const tool of ["agent-kit__vault_list", "agent-kit__vault_read", "agent-kit__vault_search", "agent-kit__vault_write", "agent-kit__vault_backlinks"]) {
+      expect((await attempt(session, tool, undefined)).call, tool).toBe("refused");
+    }
+    expect(keeper.calls).toEqual([]);
+  });
+
+  it("Slack · unknown person · direct message: no note read is shown or allowed", async () => {
+    const stranger = sessionWith("matrix-stranger-notes", { authenticator: "slack-webhook", principalType: "user", attributes: { user_id: SLACK_STRANGER, channel_id: "D0OTHER", author_type: "user" } });
+    expect(Object.keys(await resolveCatalogue(stranger))).not.toContain("agent-kit__vault_list");
+    expect((await attempt(stranger, "agent-kit__vault_list", undefined)).call).toBe("refused");
+  });
+});
+
 describe("an unauthorised or unknown speaker", () => {
   const NO_TURN = "no turn starts, so nothing is seen and nothing can be called";
 
@@ -848,7 +919,8 @@ describe("an unauthorised or unknown speaker", () => {
   // opened for one, the second checks are these two; a read that asks nothing has none.
   it("Slack · unknown person · direct message: were a turn ever opened for them, it would see the owner's list; only cards and remembered facts check again", async () => {
     const stranger = sessionWith("matrix-stranger", { authenticator: "slack-webhook", attributes: { user_id: SLACK_STRANGER, channel_id: "D0OTHER" } });
-    expect(Object.keys(await resolveCatalogue(stranger)).sort()).toEqual((await observe("slackDm")).shown);
+    // Not the claimed person: the owner's list, less the two note reads that need Keeper's pass for the claimed person.
+    expect(Object.keys(await resolveCatalogue(stranger)).sort()).toEqual((await observe("slackDm")).shown.filter((tool) => !["agent-kit__vault_read", "agent-kit__vault_list"].includes(tool)));
     expect(() => assertApprover(approverFrom(stranger.session.auth))).toThrow(/not an allowed approver/);
     expect(humanTurnRefusal(stranger.session, "Not saved.")).toContain("not as the owner");
     expect(humanTurnRefusal((await observe("slackDm")).session.session, "Not saved.")).toBeNull();
@@ -861,7 +933,8 @@ describe("an unauthorised or unknown speaker", () => {
     expect(auth).toMatchObject({ authenticator: "http-basic" });
     const session = sessionWith("matrix-no-member", auth);
     const tools = await resolveCatalogue(session);
-    expect(Object.keys(tools).sort()).toEqual((await observe("slackDm")).shown);
+    // Not a door and not the claimed person: no Keeper pass for notes; the three note tools with no door road are still offered here.
+    expect(Object.keys(tools).sort()).toEqual([...(await observe("slackDm")).shown.filter((tool) => !["agent-kit__vault_read", "agent-kit__vault_list"].includes(tool)), ...DOOR_HIDDEN_NOTE_TOOLS].sort());
     expect((await attempt(session, "gmail_read", tools["gmail_read"])).call).toBe(R);
     expect((await attempt(session, "gmail_send", tools["gmail_send"])).call).toBe(C);
     expect(() => assertApprover(approverFrom(session.session.auth))).toThrow(/not an allowed approver/);
@@ -1016,21 +1089,21 @@ describe("Found: what the table records today, and what should hold instead", ()
     });
   }
 
-  // Found: the baseline and the agent's own instructions name these two; `privateOnlyTool` in agent-kit keeps them off Slack and Telegram.
+  // Fixed: the claimed person in a private chat on a door Keeper manages is shown the note read and list tools, and they go through Keeper's pass.
   for (const key of ["slackDm", "telegram"] as const) {
-    it.fails(`${door(key).title}: sees the note read and list tools that the baseline and its own instructions name`, async () => {
+    it(`${door(key).title}: sees the note read and list tools that the baseline and its own instructions name`, async () => {
       const { shown } = await observe(key);
       expect(shown).toEqual(expect.arrayContaining(["agent-kit__vault_read", "agent-kit__vault_list"]));
     });
   }
 
-  it("Slack · owner · direct message: its instructions name the note read and list tools it is not shown", async () => {
+  it("Slack · owner · direct message: its instructions name the note read and list tools it is shown", async () => {
     const persona = readFileSync(new URL("../agent/persona.md", import.meta.url), "utf8");
     const { shown } = await observe("slackDm");
     for (const tool of ["agent-kit__vault_read", "agent-kit__vault_list"]) {
       expect(persona).toContain(`\`${tool}\``);
       expect(baseline()).toContain(tool);
-      expect(shown).not.toContain(tool);
+      expect(shown).toContain(tool);
     }
   });
 });

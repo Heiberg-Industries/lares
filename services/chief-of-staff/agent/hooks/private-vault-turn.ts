@@ -3,6 +3,8 @@ import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
 import { thisAgent } from '../../lib/definition.js';
+import { abandonDoorVaultOpening, ensureDoorVaultTurn } from '../lib/door-vault-pass.js';
+import { doorVaultRoute } from '@lares/agent-kit/door-vault-turn';
 import { clearSessionVaultTurnCapabilities, closeVaultTurn, isVaultTurnActive, markVaultTurnActive, markVaultTurnClosed, setVaultTurnCapability, vaultTurnCapability } from '../lib/vault-turn.js';
 
 type Context=HookContext & {session?:{id?:string;turn?:{id?:string;sequence?:number};auth?:{current?:unknown}|null}};
@@ -20,13 +22,22 @@ function coords(event:unknown,ctx:Context){
 async function close(event:unknown,raw:HookContext){
  const ctx=raw as Context,own=managedIdentity(process.env),sessionId=ctx.session?.id,turnId=(event as {data?:{turnId?:unknown}}|undefined)?.data?.turnId;
  if(!own||typeof sessionId!=='string'||typeof turnId!=='string')return;
+ abandonDoorVaultOpening(sessionId,turnId,own.incarnation);
  for(const held of closeVaultTurn(sessionId,turnId,own.incarnation)){
-  await vaultBrokerRequest('turn.close',{turnCapability:held.capability,turnId:held.turnId,sequence:held.sequence}).catch(()=>{});
+  await vaultBrokerRequest(held.door?'door.turn.close':'turn.close',{turnCapability:held.capability,turnId:held.turnId,sequence:held.sequence}).catch(()=>{});
  }
 }
 export default defineHook({events:{
  'turn.started':async(event:HookEvent<'turn.started'>,raw:HookContext)=>{
-  const ctx=raw as Context,point=coords(event,ctx);if(!point)return;clearSessionVaultTurnCapabilities(point.sessionId,point.incarnation);const key={sessionId:point.sessionId,turnId:point.turnId,sequence:point.sequence,incarnation:point.incarnation};
+  const ctx=raw as Context,point=coords(event,ctx);
+  if(!point){
+   // A chat door: the claimed person in a private chat gets a pass for this turn. Anything else gets none,
+   // and a failure here only leaves the notes unreachable for the turn (the tools say so themselves).
+   const turnId=(event as {data?:{turnId?:unknown}}|undefined)?.data?.turnId;
+   if(ctx.session?.turn?.id===turnId&&doorVaultRoute(ctx)){const own=managedIdentity(process.env);if(own&&ctx.session?.id)clearSessionVaultTurnCapabilities(ctx.session.id,own.incarnation);await ensureDoorVaultTurn(ctx).catch(()=>undefined);}
+   return;
+  }
+  clearSessionVaultTurnCapabilities(point.sessionId,point.incarnation);const key={sessionId:point.sessionId,turnId:point.turnId,sequence:point.sequence,incarnation:point.incarnation};
   try{
    markVaultTurnActive(key);
    const {loaded}=await thisAgent(point.sessionId);

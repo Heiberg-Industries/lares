@@ -8,7 +8,7 @@
  * leaves a setting out gets the behaviour it had before the rules moved here. The kit holds no role
  * names except what a role passes in.
  */
-import { assertPrivateConsoleTool as assertPrivateTool, isPrivateConsoleContext, privateOnlyTool, privateOwnerTool,
+import { assertPrivateConsoleTool as assertPrivateTool, isPrivateConsoleContext, privateOnlyTool, doorVaultReadTool, managedDoorToolHidden, privateOwnerTool,
   type PrivateRole } from "./private-console-surface.js";
 import { assertSharedRoomAllows } from "./shared-room.js";
 import { isExactApprovalContext, isExactApprovalResponse, isApprovalRecheck, reserveExactApproval, reserveExactApprovalOrDeny,
@@ -200,7 +200,7 @@ export function approvalPolicy(config: ApprovalPolicyConfig): ApprovalPolicy {
    *  use. A conversation started in a shared room is refused every tool the room rule does not list,
    *  first and in words for the room, before any card or execution. */
   async function assertPrivateConsoleTool(ctx: unknown, name: string): Promise<void> {
-    if (!isPrivateConsoleContext(ctx)) assertSharedRoomAllows(ctx, name, !privateOnlyTool(name));
+    if (!isPrivateConsoleContext(ctx)) assertSharedRoomAllows(ctx, name, (!privateOnlyTool(name) || (config.role === "chief-of-staff" && doorVaultReadTool(name))) && !managedDoorToolHidden(ctx, name));
     const callerIsOwner = config.callerIsOwner && privateOwnerTool(name) && isPrivateConsoleContext(ctx)
       ? await config.callerIsOwner(ctx) : false;
     assertPrivateTool(ctx, config.role, name, { callerIsOwner });

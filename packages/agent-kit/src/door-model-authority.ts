@@ -29,20 +29,9 @@ import { modelPurposeRequest } from './model-purpose-client.js';
 export { DOOR_MODEL_REFUSED };
 export type ModelAuthorityRoute = 'door' | 'owner-job' | 'none';
 
-type Auth = { authenticator?: unknown; principalType?: unknown; attributes?: Record<string, unknown> | null };
 type Session = { id?: unknown; auth?: { current?: unknown; initiator?: unknown } | null } | null | undefined;
 
-/**
- * The verified sender (ADR-0025 rule 5, item 1) for the doors eve ships, read from eve's own
- * identity: eve sets it only after it checked the platform's signature or secret. Keyed by eve's
- * authenticator. When the layer's adapter exists this becomes its function 1. A new door adds
- * one row here and nothing in its door file. The value compared is the platform's own user id,
- * exactly as the door claim stored it (`door-channels.ts`), never eve's `principalId`.
- */
-const DOORS: Readonly<Record<string, { readonly door: 'slack' | 'telegram'; readonly sender: (a: Auth) => unknown }>> = Object.freeze({
-  'slack-webhook': { door: 'slack', sender: a => a.principalType === 'user' && a.attributes?.author_type === 'user' ? a.attributes.user_id : undefined },
-  'telegram-webhook': { door: 'telegram', sender: a => a.principalType === 'user' && a.attributes?.chat_type === 'private' ? a.attributes.user_id : undefined },
-});
+import { DOORS, type DoorAuth as Auth, type DoorKind } from './door-kinds.js';
 
 const PRINCIPAL = /^[A-Za-z0-9_-]{1,128}$/;
 const REVISION = /^[a-f0-9-]{36}$/;
@@ -63,14 +52,14 @@ function doorOf(auth: unknown): (typeof DOORS)[string] | undefined {
 }
 
 /** This runtime's applied claim for a door, or nothing when it is incomplete. */
-function claimFor(door: 'slack' | 'telegram'): { principal: string; revision: string } | undefined {
+function claimFor(door: DoorKind): { principal: string; revision: string } | undefined {
   const kind = door.toUpperCase();
   const principal = process.env[`LARES_${kind}_PRINCIPAL`], revision = process.env[`LARES_${kind}_CLAIM_REVISION`];
   return principal && PRINCIPAL.test(principal) && revision && REVISION.test(revision) ? { principal, revision } : undefined;
 }
 
 /** The claimed person speaking through a door, or a refusal. */
-function claimedSender(auth: unknown): { door: 'slack' | 'telegram'; principal: string; revision: string } {
+export function claimedSender(auth: unknown): { door: DoorKind; principal: string; revision: string } {
   const entry = doorOf(auth);
   if (!entry) throw refused();
   const sender = entry.sender(auth as Auth);

@@ -4,6 +4,8 @@ import { defineState } from 'eve/context';
 import { consoleAdmission, hasConsoleTurnAuthorityTag, requireConsoleSessionBinding,
   CONSOLE_AUTHORITY_REFUSED, type ConsoleAuthorityContext } from './console-turn-authority.js';
 import { managedIdentity } from './door-authority.js';
+import { doorVaultRoute, onManagedDoor } from './door-vault-turn.js';
+import { DOOR_NOTE_TOOL_UNAVAILABLE } from './door-vault-sentences.js';
 /** Approval response callbacks expose the pinned initiator outside session.auth. */
 export function isPrivateConsoleContext(ctx: unknown): boolean {
   if (hasConsoleTurnAuthorityTag(ctx)) return true;
@@ -22,6 +24,21 @@ export async function verifyPrivateConsoleModel(ctx: unknown): Promise<void> {
 const PERSONAL_READ_TOOLS = new Set(['personal_mailbox_send','personal_mailbox_accounts', 'personal_mailbox_list', 'personal_mailbox_read', 'personal_calendar_accounts', 'personal_calendar_events']);
 const PRIVATE_VAULT_READ_TOOLS = new Set(['agent-kit__vault_list','agent-kit__vault_read']);
 const PRIVATE_TRACK_TOOLS = new Set(['tracks_list','track_items','track_add_item','track_move_item','track_create','track_set_steps']);
+/** Notes that a door's pass (`door-vault-turn.ts`) lets Keeper list and read for the claimed person in a private chat. */
+export function doorVaultReadTool(name: string): boolean { return PRIVATE_VAULT_READ_TOOLS.has(name); }
+// Tools Keeper has no door road for: on a managed door they are not offered, and a call that arrives anyway is refused.
+const MANAGED_DOOR_HIDDEN_TOOLS = new Set(['agent-kit__vault_backlinks','agent-kit__vault_file','agent-kit__vault_drop']);
+/** Whether a conversation on a door that Keeper manages is kept from this note tool, because the
+ *  agent's own files hold no private notes there. Door-neutral: any door in the door table. */
+export function managedDoorToolHidden(ctx: unknown, name: string): boolean {
+  if (!MANAGED_DOOR_HIDDEN_TOOLS.has(name)) return false;
+  return onManagedDoor(ctx);
+}
+/** Whether this note tool is offered, to this role, in this conversation, ON A DOOR (not web chat):
+ *  list and read only for the claimed person in a private chat of a managed runtime. */
+export function doorVaultReadOffered(ctx: unknown, role: PrivateRole, name: string): boolean {
+  return role === 'chief-of-staff' && PRIVATE_VAULT_READ_TOOLS.has(name) && doorVaultRoute(ctx) !== undefined;
+}
 /** These tools must never be offered on a native owner channel, even if explicitly granted. */
 export function privateOnlyTool(name: string): boolean { return PERSONAL_READ_TOOLS.has(name)||PRIVATE_VAULT_READ_TOOLS.has(name)||PRIVATE_TRACK_TOOLS.has(name); }
 // The one note write, offered on native channels too. Keeper writes it only from an exact card.
@@ -68,7 +85,8 @@ export async function verifyPrivateConsoleSession(ctx: unknown): Promise<boolean
 }
 /** Run before any authored executor or approval callback, including reconstructed descriptors. */
 export function assertPrivateConsoleTool(ctx: unknown, role: PrivateRole, name: string, caller: PrivateCaller = {}): void {
-  if ((!isPrivateConsoleContext(ctx) && privateOnlyTool(name)) || (isPrivateConsoleContext(ctx) && !privateToolAllowed(role, name, caller))) throw new Error(CONSOLE_AUTHORITY_REFUSED);
+  if (!isPrivateConsoleContext(ctx) && role === 'chief-of-staff' && managedDoorToolHidden(ctx, name)) throw new Error(DOOR_NOTE_TOOL_UNAVAILABLE);
+  if ((!isPrivateConsoleContext(ctx) && privateOnlyTool(name) && !doorVaultReadOffered(ctx, role, name)) || (isPrivateConsoleContext(ctx) && !privateToolAllowed(role, name, caller))) throw new Error(CONSOLE_AUTHORITY_REFUSED);
 }
 export function privateRoleInstructions(role: PrivateRole): string {
   return role === 'chief-of-staff'
