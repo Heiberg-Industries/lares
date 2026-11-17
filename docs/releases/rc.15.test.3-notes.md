@@ -286,7 +286,7 @@ critical findings:
 | sync jobs | 1 | 112 |
 
 These are the counts printed by the scan step of each run ("Final image vulnerability occurrences").
-They were not compared with earlier releases, and the findings were not compared one by one.
+Compared with the rc.15.test.2 notes, every Critical count is the same and every High count is one lower, except the egress proxy (no findings in either). The findings were not compared one by one.
 
 ## How it was published
 
