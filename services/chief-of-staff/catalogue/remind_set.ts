@@ -48,7 +48,8 @@ export default defineTool({
     message: z.string(),
     dueAt: z.string(),
     recurrence: z.string().optional(),
-    door: z.enum(["slack", "telegram"]),
+    // The plain names a reminder list prints ("Telegram") are accepted too, so a copied value works.
+    door: z.enum(["slack", "telegram", "Slack", "Telegram"]).transform((d) => d.toLowerCase() as "slack" | "telegram"),
     threadRef: z.string().optional(),
   }),
   approval: approvalFor("remind_set"),

@@ -745,9 +745,9 @@ export interface ApprovalCardShape {
   readonly shortDetails: string | undefined;
 }
 
-/** The longest title eve's compact Slack card shows before it cuts it at 200 characters with a
- *  trailing mark; a longer title is repeated whole in the body. */
-export const CARD_TITLE_SHOWN_MAX = 197;
+/** eve's compact Slack card draws `*` + the escaped title + `*` and cuts that at this many
+ *  characters; a title that would be cut is repeated whole in the body. */
+export const CARD_TITLE_SHOWN_MAX = 200;
 
 /** The tools whose details carry every field their title can cut (recipients, subject), so a cut
  *  title adds nothing the body does not say. */
@@ -791,7 +791,7 @@ export function approvalCardShape(toolName: unknown, input: unknown, tz: string 
       input !== null && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
     const body: CardBodyPart[] = [];
     const titleCut = title !== undefined && !textShownWhole(title);
-    if (title !== undefined && title.length > CARD_TITLE_SHOWN_MAX) body.push({ kind: "text", text: escapeMrkdwn(title) });
+    if (title !== undefined && escapeMrkdwn(title).length + 2 > CARD_TITLE_SHOWN_MAX) body.push({ kind: "text", text: escapeMrkdwn(title) });
     if (Object.prototype.hasOwnProperty.call(DETAILS, toolName)) {
       const details = wholeDetails(toolName, obj, tz);
       if (details !== undefined) body.push({ kind: "text", text: details });

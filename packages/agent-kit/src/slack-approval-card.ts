@@ -174,6 +174,9 @@ function compactCardWith(
 ): SlackInteractionCardParts {
   const parts = next(withoutCallInput(card));
   const layout = layoutSlackCard(body, parts.controls.blocks.length);
+  // Without the framework patch's hook nothing takes Approve off a card, so a cut card would carry
+  // a notice that is false: leave the card to eve.
+  if (!layout.whole && typeof globalThis.__eveSlackCardCut !== "function") return next(card);
   const texts = [...layout.sections];
   if (!layout.whole) {
     const open = card.interaction.status === "open" && card.interaction.answer === undefined;
@@ -211,6 +214,25 @@ export function approvalInteractionCard(
  */
 export function slackCardShownWhole(toolName: string, input: unknown): boolean {
   return layoutSlackCard(approvalCardShape(toolName, input).body, COMPACT_CARD_BLOCKS).whole;
+}
+
+/**
+ * Whether a card eve POSTED shows everything: the kit's layout is whole AND every section of it is
+ * among the blocks in the message. eve draws its own card instead of ours when it rejects a
+ * renderer result or when Slack refuses the message; that card shows a short preview of the
+ * request, so the record must not call it whole. (eve checks a card's buttons against its own, so
+ * the buttons cannot tell the two apart.) `blocks` are the posted message's, from eve's state.
+ */
+export function slackCardPostedWhole(toolName: string, input: unknown, blocks: unknown): boolean {
+  const layout = layoutSlackCard(approvalCardShape(toolName, input).body, COMPACT_CARD_BLOCKS);
+  if (!layout.whole) return false;
+  if (layout.sections.length === 0) return true;
+  if (!Array.isArray(blocks)) return false;
+  const posted = new Set<string>();
+  for (const block of blocks as Array<{ type?: unknown; text?: { text?: unknown } }>) {
+    if (block?.type === "section" && typeof block.text?.text === "string") posted.add(block.text.text);
+  }
+  return layout.sections.every((section) => posted.has(section));
 }
 
 /** True when the Slack card for this call could not show the whole request, so it offers no Approve. */

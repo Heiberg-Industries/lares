@@ -28,6 +28,9 @@ import {
   approvalInteractionCard,
   installSlackCardHook,
   slackCardShownWhole,
+  slackCardPostedWhole,
+  layoutSlackCard,
+  COMPACT_CARD_BLOCKS,
 } from "@lares/agent-kit/slack-approval-card";
 import { approvalCardShape } from "@lares/agent-kit/approval-summary";
 
@@ -428,7 +431,8 @@ describe("a tool without a Lares summary shows its whole input", () => {
   it("keeps Slack's escapes whole when it splits an input full of them", () => {
     const input = { body: "&<>".repeat(1_500) };
     const { parts } = render(approval("some_tool_nobody_summarised", input));
-    const sections = blocksOf(parts).slice(1).map((b) => (b as unknown as { text: { text: string } }).text.text);
+    const sections = blocksOf(parts).slice(1).map((b) => (b as unknown as { text: { text: string } }).text.text)
+      .filter((t) => t.startsWith("```")); // the title, repeated whole because it is long, is the section before
     const json = sections.map((s) => s.slice(4, -4)).join("");
     expect(json.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")).toBe(JSON.stringify(input, null, 2));
     for (const shown of sections) expect(shown).not.toMatch(/&[a-z]{0,4}\n```$/u);
@@ -480,5 +484,77 @@ describe("the renderer never breaks a card", () => {
     // The input rides along under another name, so the framework patch sees the same request.
     expect(next).toHaveBeenCalledWith({ ...card, interaction: { ...card.interaction, call: { ...call, laresInput: input } } });
     expect(parts.details).toBeUndefined();
+  });
+});
+
+describe("a card eve draws itself is never counted whole, and the hook fails closed", () => {
+  const BIG_MAIL = { ...MAIL, bodyText: Array.from({ length: 250 }, (_, i) => `Line ${i} of the draft, all of it to be read.`).join("\n") };
+
+  it("when a renderer throws, eve's own card is posted and the record does not call it whole", () => {
+    const throwing = composeInteractionCards([{ interactionCard: () => { throw new Error("renderer broke"); } } as never]);
+    const interaction = approval("gmail_send", BIG_MAIL);
+    const { parts } = renderRequestCard(throwing, cardFor(interaction), undefined) as never as { parts: SlackInteractionCardParts };
+    expect(text(parts)).toContain("bodyText"); // eve's own preview of the raw input
+    expect(slackCardPostedWhole("gmail_send", BIG_MAIL, parts.controls.blocks)).toBe(false);
+    // The card the renderer draws is whole.
+    const ours = render(interaction).parts;
+    expect(slackCardPostedWhole("gmail_send", BIG_MAIL, ours.controls.blocks)).toBe(true);
+  });
+
+  it("a short card with nothing under its title is whole either way", () => {
+    expect(slackCardPostedWhole("calendar_delete_event", { eventId: "e1" }, [{ type: "card" }])).toBe(true);
+  });
+
+  it("a hook that throws takes Approve off: Deny only, and eve still accepts our card", () => {
+    const real = globalThis.__eveSlackCardCut;
+    globalThis.__eveSlackCardCut = () => { throw new Error("hook broke"); };
+    try {
+      const { parts, fallback } = render(approval("gmail_send", MAIL));
+      expect(buttons(fallback)).toEqual([{ label: "Deny", value: "deny" }]);
+      expect(buttons(parts)).toEqual([{ label: "Deny", value: "deny" }]);
+    } finally {
+      globalThis.__eveSlackCardCut = real;
+    }
+  });
+
+  it("without the hook a card that does not fit is eve's own, with no notice that Approve is gone", () => {
+    const real = globalThis.__eveSlackCardCut;
+    globalThis.__eveSlackCardCut = undefined;
+    try {
+      const { parts, fallback } = render(approval("gmail_send", { ...MAIL, bodyText: "x".repeat(200_000) }));
+      expect(text(parts)).toBe(text(fallback));
+      expect(text(parts)).not.toContain("cannot be approved here");
+      // A card that fits is unaffected.
+      expect(buttons(render(approval("gmail_send", MAIL)).parts).map((b) => b.value)).toEqual(["deny", "approve"]);
+    } finally {
+      globalThis.__eveSlackCardCut = real;
+    }
+  });
+});
+
+describe("the 49 and 50 section boundary", () => {
+  const part = { kind: "text", text: "a".repeat(3_000) } as const;
+  const parts = (n: number) => Array.from({ length: n }, () => part);
+
+  it("49 sections plus the card are 50 blocks and whole; 50 sections are cut, with the notice as the 50th block", () => {
+    const whole = layoutSlackCard(parts(49), COMPACT_CARD_BLOCKS);
+    expect(whole.whole).toBe(true);
+    expect(whole.sections).toHaveLength(49);
+    const cut = layoutSlackCard(parts(50), COMPACT_CARD_BLOCKS);
+    expect(cut.whole).toBe(false);
+    expect(cut.sections).toHaveLength(48); // + the notice + the card = 50
+    expect(cut.hidden).toBe(2 * 3_000);
+  });
+
+  it("a settled card of 49 sections stays at 50 blocks", () => {
+    const body = "word ".repeat(147_000 / 5).slice(0, 49 * 3_000 - 10);
+    const input = { ...MAIL, bodyText: body };
+    const n = approvalCardShape("gmail_send", input).body.length;
+    expect(n).toBe(1);
+    const open = render(approval("gmail_send", input)).parts;
+    expect(blocksOf(open).length).toBeLessThanOrEqual(50);
+    const done = render(approval("gmail_send", input, settled("accepted", "approve")), "U0000000000").parts;
+    expect(blocksOf(done).length).toBe(blocksOf(open).length);
+    expect(blocksOf(done).length).toBeLessThanOrEqual(50);
   });
 });
