@@ -19,7 +19,9 @@ import {
 } from '../src/door-vault-sentences.js';
 import { exactCardForRequest } from '../src/exact-approval-request.js';
 import { makeApprovalRecord } from '../src/approval-record-hook.js';
-import { askForCall } from '../src/approval-ledger.js';
+import { askForCall, recordCardPosted, resetPostedBeforeRowForTests } from '../src/approval-ledger.js';
+import { approvalPolicy } from '../src/approval-policy.js';
+import { principalPolicy } from '../src/principals.js';
 import { closePool } from '../src/db.js';
 import { eveSession } from './helpers/eve-session.js';
 import { VaultBrokerError } from '../src/vault-broker-client.js';
@@ -346,3 +348,21 @@ for (const door of kinds) {
     });
   });
 }
+
+describe('a scheduled job\'s card (no door initiator)', () => {
+  it('still gets the door\'s shown-whole mark when the door posted it first, so its approval runs', async () => {
+    resetPostedBeforeRowForTests();
+    const policy = approvalPolicy({ role: 'chief-of-staff', principals: principalPolicy(['slack', 'telegram']), approvalDoors: 'Slack or Telegram',
+      reserveRefusal: 'deny', needsExactCard: () => false });
+    const app = { authenticator: 'app', principalType: 'runtime', attributes: {} };
+    const hook = makeApprovalRecord(), s = eveSession();
+    s.call('call-sched', 'gmail_send', { to: ['a@x.example'] });
+    // The door's renderer posted the card (whole) before the hook made its row.
+    await recordCardPosted(db, { requestId: 'request-sched', door: 'slack', address: { channel: 'D0DIRECT', message: '1700000000.000100' }, shownWhole: true });
+    await hook['interaction.opened'](s.open('request-sched', 'call-sched'), { agent: { name: 'helper' }, session: { id: 'session_1', auth: { initiator: app, current: app } }, view: s.view });
+    expect(await askForCall(db, 'call-sched')).toMatchObject({ requestId: 'request-sched' });
+    expect((await db.query("SELECT shown_whole, card_address FROM approval_asks WHERE call_id='call-sched'")).rows[0]).toMatchObject({ shown_whole: true });
+    const ctx = { callId: 'call-sched', session: { id: 'session_1', auth: { current: app, initiator: app } }, approval: { responder: person('slack') } };
+    await expect(policy.guardCatalogueExecution(ctx, 'gmail_send', { to: ['a@x.example'] })).resolves.toBeUndefined();
+  });
+});

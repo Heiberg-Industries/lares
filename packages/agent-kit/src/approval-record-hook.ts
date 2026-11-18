@@ -78,6 +78,7 @@ export interface ApprovalRecordDeps {
   personalResolved?: (requestId:string,outcome:string,ctx:unknown)=>Promise<boolean>;
   record?: (a: { requestId: string; callId: string; agent: string; tool: string; payloadHash: string }) => void | Promise<void>;
   answer?: (a: { requestId: string; outcome: AskOutcome; answeredVia?: string }) => void | Promise<void>;
+  posted?: (requestId: string) => void | Promise<void>;
   origin?: (a: { requestId: string; door: string; putTo?: string; shownWhole?: boolean }) => void | Promise<void>;
   question?: (a: { requestId: string; agent: string; prompt: string; door?: string; putTo?: string }) => void | Promise<void>;
   questionEnd?: (a: { requestId: string; answered: boolean }) => void | Promise<void>;
@@ -100,6 +101,9 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
       await recordAnswer(getPool(), a);
     });
 
+  // A card with no door initiator (a scheduled job's) gets no origin, but the door may still have posted it first: its address
+  // and shown-whole mark are written once the row exists, whatever the origin.
+  const posted = deps.posted ?? (deps.record || deps.origin ? async () => {} : async (requestId: string) => { await applyPostedCard(getPool(), requestId); });
   const origin =
     deps.origin ??
     (async (a) => {
@@ -141,12 +145,14 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
       if (hasConsoleTurnAuthorityTag(ctx)) {
         await attachExactApproval({requestId,callId,tool:toolName,input:card.input});
         if (from) await origin({ requestId, ...from });
+        await posted(requestId);
         return;
       }
       // A card on a door whose call was reserved first (a note save) gets its request id the way a console card does;
       // without it nothing could ever approve it. Any other card is written down as it always was.
       if (!deps.record && await attachDoorExactApproval({ requestId, callId, tool: toolName, input: card.input })) {
         if (from) await origin({ requestId, ...from });
+        await posted(requestId);
         return;
       }
       await record({
@@ -157,6 +163,7 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
         payloadHash: payloadFingerprint(toolName, card.input),
       });
       if (from) await origin({ requestId, ...from });
+        await posted(requestId);
     } catch (err) {
       if (hasConsoleTurnAuthorityTag(ctx) || err instanceof DoorAttachError) throw err;
       warn("interaction.opened", err);
