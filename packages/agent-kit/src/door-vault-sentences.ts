@@ -20,6 +20,23 @@ export const DOOR_NOTE_READ_FAILED =
 export const DOOR_NOTE_TOOL_UNAVAILABLE =
   "That isn't available from this chat. Nothing was changed.";
 
+/** The title is taken: the tool saves new notes only (the same words web chat shows). */
+export const DOOR_NOTE_TITLE_TAKEN =
+  "A private note with this title already exists. Choose another title: this tool saves new notes only.";
+/** AFTER an approved card, the save did not happen. Never says why (nothing from Keeper is copied). */
+export const DOOR_NOTE_SAVE_FAILED =
+  "You approved saving this note, but it was not saved: the save could not be completed when it ran. Nothing was changed. If you still want it, ask me again and approve the new card.";
+/** AFTER an approved card, the approval had run out or been used already. */
+export const DOOR_NOTE_APPROVAL_EXPIRED =
+  "You approved saving this note, but that approval had expired or was already used, so nothing was saved. Ask me again to get a new card.";
+/** AFTER an approved card that the chat cut short (the owner's rule: a cut card is not approved here). */
+export const DOOR_NOTE_CARD_SHORTENED =
+  "You approved saving this note, but the request you were shown was cut short, so nothing was saved. Ask me to save a shorter note, or to split it into parts.";
+/** AFTER an approved card whose record does not say it was shown in full. */
+export const DOOR_NOTE_CARD_UNCONFIRMED =
+  "You approved saving this note, but I could not confirm that the request was shown to you in full, so nothing was saved. Ask me again to get a new card.";
+
 export const DOOR_VAULT_SENTENCES: ReadonlySet<string> = new Set([
   DOOR_NOTE_UNREACHABLE, DOOR_NOTE_SAVE_NOT_POSSIBLE, DOOR_NOTE_READ_FAILED, DOOR_NOTE_TOOL_UNAVAILABLE,
+  DOOR_NOTE_TITLE_TAKEN, DOOR_NOTE_SAVE_FAILED, DOOR_NOTE_APPROVAL_EXPIRED, DOOR_NOTE_CARD_SHORTENED, DOOR_NOTE_CARD_UNCONFIRMED,
 ]);

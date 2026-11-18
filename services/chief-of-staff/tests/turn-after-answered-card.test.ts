@@ -28,7 +28,11 @@ vi.mock("eve/context", () => ({
 const db = vi.hoisted(() => ({ queries: [] as unknown[] }));
 vi.mock("@lares/agent-kit/db", async (original) => ({
   ...(await original<typeof import("@lares/agent-kit/db")>()),
-  getPool: () => ({ query: async (...args: unknown[]) => { db.queries.push(args[0]); return { rows: [], rowCount: 0 }; } }),
+  getPool: () => ({ query: async (...args: unknown[]) => {
+    // The card record's "shown in full" mark: these cards were shown whole. It is the one read the tests do not count.
+    if (typeof args[0] === "string" && args[0].startsWith("SELECT shown_whole")) return { rows: [{ shown_whole: true }], rowCount: 1 };
+    db.queries.push(args[0]); return { rows: [], rowCount: 0 };
+  } }),
 }));
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@lares/agent-kit/model-purpose-client", () => ({ modelPurposeRequest: requestMock }));

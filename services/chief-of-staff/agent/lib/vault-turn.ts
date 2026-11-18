@@ -1,4 +1,4 @@
-export type VaultTurnCapability=Readonly<{turnId:string;sequence:number;capability:string;expiresAt:number;door?:true}>;
+export type VaultTurnCapability=Readonly<{turnId:string;sequence:number;capability:string;expiresAt:number;door?:true;memberId?:string}>;
 type Key=Readonly<{sessionId:string;turnId:string;sequence:number;incarnation:string}>;
 const entries=new Map<string,VaultTurnCapability>(),MAX=512;
 const active=new Map<string,number>(),ACTIVE_MS=5*60_000;

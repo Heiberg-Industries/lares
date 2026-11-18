@@ -13,13 +13,13 @@ export function abandonDoorVaultOpening(sessionId:string,turnId:string,incarnati
  const prefix=`${sessionId}\0${turnId}\0`,suffix=`\0${incarnation}`;
  for(const [id,entry] of opening)if(id.startsWith(prefix)&&id.endsWith(suffix))entry.closed=true;
 }
-export async function ensureDoorVaultTurn(ctx:unknown):Promise<{route:DoorVaultRoute;point:DoorVaultPoint;capability:string}> {
+export async function ensureDoorVaultTurn(ctx:unknown):Promise<{route:DoorVaultRoute;point:DoorVaultPoint;capability:string;memberId:string}> {
  const route=doorVaultRoute(ctx),point=doorVaultPoint(ctx);
  if(!route||!point)throw new Error(DOOR_NOTE_READ_FAILED);
  const held=vaultTurnCapability(point);
  // A held capability that is not a door pass is web chat's: never reused, never replaced.
  if(held&&!held.door)throw new Error(DOOR_NOTE_READ_FAILED);
- if(held&&held.expiresAt>Date.now()+1000)return {route,point,capability:held.capability};
+ if(held&&held.memberId&&held.expiresAt>Date.now()+1000)return {route,point,capability:held.capability,memberId:held.memberId};
  const id=`${point.sessionId}\0${point.turnId}\0${point.sequence}\0${point.incarnation}`;
  let entry=opening.get(id);
  if(!entry){
@@ -28,10 +28,10 @@ export async function ensureDoorVaultTurn(ctx:unknown):Promise<{route:DoorVaultR
    const {loaded}=await thisAgent(point.sessionId);
    const opened=await openDoorVaultTurn(route,point,{definition:loaded.definition,dutiesMd:loaded.dutiesMd,voiceMd:loaded.voiceMd,hash:loaded.hash});
    if(created.closed){await closeDoorVaultTurn(point,opened.capability);throw new Error(DOOR_NOTE_READ_FAILED);}
-   const value:VaultTurnCapability={turnId:point.turnId,sequence:point.sequence,capability:opened.capability,expiresAt:opened.expiresAt,door:true};
+   const value:VaultTurnCapability={turnId:point.turnId,sequence:point.sequence,capability:opened.capability,expiresAt:opened.expiresAt,door:true,memberId:opened.memberId};
    setVaultTurnCapability(point,value);return value;
   })().finally(()=>opening.delete(id));
   opening.set(id,created);entry=created;
  }
- try{return {route,point,capability:(await entry.promise).capability};}catch{throw new Error(DOOR_NOTE_READ_FAILED);}
+ try{const done=await entry.promise;return {route,point,capability:done.capability,memberId:done.memberId!};}catch(cause){throw new Error(DOOR_NOTE_READ_FAILED,{cause});}
 }

@@ -31,6 +31,8 @@ export const APPROVAL_MESSAGE_REFUSED = 'The reply to a message sent while an ap
 export const APPROVAL_MESSAGE_REFUSED_SENTENCE = 'Your new message cancelled what was waiting for your answer, so that was not done. I could not finish my reply to your new message; please send it again.';
 export const APPROVAL_MESSAGE_AFTER_ANSWER_REFUSED = 'The reply to a message sent after an approval answer was refused';
 export const APPROVAL_MESSAGE_AFTER_ANSWER_REFUSED_SENTENCE = 'Your answer was applied. Your new message cancelled what was still waiting for your answer, so nothing was done for that. I could not finish my reply to your new message; please send it again.';
+/** An approval given on a chat door whose card record does not say the request was shown in full there (or has no record). */
+export const APPROVAL_NOT_SHOWN_WHOLE_SENTENCE = 'You approved this, but I could not confirm that the request was shown to you in full where you approved it, so nothing was done. Ask me again, then open the new request in the Waiting on you page in the console, where it shows in full, and approve it there.';
 export const DOOR_MODEL_REFUSED = 'A door turn has no model permission';
 export const DOOR_MODEL_REFUSED_SENTENCE = 'I could not get permission to answer this message here. Please try again later, or write to me in web chat.';
 

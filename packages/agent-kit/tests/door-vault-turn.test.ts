@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DOORS, claimEnvNames, isKnownDoor } from '../src/door-kinds.js';
 import { doorVaultPoint, doorVaultRead, doorVaultRoute, onManagedDoor, openDoorVaultTurn } from '../src/door-vault-turn.js';
-import { DOOR_VAULT_SENTENCES, DOOR_NOTE_READ_FAILED } from '../src/door-vault-sentences.js';
+import { DOOR_VAULT_SENTENCES, DOOR_NOTE_READ_FAILED, DOOR_NOTE_TITLE_TAKEN } from '../src/door-vault-sentences.js';
 import { doorVaultReadOffered, managedDoorToolHidden, privateOnlyTool } from '../src/private-console-surface.js';
 import { PRIVATE_CHAT_AUTHENTICATORS } from '../src/shared-room.js';
 import { isValidDoorClaim } from '../src/door-claim.js';
@@ -101,7 +101,7 @@ describe('the route, over every door in the table', () => {
       });
       it('asks Keeper for a pass that names the door and the claim and never a member', async () => {
         const route = doorVaultRoute(ctxOf(identity(door, 'privateChat')))!, point = doorVaultPoint(ctxOf(identity(door, 'privateChat')))!;
-        broker.answer = () => ({ turnCapability: 'c'.repeat(43), expiresAt: Date.now() + 60_000 });
+        broker.answer = () => ({ turnCapability: 'c'.repeat(43), expiresAt: Date.now() + 60_000, memberId: 'member-owner' });
         const opened = await openDoorVaultTurn(route, point, { definition: {}, dutiesMd: '', voiceMd: '', hash: 'h' });
         expect(opened.capability).toBe('c'.repeat(43));
         expect(broker.calls[0]!.op).toBe('door.turn.open');
@@ -159,12 +159,13 @@ describe('the closed list of sentences', () => {
     }
   });
   it('holds plain, true sentences that say what was not done', () => {
-    expect(DOOR_VAULT_SENTENCES.size).toBe(4);
+    expect(DOOR_VAULT_SENTENCES.size).toBe(9);
     for (const sentence of DOOR_VAULT_SENTENCES) {
       expect(sentence).not.toMatch(/keeper|vault_path|database|error|exception|\//i);
       expect(sentence).toMatch(/\.$/);
     }
-    for (const sentence of [...DOOR_VAULT_SENTENCES].filter(s => /save/i.test(s))) expect(sentence).toMatch(/Nothing was saved/);
+    // The title-taken sentence is web chat's own words and claims nothing about a save that was tried.
+    for (const sentence of [...DOOR_VAULT_SENTENCES].filter(s => /save/i.test(s) && s !== DOOR_NOTE_TITLE_TAKEN)) expect(sentence).toMatch(/nothing was saved|was not saved/i);
   });
 });
 

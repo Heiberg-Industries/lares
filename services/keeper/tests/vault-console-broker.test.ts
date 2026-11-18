@@ -23,7 +23,9 @@ import { makeApprovalRecord } from '../../../packages/agent-kit/src/approval-rec
 import { eveSession } from '../../../packages/agent-kit/tests/helpers/eve-session.js';
 import { tracksApprovalAdapter } from '../../chief-of-staff/lib/tracks-approval.js';
 import { vaultNoteApprovalAdapter } from '../../chief-of-staff/lib/vault-note-write.js';
-import { DOORS } from '../../../packages/agent-kit/src/door-kinds.js';
+import { DOORS, claimEnvNames } from '../../../packages/agent-kit/src/door-kinds.js';
+import { approveDoorExactResponse, attachDoorExactApproval, requireDoorApprovedExecution, reserveDoorExactApproval, type DoorExactDeps } from '../../../packages/agent-kit/src/door-exact-approval.js';
+import { vaultNoteTargetFingerprint } from '../../../packages/agent-kit/src/vault-note-write.js';
 import { setVaultTurnCapability } from '../../chief-of-staff/agent/lib/vault-turn.js';
 
 const ids = vi.hoisted(() => ({
@@ -240,7 +242,7 @@ beforeEach(async () => {
   if(!auditFunction)throw new Error('Production ratchet audit trigger is unavailable');
   await pool.query(auditFunction);
   await pool.query('CREATE TRIGGER ratchet_audit_trg AFTER INSERT OR DELETE OR UPDATE ON ratchet FOR EACH ROW EXECUTE FUNCTION ratchet_audit_fn()');
-  for (const file of ['006_approval_session.sql','007_member_identity_sessions.sql','009_vault_areas.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','015_exact_approval_execution.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql','018_private_account_history.sql','020_vault_resource_grants.sql','022_console_vault_source_history.sql'])
+  for (const file of ['006_approval_session.sql','007_member_identity_sessions.sql','009_vault_areas.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','015_exact_approval_execution.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql','018_private_account_history.sql','020_vault_resource_grants.sql','022_console_vault_source_history.sql','038_approval_card_record.sql'])
     await pool.query(readFileSync(new URL(`../../../services/box/sql/${file}`, import.meta.url), 'utf8'));
   await new PgGrantStore(pool).adoptAgent(ids.member, { agentName: agent, expectedDefinitionHash: definitionHash }, { designatedOwnerMemberId: ids.member });
   await bindConsoleSession({ agent, incarnation, sessionId: session, memberId: ids.member, admissionNonce }, pool as never, env);
@@ -1441,3 +1443,117 @@ it('a door pass reads a note saved in a real repository-backed Vault: only the p
     await refusedByKeeper(runtime('vault.read', doorRead(kind, capability, { operation: 'read', path: '../outside.md' })));
   }
 });
+
+// ── A note saved from a chat door, from the claimed person's exact approved card ───────────────────
+// Door-neutral: every door in the door table runs the same steps. The card is reserved before it is shown (through the pass),
+// answered by the claimed owner on that door, and written by Keeper, which names the member itself and rechecks the claim,
+// the grant, the card (answered on this door, shown in full, unused) and the note.
+const DOOR_FIXTURE_ATTRIBUTES: Record<string, Record<string, unknown>> = { slack: { channel_id: 'D0DOORDM', author_type: 'user' }, telegram: { chat_type: 'private' } };
+const doorPerson = (kind: string, user = DOOR_PRINCIPAL) => ({ authenticator: Object.entries(DOORS).find(([, row]) => row.door === kind)![0], principalType: 'user',
+  attributes: { user_id: user, ...DOOR_FIXTURE_ATTRIBUTES[kind]! } });
+const DOOR_NOTE_CALL = 'door-call-1', DOOR_NOTE_SESSION = 'door_session_1';
+const doorNoteDeps = (kind: string, now?: Date): DoorExactDeps => ({ now,
+  adapter: { ...vaultNoteApprovalAdapter, readTarget: async (_db: unknown, _input: unknown, memberId: string) =>
+    ({ kind: 'vault-note' as const, id: '_inbox/oslo.md', ownerMemberId: memberId, fingerprint: vaultNoteTargetFingerprint(null), approvedOrigin: 'agent' as const }) },
+  pass: async () => ({ memberId: ids.member, route: { door: kind, principal: DOOR_PRINCIPAL, claimRevision: DOOR_REVISION },
+    point: { sessionId: DOOR_NOTE_SESSION, turnId: 'turn_0', sequence: 0, incarnation }, capability: 'c'.repeat(43) }),
+  isOwner: (_authenticator, userId) => userId === DOOR_PRINCIPAL, db: pool as never, env: process.env,
+});
+const doorNoteCtx = (kind: string) => ({ callId: DOOR_NOTE_CALL, toolInput: noteInput,
+  session: { id: DOOR_NOTE_SESSION, turn: { id: 'turn_0', sequence: 0 }, auth: { current: doorPerson(kind), initiator: doorPerson(kind) } } });
+/** A door card, reserved, shown, answered by the owner and read back as the running call sees it. */
+async function approvedDoorNote(kind: string, shown: boolean | null = true, now?: Date) {
+  await realAreasAndTurn();
+  await doorFixture(kind);
+  vi.stubEnv(claimEnvNames(kind).principal, DOOR_PRINCIPAL); vi.stubEnv(claimEnvNames(kind).revision, DOOR_REVISION);
+  const ctx = doorNoteCtx(kind), deps = doorNoteDeps(kind, now), person = doorPerson(kind);
+  await reserveDoorExactApproval(ctx, 'agent-kit__vault_write', deps);
+  await attachDoorExactApproval({ requestId: 'door-request-1', callId: DOOR_NOTE_CALL, tool: 'agent-kit__vault_write', input: noteInput }, pool as never);
+  await pool.query('UPDATE approval_asks SET door=$1, shown_whole=$2 WHERE call_id=$3', [kind, shown, DOOR_NOTE_CALL]);
+  expect(await approveDoorExactResponse({ request: { interactionId: 'door-request-1', callId: DOOR_NOTE_CALL, toolName: 'agent-kit__vault_write', toolInput: noteInput },
+    response: { decision: 'approve', principal: person }, session: { id: DOOR_NOTE_SESSION, initiator: person } }, deps)).toEqual({ status: 'allowed' });
+  const approved = await requireDoorApprovedExecution({ ...ctx, approval: { responder: person } } as never, 'agent-kit__vault_write', noteInput, deps).catch(() => undefined);
+  return { approved, ctx, deps, person };
+}
+const doorWrite = (kind: string, approved: any, over: Record<string, unknown> = {}) => runtime('vault.write', { sessionId: DOOR_NOTE_SESSION, door: kind, principal: DOOR_PRINCIPAL,
+  claimRevision: DOOR_REVISION, approval: noteProof(approved), input: noteInput, ...over });
+const doorNoteUses = async () => (await pool.query('SELECT use_count FROM approval_asks WHERE call_id=$1', [DOOR_NOTE_CALL])).rows[0].use_count;
+
+it('has a door fixture here for every door in the table, so a new door cannot skip the note checks', () => {
+  expect([...DOOR_KINDS].sort()).toEqual(Object.keys(DOOR_FIXTURE_ATTRIBUTES).sort());
+});
+
+for (const kind of DOOR_KINDS) {
+  it(`${kind}: writes one private note from the claimed person's approved card, once, as the member Keeper names`, async () => {
+    const { approved } = await approvedDoorNote(kind);
+    expect(approved).toBeDefined();
+    const vaultRoot = join(root, 'vault-files'), notePath = join(vaultRoot, `vault/private/${ids.area}/_inbox/oslo.md`);
+    // The agent names the door claim and never a member or an admission; Keeper refuses a call that names either.
+    await refusedByKeeper(doorWrite(kind, approved, { memberId: ids.member }));
+    await refusedByKeeper(doorWrite(kind, approved, { admissionNonce }));
+    await refusedByKeeper(doorWrite(kind, approved, { input: { ...noteInput, body: 'Changed after approval' } }));
+    expect(await doorNoteUses()).toBe(0);
+    const result = await doorWrite(kind, approved);
+    expect(result.path).toBe('_inbox/oslo.md');
+    const content = readFileSync(notePath, 'utf8');
+    expect(content).toContain('title: Oslo');
+    expect(content).toContain('lares_origin: agent');
+    expect(content).toContain('Trip to Oslo Wednesday');
+    expect(execFileSync('git', ['-C', join(root, 'vault-origins', `${ids.area}.git`), 'log', '-1', '--format=%H'], { encoding: 'utf8' }).trim()).toMatch(new RegExp(`^${result.commit}`));
+    expect(await doorNoteUses()).toBe(1);
+    // A replay writes nothing.
+    await refusedByKeeper(doorWrite(kind, approved));
+    expect(await doorNoteUses()).toBe(1);
+  });
+
+  it(`${kind}: refuses a door note card that was cut or whose record cannot say it was whole, another door, another claim and a swapped card kind`, async () => {
+    const { approved, deps, ctx, person } = await approvedDoorNote(kind, false);
+    // The agent-side check already refuses a cut card, so take the call from an approval that was whole, then cut the record.
+    expect(approved).toBeUndefined();
+    await pool.query('UPDATE approval_asks SET shown_whole=true WHERE call_id=$1', [DOOR_NOTE_CALL]);
+    const whole = await requireDoorApprovedExecution({ ...ctx, approval: { responder: person } } as never, 'agent-kit__vault_write', noteInput, deps);
+    for (const shown of [false, null]) {
+      await pool.query('UPDATE approval_asks SET shown_whole=$1 WHERE call_id=$2', [shown, DOOR_NOTE_CALL]);
+      await refusedByKeeper(doorWrite(kind, whole));
+    }
+    await pool.query('UPDATE approval_asks SET shown_whole=true WHERE call_id=$1', [DOOR_NOTE_CALL]);
+    for (const other of DOOR_KINDS.filter((k) => k !== kind)) await refusedByKeeper(doorWrite(kind, whole, { door: other }));
+    await refusedByKeeper(doorWrite(kind, whole, { principal: 'U0SOMEONEELSE' }));
+    await refusedByKeeper(doorWrite(kind, whole, { claimRevision: '6d1c0000-0000-4000-8000-000000000002' }));
+    await refusedByKeeper(doorWrite(kind, whole, { sessionId: 'door_session_2' }));
+    await refusedByKeeper(doorWrite(kind, whole, { extra: true }));
+    // Answered under another door's name: not this door's card.
+    await pool.query('UPDATE approval_asks SET answered_via=$1 WHERE call_id=$2', ['console', DOOR_NOTE_CALL]);
+    await refusedByKeeper(doorWrite(kind, whole));
+    await pool.query('UPDATE approval_asks SET answered_via=$1 WHERE call_id=$2', [kind, DOOR_NOTE_CALL]);
+    // A door card is no console card.
+    await refusedByKeeper(runtime('vault.write', { sessionId: DOOR_NOTE_SESSION, memberId: ids.member, admissionNonce, approval: noteProof(whole), input: noteInput }));
+    expect(await doorNoteUses()).toBe(0);
+    await expect(doorWrite(kind, whole)).resolves.toMatchObject({ path: '_inbox/oslo.md' });
+  });
+
+  it(`${kind}: refuses once the claim moved on, the owner was demoted or the use grant changed, and a note that appeared after the card`, async () => {
+    const { approved } = await approvedDoorNote(kind);
+    const repo = join(root, 'vault-files', `vault/private/${ids.area}`), notePath = join(repo, '_inbox/oslo.md');
+    await pool.query("UPDATE agent_door_connections SET revision='6d1c0000-0000-4000-8000-000000000009',applied_revision='6d1c0000-0000-4000-8000-000000000009' WHERE agent=$1 AND kind=$2", [agent, kind]);
+    await refusedByKeeper(doorWrite(kind, approved));
+    await pool.query('UPDATE agent_door_connections SET revision=$3,applied_revision=$3 WHERE agent=$1 AND kind=$2', [agent, kind, DOOR_REVISION]);
+    await pool.query("UPDATE users SET org_role='member' WHERE id=$1", [ids.member]);
+    await refusedByKeeper(doorWrite(kind, approved));
+    await pool.query("UPDATE users SET org_role='owner' WHERE id=$1", [ids.member]);
+    expect(await doorNoteUses()).toBe(0);
+    mkdirSync(dirname(notePath), { recursive: true }); writeFileSync(notePath, 'written meanwhile');
+    execFileSync('git', ['-C', repo, 'add', '.'], { stdio: 'ignore' }); execFileSync('git', ['-C', repo, 'commit', '-m', 'meanwhile'], { stdio: 'ignore' });
+    await refusedByKeeper(doorWrite(kind, approved));
+    expect(await doorNoteUses()).toBe(0);
+    expect(readFileSync(notePath, 'utf8')).toBe('written meanwhile');
+  });
+
+  it(`${kind}: refuses a door card that has run out`, async () => {
+    // The card was made a day and a minute ago (the agent side, on that clock, still takes it); Keeper's clock says it has run out.
+    const { approved } = await approvedDoorNote(kind, true, new Date(Date.now() - 24 * 60 * 60 * 1000 - 60_000 + 5_000));
+    expect(approved).toBeDefined();
+    await refusedByKeeper(doorWrite(kind, approved));
+    expect(await doorNoteUses()).toBe(0);
+  });
+}

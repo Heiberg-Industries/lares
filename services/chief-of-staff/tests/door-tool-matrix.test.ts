@@ -46,13 +46,24 @@ const WEB_MEMBER = "member-other";
 const WEB_STRANGER = "member-unknown";
 
 // Off unless a test turns it on: then web chat's turn holds a Vault capability and keeper's answers are recorded here.
-const keeper = vi.hoisted(() => ({ on: false, realPass: false, refuseDoorPass: false, calls: [] as Array<{ op: string; input: Record<string, unknown> }> }));
+const keeper = vi.hoisted(() => ({ writeError: undefined as undefined | Error, on: false, realPass: false, refuseDoorPass: false, passUnreachable: false, inbox: [] as string[], calls: [] as Array<{ op: string; input: Record<string, unknown> }> }));
 vi.mock("@lares/agent-kit/vault-broker-client", async (original) => {
   const real = await original<typeof import("@lares/agent-kit/vault-broker-client")>();
-  return { ...real, vaultBrokerRequest: async (op: string, input: Record<string, unknown>, ...rest: unknown[]) => {
+  return { ...real,
+  // The folder listing is built on the module's own request function, so it is stood in for here the way the request is.
+  vaultBrokerListFolder: async (turn: Record<string, unknown>, folder: string, ...rest: unknown[]) => {
+    if (!keeper.on) return (real.vaultBrokerListFolder as (...args: unknown[]) => unknown)(turn, folder, ...rest);
+    keeper.calls.push({ op: "vault.read", input: { ...turn, operation: "list", folder } });
+    return keeper.inbox;
+  },
+  vaultBrokerRequest: async (op: string, input: Record<string, unknown>, ...rest: unknown[]) => {
     if (!keeper.on) return (real.vaultBrokerRequest as (...args: unknown[]) => unknown)(op, input, ...rest);
     keeper.calls.push({ op, input });
-    if (op === "door.turn.open") return keeper.refuseDoorPass ? Promise.reject(new Error("Vault reader unavailable (the keeper refused: grant)")) : { ok: true, turnCapability: "d".repeat(43), expiresAt: Date.now() + 60_000 };
+    if (op === "door.turn.open" && keeper.passUnreachable) return Promise.reject(new real.VaultBrokerError("Vault reader unavailable (the connection to the keeper failed)", "connection"));
+    if (op === "door.turn.open") return keeper.refuseDoorPass ? Promise.reject(new real.VaultBrokerError("Vault reader unavailable (the keeper refused: grant)", "refused", "grant")) : { ok: true, turnCapability: "d".repeat(43), expiresAt: Date.now() + 60_000, memberId: "member-owner" };
+    if (op === "vault.write") return keeper.writeError ? Promise.reject(keeper.writeError) : { ok: true, path: "_inbox/oslo-trip.md", commit: "abc1234" };
+    if (input.operation === "list" && input.folder === "_inbox") return { ok: true, notes: keeper.inbox };
+    if (input.operation === "read") return { ok: true, content: "an existing note" };
     return input.operation === "search" ? { ok: true, hits: ["people/vera.md"], files: 2000 } : { ok: true, notes: ["people/vera.md"], nextCursor: 200 };
   } };
 });
@@ -96,6 +107,21 @@ const fake = vi.hoisted(() => {
             asks.set(callId!, { request_id: null, call_id: callId, agent, tool, payload_hash: payloadHash, used_at: null,
               session_id: sessionId, original_authority: JSON.parse(authority!), acting_member_id: member,
               resolved_by_member_id: null, outcome: null });
+          }
+          return { rows: [] };
+        }
+        // The card's id arriving, and the owner's Approve being written.
+        if (/^UPDATE approval_asks SET request_id=\$2/.test(sql)) {
+          const row = asks.get(values[0] as string);
+          if (row && (row.request_id == null || row.request_id === values[1])) { row.request_id = values[1]; return { rows: [{ request_id: values[1] }] }; }
+          return { rows: [] };
+        }
+        if (/^UPDATE approval_asks SET outcome='approved'/.test(sql)) {
+          const [callId, requestId, member, via] = values as string[];
+          const row = asks.get(callId!);
+          if (row && row.request_id === requestId && (row.outcome == null || row.outcome === "approved")) {
+            Object.assign(row, { outcome: "approved", resolved_by_member_id: member, answered_via: via });
+            return { rows: [{ call_id: callId }] };
           }
           return { rows: [] };
         }
@@ -195,7 +221,8 @@ import { runDynamic, type MemoStore } from "../../../packages/agent-kit/tests/he
 import { offeredBy, ownResolverFiles } from "../../../packages/agent-kit/tests/helpers/own-resolvers.js";
 import { frameworkMentionAuth } from "./helpers/slack-mention.js";
 import { clearSessionVaultTurnCapabilities } from "../agent/lib/vault-turn.js";
-import { DOOR_NOTE_READ_FAILED, DOOR_NOTE_SAVE_NOT_POSSIBLE, DOOR_NOTE_TOOL_UNAVAILABLE, DOOR_VAULT_SENTENCES } from "@lares/agent-kit/door-vault-sentences";
+import { VaultBrokerError } from "@lares/agent-kit/vault-broker-client";
+import { DOOR_NOTE_APPROVAL_EXPIRED, DOOR_NOTE_CARD_SHORTENED, DOOR_NOTE_CARD_UNCONFIRMED, DOOR_NOTE_READ_FAILED, DOOR_NOTE_SAVE_FAILED, DOOR_NOTE_SAVE_NOT_POSSIBLE, DOOR_NOTE_TITLE_TAKEN, DOOR_NOTE_TOOL_UNAVAILABLE, DOOR_NOTE_UNREACHABLE, DOOR_VAULT_SENTENCES } from "@lares/agent-kit/door-vault-sentences";
 import { approverFrom, assertApprover, catalogueApprovalResponse, humanTurnRefusal } from "../lib/approvals.js";
 import { calendarApprovalAdapter } from "../lib/calendar-approval.js";
 import { deadlineApprovalAdapter } from "../lib/deadlines-store.js";
@@ -251,6 +278,7 @@ const TABLE: readonly Row[] = [
   ["agent-kit__vault_list",               R,       H,       R,       R,       R],
   ["agent-kit__vault_search",             R,       H,       R,       R,       R],
   ["agent-kit__vault_backlinks",          H,       H,       H,       H,       H],
+  // On a door the note save is a card only through Keeper's pass; this table has no Keeper, so it is refused here ("door notes go to keeper" below holds the card).
   ["agent-kit__vault_write",              X,       H,       X,       C,       C],
   ["agent-kit__vault_file",               H,       H,       H,       H,       H],
   ["agent-kit__vault_drop",               H,       H,       H,       H,       H],
@@ -524,6 +552,8 @@ const baseline = (): string[] =>
     .split("\n").filter((line) => line.length > 0);
 
 let secrets: string;
+// The note adapter's own target read, kept before the stand-in replaces it for the rest of the file.
+let realNoteReadTarget: typeof vaultNoteApprovalAdapter.readTarget;
 beforeAll(() => {
   secrets = mkdtempSync(join(tmpdir(), "door-tool-matrix-"));
   writeFileSync(join(secrets, "route-password"), `${ROUTE_PASSWORD}\n`, "utf8");
@@ -544,6 +574,7 @@ beforeAll(() => {
   vi.spyOn(calendarApprovalAdapter, "readTarget").mockImplementation(async (_db, _input, memberId, tool) =>
     ({ kind: "calendar-event", id: `calendar:example:${tool}`, ownerMemberId: memberId, fingerprint: hash("a") }));
   vi.spyOn(calendarApprovalAdapter, "readPolicyHash").mockResolvedValue(hash("b"));
+  realNoteReadTarget = vaultNoteApprovalAdapter.readTarget.bind(vaultNoteApprovalAdapter);
   vi.spyOn(vaultNoteApprovalAdapter, "readTarget").mockImplementation(async (_db, _input, memberId) =>
     ({ kind: "vault-note", id: "notes/example.md", ownerMemberId: memberId, fingerprint: hash("c") }));
   vi.spyOn(vaultNoteApprovalAdapter, "readPolicyHash").mockResolvedValue(hash("d"));
@@ -802,7 +833,7 @@ describe("web chat notes go to keeper", () => {
 
 describe("door notes go to keeper through the door pass", () => {
   beforeEach(() => { keeper.realPass = true; });
-  afterEach(() => { keeper.realPass = false; keeper.on = false; keeper.refuseDoorPass = false; keeper.calls = []; });
+  afterEach(() => { keeper.writeError = undefined; keeper.realPass = false; keeper.on = false; keeper.refuseDoorPass = false; keeper.passUnreachable = false; keeper.inbox = []; keeper.calls = []; fake.asks.clear(); });
   for (const key of ["slackDm", "telegram"] as const) {
     it(`${door(key).title}: a list, a read and a search are keeper requests with the pass and the claim, and no member`, async () => {
       const { session } = await observe(key);
@@ -834,18 +865,109 @@ describe("door notes go to keeper through the door pass", () => {
       }
     });
 
-    it(`${door(key).title}: a save is refused before any card with one sentence from the closed list`, async () => {
+    // The note-save steps, with Keeper stood in for and the card table a fake: the full lifecycle against a database
+    // is tests/door-exact-approval.test.ts (kit) and tests/vault-console-broker.test.ts (Keeper).
+    const withRealTarget = async <T>(run: () => Promise<T>): Promise<T> => {
+      const spy = vi.mocked(vaultNoteApprovalAdapter.readTarget), saved = spy.getMockImplementation();
+      spy.mockImplementation(realNoteReadTarget);
+      try { return await run(); } finally { spy.mockImplementation(saved!); }
+    };
+    const SAVE = { area: "private", title: "Oslo trip", body: "Flights on Friday" };
+    const saveAttempt = async (session: Session) => {
+      const emitted = (await resolveCatalogue(session))["agent-kit__vault_write"];
+      const ctx = { ...session, toolName: "agent-kit__vault_write", toolInput: SAVE, callId: `save-${++callNumber}` };
+      return { ctx, decision: await emitted!.approval!.request(ctx) };
+    };
+
+    it(`${door(key).title}: a save asks Keeper's pass first, checks the title is free, reserves the card for the member Keeper named and then raises it`, async () => {
       const { session } = await observe(key);
-      const outcome = await attempt(session, "agent-kit__vault_write", (await resolveCatalogue(session))["agent-kit__vault_write"]);
-      expect(outcome.call).toBe("refused");
-      expect(outcome.reason).toBe(DOOR_NOTE_SAVE_NOT_POSSIBLE);
-      expect(DOOR_VAULT_SENTENCES.has(outcome.reason!)).toBe(true);
+      keeper.on = true; keeper.inbox = ["_inbox/other-note.md"];
+      const { ctx, decision } = await withRealTarget(() => saveAttempt(session));
+      expect(decision).toBe("user-approval");
+      expect(keeper.calls.map((call) => call.op)).toEqual(["door.turn.open", "vault.read"]);
+      expect(keeper.calls[1]!.input).toMatchObject({ operation: "list", folder: "_inbox", area: "private", door: key === "slackDm" ? "slack" : "telegram" });
+      for (const call of keeper.calls) { expect(Object.keys(call.input)).not.toContain("memberId"); expect(Object.keys(call.input)).not.toContain("admissionNonce"); }
+      const reserved = fake.asks.get(ctx.callId) as { acting_member_id: string; original_authority: Record<string, any>; request_id: null } | undefined;
+      expect(reserved?.acting_member_id).toBe("member-owner");
+      expect(reserved?.request_id).toBeNull();
+      expect(reserved?.original_authority).toMatchObject({ version: 2, kind: "door", door: { door: key === "slackDm" ? "slack" : "telegram" },
+        target: { kind: "vault-note", id: "_inbox/oslo-trip.md", ownerMemberId: "member-owner" }, original: { origin: "human", actingMemberId: "member-owner" } });
+      // The guard before the tool runs finds no answer yet.
+      const { guardCatalogueExecution } = await import("../lib/approvals.js");
+      await expect(guardCatalogueExecution(ctx, "agent-kit__vault_write", SAVE)).rejects.toThrow(DOOR_NOTE_TOOL_UNAVAILABLE);
     });
 
-    it(`${door(key).title}: even a save that reached execution says the one sentence and never touches the local folder`, async () => {
+    it(`${door(key).title}: a save is refused before any card, in one closed sentence, when Keeper refuses the pass, cannot be reached, or the title is taken`, async () => {
+      const { session } = await observe(key);
+      keeper.on = true;
+      clearSessionVaultTurnCapabilities(session.session.id, INCARNATION);
+      keeper.refuseDoorPass = true;
+      let { decision } = await withRealTarget(() => saveAttempt(session));
+      expect(decision).toEqual({ type: "denied", reason: DOOR_NOTE_SAVE_NOT_POSSIBLE });
+      keeper.refuseDoorPass = false; keeper.passUnreachable = true; clearSessionVaultTurnCapabilities(session.session.id, INCARNATION);
+      ({ decision } = await withRealTarget(() => saveAttempt(session)));
+      expect(decision).toEqual({ type: "denied", reason: DOOR_NOTE_UNREACHABLE });
+      keeper.passUnreachable = false; keeper.inbox = ["_inbox/oslo-trip.md"]; clearSessionVaultTurnCapabilities(session.session.id, INCARNATION);
+      ({ decision } = await withRealTarget(() => saveAttempt(session)));
+      expect(decision).toEqual({ type: "denied", reason: DOOR_NOTE_TITLE_TAKEN });
+      for (const sentence of [DOOR_NOTE_SAVE_NOT_POSSIBLE, DOOR_NOTE_UNREACHABLE, DOOR_NOTE_TITLE_TAKEN]) expect(DOOR_VAULT_SENTENCES.has(sentence)).toBe(true);
+      expect([...fake.asks.keys()]).toEqual([]);
+    });
+
+    it(`${door(key).title}: the whole way: reserve, card, an answer only from the owner, the re-check, and a write through Keeper that names the door claim and no member`, async () => {
+      const { session } = await observe(key);
+      keeper.on = true;
+      const { catalogueApprovalRequest, catalogueApprovalResponse } = await import("../lib/approvals.js");
+      const { attachDoorExactApproval } = await import("@lares/agent-kit/door-exact-approval");
+      const { ctx, decision } = await withRealTarget(() => saveAttempt(session));
+      expect(decision).toBe("user-approval");
+      const row = fake.asks.get(ctx.callId)!;
+      expect(await attachDoorExactApproval({ requestId: "req-1", callId: ctx.callId, tool: "agent-kit__vault_write", input: SAVE }, fake.pool as never)).toBe(true);
+      const owner = session.session.auth.current as { attributes: Record<string, unknown> };
+      const tap = (principal: unknown, decisionName = "approve") => ({ request: { interactionId: "req-1", callId: ctx.callId, toolName: "agent-kit__vault_write", toolInput: SAVE },
+        response: { decision: decisionName, principal }, session: { id: session.session.id, initiator: session.session.auth.initiator, turn: { id: "turn-1" } } });
+      // Someone else, and the owner on the other door, cannot answer; the card stays unanswered.
+      const stranger = { ...owner, attributes: { ...owner.attributes, user_id: key === "slackDm" ? SLACK_STRANGER : TELEGRAM_STRANGER } };
+      expect(await catalogueApprovalResponse("agent-kit__vault_write", tap(stranger))).toMatchObject({ status: "rejected" });
+      const otherDoor = (await observe(key === "slackDm" ? "telegram" : "slackDm")).session.session.auth.current;
+      expect(await catalogueApprovalResponse("agent-kit__vault_write", tap(otherDoor))).toMatchObject({ status: "rejected" });
+      expect(row.outcome).toBeNull();
+      expect(await catalogueApprovalResponse("agent-kit__vault_write", tap(owner))).toEqual({ status: "allowed" });
+      expect(row).toMatchObject({ outcome: "approved", answered_via: key === "slackDm" ? "slack" : "telegram", resolved_by_member_id: "member-owner" });
+      // The card's record cannot say it was shown in full: the approval is not acted on, and the sentence does not say it was cut.
+      const authored = (CATALOGUE["agent-kit__vault_write"]!.tool as { approval: unknown }).approval;
+      const recheck = { ...ctx, [Symbol.for("eve.approval-evaluation")]: { recheck: true } };
+      expect(await catalogueApprovalRequest("agent-kit__vault_write", recheck, authored)).toEqual({ type: "denied", reason: DOOR_NOTE_CARD_UNCONFIRMED });
+      row.shown_whole = false;
+      expect(await catalogueApprovalRequest("agent-kit__vault_write", recheck, authored)).toEqual({ type: "denied", reason: DOOR_NOTE_CARD_SHORTENED });
+      row.shown_whole = true;
+      expect(await catalogueApprovalRequest("agent-kit__vault_write", recheck, authored)).toBe("user-approval");
+      const tools = await resolveCatalogue(session) as unknown as Record<string, { execute(input: unknown, ctx: unknown): Promise<unknown> }>;
+      const running = { ...ctx, approval: { responder: owner } };
+      keeper.calls = [];
+      expect(await tools["agent-kit__vault_write"]!.execute(SAVE, running)).toMatchObject({ path: "_inbox/oslo-trip.md" });
+      const write = keeper.calls.find((call) => call.op === "vault.write")!;
+      expect(Object.keys(write.input).sort()).toEqual(["approval", "claimRevision", "door", "input", "principal", "sessionId"]);
+      expect(write.input).toMatchObject({ door: key === "slackDm" ? "slack" : "telegram", sessionId: session.session.id });
+      expect(write.input.input).toEqual(SAVE);
+      // After the person approved, a refusal from Keeper reaches the model as one sentence from the list: the card ran out or was used, or it could not be completed.
+      keeper.writeError = new VaultBrokerError("Vault reader unavailable (the keeper refused: replay)", "refused", "replay");
+      await expect(tools["agent-kit__vault_write"]!.execute(SAVE, running)).rejects.toThrow(DOOR_NOTE_APPROVAL_EXPIRED);
+      keeper.writeError = new Error("/srv/secret/path: EACCES");
+      await expect(tools["agent-kit__vault_write"]!.execute(SAVE, running)).rejects.toThrow(DOOR_NOTE_SAVE_FAILED);
+      keeper.writeError = new VaultBrokerError("Vault reader unavailable (the connection to the keeper failed)", "connection");
+      await expect(tools["agent-kit__vault_write"]!.execute(SAVE, running)).rejects.toThrow(DOOR_NOTE_SAVE_FAILED);
+      // A call the card was not raised for, or one with no answerer, never reaches Keeper.
+      keeper.calls = [];
+      await expect(tools["agent-kit__vault_write"]!.execute({ ...SAVE, body: "Changed" }, running)).rejects.toThrow(DOOR_NOTE_TOOL_UNAVAILABLE);
+      await expect(tools["agent-kit__vault_write"]!.execute(SAVE, ctx)).rejects.toThrow(DOOR_NOTE_TOOL_UNAVAILABLE);
+      expect(keeper.calls).toEqual([]);
+    });
+
+    it(`${door(key).title}: a save that reached execution with no approved card is refused with the one sentence and never touches the local folder`, async () => {
       const { session } = await observe(key);
       const tools = await resolveCatalogue(session) as unknown as Record<string, { execute(input: unknown, ctx: unknown): Promise<unknown> }>;
-      await expect(tools["agent-kit__vault_write"]!.execute({ area: "private", title: "Oslo", body: "Trip" }, session)).rejects.toThrow(DOOR_NOTE_SAVE_NOT_POSSIBLE);
+      await expect(tools["agent-kit__vault_write"]!.execute({ area: "private", title: "Oslo", body: "Trip" }, session)).rejects.toThrow(DOOR_NOTE_TOOL_UNAVAILABLE);
     });
   }
 
