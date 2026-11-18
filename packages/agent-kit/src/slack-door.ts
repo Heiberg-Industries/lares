@@ -36,7 +36,7 @@ import { installSlackProxyDispatcher } from "./slack-dispatcher.js";
 import { slackUnreadableNote } from "./unreadable-content.js";
 import { respondToTurnFailed } from "./gateway-budget.js";
 import { anyCallCompleted, conversationTooLongSlackSentence, withPartlyDone } from "./conversation-too-long.js";
-import { approvalCardRenderer, slackCardShownWhole } from "./slack-approval-card.js";
+import { approvalCardRenderer, installSlackCardHook, slackCardShownWhole } from "./slack-approval-card.js";
 
 const DEFAULT_BOT_TOKEN_FILE = "/run/secrets/eve-slack-bot-token";
 const DEFAULT_SIGNING_SECRET_FILE = "/run/secrets/eve-slack-signing-secret";
@@ -221,6 +221,8 @@ installSlackProxyDispatcher();
 /** The Slack door bound to one role. */
 export function slackDoor(settings: SlackDoorSettings): SlackDoor {
   const { role } = settings;
+  // The framework patch asks this whether a card was cut, to leave Approve off it (D-6).
+  installSlackCardHook();
 
   /**
    * A tap on a card (or a typed answer in eve's modal). The door's part is small: it says who

@@ -40,7 +40,7 @@ import { TELEGRAM_INNER_ROUTE } from "@lares/agent-kit/telegram-routes";
 import { mdToTelegramHtml, splitTelegramHtml } from "@lares/agent-kit/telegram-markdown";
 import { getPool } from "@lares/agent-kit/db";
 import { answeredVia, recordCardPosted } from "@lares/agent-kit/approval-ledger";
-import { placesShowingWhole } from "@lares/agent-kit/card-layer";
+import { placesShowingWhole, waitingPageLink as kitWaitingPageLink } from "@lares/agent-kit/card-layer";
 import {
   CARD_NOTE_CLOSED_TEXT,
   CARD_OUTCOME_TEXT,
@@ -370,25 +370,9 @@ export default telegramChannel({
 
 // ── A card that could not show everything ───────────────────────────────────────────────
 
-/**
- * The console's Waiting on you page for one request, from `LARES_CONSOLE_URL` — or null when it is
- * unset or not an http(s) address, in which case the note says to open the console instead.
- * The page selects the request by eve's interaction id (`?request=<id>`). EXPORTED for tests.
- */
-export function waitingPageLink(interactionId: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const raw = env["LARES_CONSOLE_URL"]?.trim();
-  if (!raw) return null;
-  let base: URL;
-  try {
-    base = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (base.protocol !== "https:" && base.protocol !== "http:") return null;
-  const url = new URL("waiting", base.href.endsWith("/") ? base.href : `${base.href}/`);
-  url.searchParams.set("request", interactionId);
-  return url.href;
-}
+/** The console's Waiting on you page for one request: the kit's address (`card-layer.ts`), kept
+ *  under this name for the tests. */
+export const waitingPageLink = kitWaitingPageLink;
 
 /** What is said under a card that could not show everything: the card layer's sentence (the doors
  *  that show a long card whole come from its door table). EXPORTED for tests. */

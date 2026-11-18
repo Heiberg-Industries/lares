@@ -23,7 +23,16 @@ import {
 import { renderRequestCard } from "../node_modules/eve/dist/src/public/channels/slack/request-card-render.js";
 import { composeInteractionCards } from "../node_modules/eve/dist/src/public/channels/slack/renderers.js";
 
-import { approvalCardRenderer, approvalInteractionCard } from "@lares/agent-kit/slack-approval-card";
+import {
+  approvalCardRenderer,
+  approvalInteractionCard,
+  installSlackCardHook,
+  slackCardShownWhole,
+} from "@lares/agent-kit/slack-approval-card";
+import { approvalCardShape } from "@lares/agent-kit/approval-summary";
+
+// The framework patch asks this whether a card was cut (the door installs it when it starts).
+installSlackCardHook();
 
 /**
  * What the owner reads on a Slack approval card (`@lares/agent-kit/slack-approval-card`).
@@ -212,11 +221,73 @@ describe("an email approval card", () => {
     expect(draft).not.toContain("<!channel>");
   });
 
-  it("cuts a very long body under Slack's limit and says that it did", () => {
-    const { parts } = render(approval("gmail_send", { ...MAIL, bodyText: "x".repeat(5_000) }));
-    const draft = (blocksOf(parts)[1] as unknown as { text: { text: string } }).text.text;
-    expect(draft.length).toBeLessThanOrEqual(3_000);
-    expect(draft).toMatch(/shortened — \d+ characters are not shown\.$/);
+  it("shows a body of about 10,000 characters whole, across sections, with Approve", () => {
+    const body = Array.from({ length: 250 }, (_, i) => `Line ${i} of the draft, all of it to be read.`).join("\n");
+    expect(body.length).toBeGreaterThan(9_000);
+    const { parts, fallback } = render(approval("gmail_send", { ...MAIL, bodyText: body }));
+    expect(text(parts)).not.toBe(text(fallback)); // eve kept our card
+
+    const blocks = blocksOf(parts);
+    expect(blocks[0]!.type).toBe("card");
+    const sections = blocks.slice(1).map((b) => (b as unknown as { type: string; text: { text: string } }));
+    expect(sections.length).toBeGreaterThanOrEqual(4);
+    for (const section of sections) {
+      expect(section.type).toBe("section");
+      expect(section.text.text.length).toBeLessThanOrEqual(3_000);
+    }
+    // Every line is there, once, in order, and nothing says it was cut.
+    const shown = sections.map((s) => s.text.text).join("");
+    for (let i = 0; i < 250; i++) expect(shown).toContain(`Line ${i} of the draft`);
+    expect(shown.indexOf("Line 0 of")).toBeLessThan(shown.indexOf("Line 249 of"));
+    expect(shown).not.toContain("shortened");
+    expect(buttons(parts)).toEqual([
+      { label: "Deny", value: "deny" },
+      { label: "Approve", value: "approve" },
+    ]);
+    expect(slackCardShownWhole("gmail_send", { ...MAIL, bodyText: body })).toBe(true);
+    expect(parts.controls.text.length).toBeLessThanOrEqual(3_000);
+  });
+
+  it("a card over what one Slack message holds is cut, says so, offers no Approve, and keeps Deny", () => {
+    const input = { ...MAIL, bodyText: "x".repeat(200_000) };
+    const { parts, fallback } = render(approval("gmail_send", input));
+    expect(text(parts)).not.toBe(text(fallback)); // eve kept our card
+
+    const blocks = blocksOf(parts);
+    expect(blocks.length).toBe(50);
+    expect(blocks[0]!.type).toBe("card");
+    expect(buttons(parts)).toEqual([{ label: "Deny", value: "deny" }]);
+    expect(text(parts)).not.toContain('"approve"');
+
+    const sections = blocks.slice(1).map((b) => (b as unknown as { text: { text: string } }).text.text);
+    const notice = sections.at(-1)!;
+    expect(notice).toMatch(/^— shortened — \d+ characters are not shown\.\n/u);
+    expect(notice).toContain("The request above is shortened, so it cannot be approved here.");
+    expect(notice).toContain("Deny still works here.");
+    expect(notice).toContain("the Waiting on you page in the console");
+    // Slack is not named as a place to read it: the request is not on Slack's side of anything else.
+    expect(notice).not.toContain("Open it in Slack");
+
+    // The count is exact: what is shown plus what is not shown is the whole details text.
+    const total = approvalCardShape("gmail_send", input).body.map((p) => p.text.length).reduce((a, b) => a + b, 0);
+    const shownChars = sections.slice(0, -1).reduce((n, t) => n + t.length, 0);
+    expect(shownChars + Number(/(\d+) characters/u.exec(notice)![1])).toBe(total);
+    expect(slackCardShownWhole("gmail_send", input)).toBe(false);
+  });
+
+  it("a card cut for size, once denied, keeps the count and drops the sentence about opening it", () => {
+    const input = { ...MAIL, bodyText: "x".repeat(200_000) };
+    const { parts } = render(approval("gmail_send", input, settled("declined", "deny")), "U0000000000");
+    const notice = (blocksOf(parts).at(-1) as unknown as { text: { text: string } }).text.text;
+    expect(notice).toMatch(/^— shortened — \d+ characters are not shown\.$/u);
+    expect(buttons(parts)).toEqual([]);
+  });
+
+  it("shows the whole of a title longer than eve's card shows, in the body", () => {
+    const message = "m".repeat(150);
+    const input = { message, dueAt: "2026-09-01T08:00:00Z", recurrence: "weekly on Monday at nine", door: "telegram" };
+    const { parts } = render(approval("remind_set", input));
+    expect(text(parts)).toContain(message);
   });
 
   it("the other mail tools get the same card", () => {
@@ -337,26 +408,30 @@ describe("a tool without a Lares summary shows its whole input", () => {
     expect(shown).not.toContain("<!channel>");
   });
 
-  it("cuts an input longer than one Slack section, says how much is not shown, and stays under the limit", () => {
+  it("shows an input longer than one Slack section whole, each section its own fenced block", () => {
     const input = { body: "y".repeat(5_000) + "END_MARKER" };
     const { parts } = render(approval("some_tool_nobody_summarised", input));
-    const shown = (blocksOf(parts)[1] as unknown as { text: { text: string } }).text.text;
-    expect(shown.length).toBeLessThanOrEqual(3_000);
-    expect(shown).not.toContain("END_MARKER");
-    expect(shown).toMatch(/…\n```\n\n— shortened — \d+ characters are not shown\.$/u);
+    const sections = blocksOf(parts).slice(1).map((b) => (b as unknown as { text: { text: string } }).text.text);
+    expect(sections.length).toBe(2);
+    for (const shown of sections) {
+      expect(shown.length).toBeLessThanOrEqual(3_000);
+      expect(shown.startsWith("```\n")).toBe(true);
+      expect(shown.endsWith("\n```")).toBe(true);
+    }
+    const json = sections.map((s) => s.slice(4, -4)).join("");
+    expect(json).toBe(JSON.stringify(input, null, 2));
+    expect(json).toContain("END_MARKER");
+    expect(sections.join("")).not.toContain("shortened");
+    expect(buttons(parts).map((b) => b.value)).toEqual(["deny", "approve"]);
   });
 
-  it("counts the hidden characters as the input has them, not as Slack escapes them", () => {
-    // `&`, `<` and `>` each take 4 or 5 characters once escaped; the hidden part is full of them.
-    const input = { body: "y".repeat(3_000) + "&<>".repeat(500) };
+  it("keeps Slack's escapes whole when it splits an input full of them", () => {
+    const input = { body: "&<>".repeat(1_500) };
     const { parts } = render(approval("some_tool_nobody_summarised", input));
-    const shownText = (blocksOf(parts)[1] as unknown as { text: { text: string } }).text.text;
-    const match = /^```\n([\s\S]*)…\n```\n\n— shortened — (\d+) characters are not shown\.$/u.exec(shownText);
-    expect(match).not.toBeNull();
-    const visible = match![1]!.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-    const json = JSON.stringify(input, null, 2);
-    expect(json.startsWith(visible)).toBe(true);
-    expect(Number(match![2])).toBe(json.length - visible.length);
+    const sections = blocksOf(parts).slice(1).map((b) => (b as unknown as { text: { text: string } }).text.text);
+    const json = sections.map((s) => s.slice(4, -4)).join("");
+    expect(json.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")).toBe(JSON.stringify(input, null, 2));
+    for (const shown of sections) expect(shown).not.toMatch(/&[a-z]{0,4}\n```$/u);
   });
 
   it("a call with no input keeps eve's card as it is", () => {
@@ -375,26 +450,6 @@ describe("a tool without a Lares summary shows its whole input", () => {
 });
 
 describe("the renderer never breaks a card", () => {
-  it("shows the whole input rather than cut a draft silently, if one ever arrives over Slack's limit", async () => {
-    vi.resetModules();
-    vi.doMock("@lares/agent-kit/approval-summary", () => ({
-      coversApproval: () => true,
-      detailsForApproval: () => "y".repeat(3_001),
-      shortenedNotice: (hidden: number) => `\n\n— shortened — ${hidden} characters are not shown.`,
-    }));
-    try {
-      const { approvalInteractionCard: withLongDraft } = await import("@lares/agent-kit/slack-approval-card");
-      const eveDefault: SlackInteractionCardParts = { controls: { blocks: [{ type: "card" }], text: "title" } };
-      const parts = withLongDraft(cardFor(approval("gmail_send", MAIL)), () => eveDefault);
-      expect(text(parts)).not.toContain("yyyy");
-      expect(text(parts)).toContain("bodyText");
-      expect(text(parts)).toContain("Thanks for the meeting today.");
-    } finally {
-      vi.doUnmock("@lares/agent-kit/approval-summary");
-      vi.resetModules();
-    }
-  });
-
   it("calls eve's default exactly once, with the input taken out for a summarised tool and nothing else changed", () => {
     const card = cardFor(approval("gmail_send", MAIL));
     const before = JSON.stringify(card);
@@ -404,8 +459,9 @@ describe("the renderer never breaks a card", () => {
     }));
     const parts = approvalInteractionCard(card, next);
     expect(next).toHaveBeenCalledTimes(1);
-    const { input: _input, ...call } = card.interaction.call!;
-    expect(next).toHaveBeenCalledWith({ ...card, interaction: { ...card.interaction, call } });
+    const { input, ...call } = card.interaction.call!;
+    // The input rides along under another name, so the framework patch sees the same request.
+    expect(next).toHaveBeenCalledWith({ ...card, interaction: { ...card.interaction, call: { ...call, laresInput: input } } });
     // The card eve answers with is the real one: the renderer's input is left as it was.
     expect(JSON.stringify(card)).toBe(before);
     // A raw-input message, if eve ever sends one again, is dropped.
@@ -420,8 +476,9 @@ describe("the renderer never breaks a card", () => {
     }));
     const parts = approvalInteractionCard(card, next);
     expect(next).toHaveBeenCalledTimes(1);
-    const { input: _input, ...call } = card.interaction.call!;
-    expect(next).toHaveBeenCalledWith({ ...card, interaction: { ...card.interaction, call } });
+    const { input, ...call } = card.interaction.call!;
+    // The input rides along under another name, so the framework patch sees the same request.
+    expect(next).toHaveBeenCalledWith({ ...card, interaction: { ...card.interaction, call: { ...call, laresInput: input } } });
     expect(parts.details).toBeUndefined();
   });
 });

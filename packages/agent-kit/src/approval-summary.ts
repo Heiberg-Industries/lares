@@ -36,6 +36,7 @@ import { inboxNotePath } from "./note-paths.js";
 import { jurisdictionFor, mintYear } from "./deadlines.js";
 
 import { ownerDay } from "./proactivity.js";
+import { doorName, textShownWhole } from "./card-sentences.js";
 
 /** The jurisdiction for a mint card, or null (a card without a count) when the calendar file is
  *  unreadable; the tool itself still reports the real error when it runs. */
@@ -99,11 +100,17 @@ function str(v: unknown): string | null {
  */
 let cutSomething = false;
 
+/**
+ * True while {@link wholeDetails} formats: nothing is cut, neither a value nor the text. Set and
+ * cleared around one synchronous call, like {@link cutSomething}.
+ */
+let wholeMode = false;
+
 /** What a title that left something out ends with. Exported so the doors and tests agree. */
 export const SUMMARY_SHORTENED = " (shortened)";
 
 function trunc(v: string, max = MAX_FIELD): string {
-  if (v.length <= max) return v;
+  if (v.length <= max || wholeMode) return v;
   cutSomething = true;
   return `${v.slice(0, max - 1)}…`;
 }
@@ -311,7 +318,7 @@ const FORMATTERS: Record<string, Formatter> = {
   "agent-kit__vault_drop": (i) => line("DELETE private note", str(i["path"]) && trunc(str(i["path"])!)),
 
   // — Reminders. A recurrence is the difference between one ping and a standing one.
-  remind_set: (i, tz) => line("Set reminder", quoted(i["message"]), when(i["dueAt"], tz) && `for ${when(i["dueAt"], tz)}`, str(i["recurrence"]) && `repeating ${trunc(str(i["recurrence"])!, 24)}`, str(i["door"]) && `via ${str(i["door"])}`),
+  remind_set: (i, tz) => line("Set reminder", quoted(i["message"]), when(i["dueAt"], tz) && `for ${when(i["dueAt"], tz)}`, str(i["recurrence"]) && `repeating ${trunc(str(i["recurrence"])!, 24)}`, str(i["door"]) && `via ${doorName(str(i["door"])!)}`),
   remind_cancel: (i) => line("Cancel reminder", str(i["id"]) && trunc(str(i["id"])!, 40)),
 
   // Deadlines. `deadline_mint_statutory`'s TITLE stays short (a count, not the
@@ -596,7 +603,7 @@ export const DETAILS_VALUES_SHORTENED = "\n\n— shortened — some values are n
  *  hid part of what is being authorised has to admit it (OpenClaw advisory: "Exec approval
  *  display truncation could hide the command being approved"). */
 function shorten(text: string, max = DETAILS_MAX_LENGTH): string {
-  if (text.length <= max) return text;
+  if (text.length <= max || wholeMode) return text;
   const room = shortenedNotice(text.length).length; // widest the notice can get
   const kept = Math.max(0, max - room - 1);
   return `${text.slice(0, kept).trimEnd()}…${shortenedNotice(text.length - kept)}`;
@@ -710,6 +717,103 @@ export function detailsForApproval(
   } catch {
     // Deliberately swallowed: see invariant 1 in the module header.
     return undefined;
+  }
+}
+
+// ─── The card shape ────────────────────────────────────────────────────────────────────────
+//
+// ONE SHAPE FOR EVERY DOOR (ADR-0025). A card is a title line, then the exact change being
+// approved with every detail, then the buttons. This module writes the first two once; a door only
+// draws them. Slack draws all of the body, across as many blocks as it takes. Telegram keeps its
+// layout this release and reads the title and the short form of the details from here.
+
+/** One piece of the body of a card. `text` is Slack mrkdwn, already escaped. `json` is the
+ *  request as JSON, not escaped: the door fences and escapes it as its own platform needs. */
+export interface CardBodyPart {
+  readonly kind: "text" | "json";
+  readonly text: string;
+}
+
+export interface ApprovalCardShape {
+  /** The title line, or `undefined` for eve's own. */
+  readonly title: string | undefined;
+  /** The exact change being approved, every detail, nothing cut, in reading order. Empty when the
+   *  title already says all of it. */
+  readonly body: readonly CardBodyPart[];
+  /** The details cut at {@link DETAILS_MAX_LENGTH} with the cut admitted, for a door that cannot
+   *  show the body whole (Telegram). `undefined` when there are none. */
+  readonly shortDetails: string | undefined;
+}
+
+/** The longest title eve's compact Slack card shows before it cuts it at 200 characters with a
+ *  trailing mark; a longer title is repeated whole in the body. */
+export const CARD_TITLE_SHOWN_MAX = 197;
+
+/** The tools whose details carry every field their title can cut (recipients, subject), so a cut
+ *  title adds nothing the body does not say. */
+const DETAILS_COVER_TITLE = new Set(["gmail_send", "gmail_draft", "meeting_followup_send"]);
+
+/** Every detail of the card for this tool, nothing cut; `undefined` when it has no details text. */
+function wholeDetails(toolName: string, obj: Record<string, unknown>, tz: string): string | undefined {
+  wholeMode = true;
+  try {
+    cutSomething = false;
+    const out = DETAILS[toolName]!(obj, tz);
+    return out === null || out.trim() === "" ? undefined : out;
+  } catch {
+    return undefined;
+  } finally {
+    wholeMode = false;
+  }
+}
+
+function jsonPart(input: unknown): CardBodyPart | undefined {
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(input ?? {}, null, 2);
+  } catch {
+    return undefined;
+  }
+  return json === undefined || json === "{}" ? undefined : { kind: "json", text: json };
+}
+
+/**
+ * The shape of the card for this call. NEVER THROWS (invariant 1: a card that failed to build must
+ * not stop the gate it sits on); on any error the body is the whole request as JSON, which is
+ * never less than what is being approved.
+ */
+export function approvalCardShape(toolName: unknown, input: unknown, tz: string = defaultCardTz()): ApprovalCardShape {
+  const title = summarizeApproval(toolName, input, tz);
+  const shortDetails = detailsForApproval(toolName, input, tz);
+  try {
+    if (typeof toolName !== "string") return { title, body: [], shortDetails };
+    const obj: Record<string, unknown> =
+      input !== null && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
+    const body: CardBodyPart[] = [];
+    const titleCut = title !== undefined && !textShownWhole(title);
+    if (title !== undefined && title.length > CARD_TITLE_SHOWN_MAX) body.push({ kind: "text", text: escapeMrkdwn(title) });
+    if (Object.prototype.hasOwnProperty.call(DETAILS, toolName)) {
+      const details = wholeDetails(toolName, obj, tz);
+      if (details !== undefined) body.push({ kind: "text", text: details });
+      if (titleCut && !DETAILS_COVER_TITLE.has(toolName)) {
+        const part = jsonPart(input);
+        if (part !== undefined) body.push(part);
+      }
+    } else if (Object.prototype.hasOwnProperty.call(FORMATTERS, toolName)) {
+      // A summarised tool with no details text: its title is all there is, unless it was cut.
+      if (titleCut) {
+        const part = jsonPart(input);
+        if (part !== undefined) body.push(part);
+      }
+    } else {
+      // An outside tool, or any other gated tool: the whole request is the only complete thing to read.
+      const part = jsonPart(input);
+      if (part !== undefined) body.push(part);
+    }
+    return { title, body, shortDetails };
+  } catch {
+    const part = jsonPart(input);
+    return { title, body: part === undefined ? [] : [part], shortDetails };
   }
 }
 
