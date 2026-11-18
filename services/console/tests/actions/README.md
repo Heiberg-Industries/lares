@@ -60,8 +60,8 @@ Every file under `app`, `components` and `lib` that starts with `"use server"` i
 
 - Any request that is not a read (not GET, HEAD or OPTIONS) must come from the console's own address, or it is refused. The three exceptions below are let through before this check.
 - Slack and Telegram event posts (`/api/doors/<name>/slack/events` and `/telegram/events`) are let through by path and method alone, for the platforms to call. The console does not check who sent them; it passes the platform's signature on to be checked further in.
-- The two money-gateway calls (`/v1/gateway-budget/admit` and `/settle`) are let through the same way, for machine callers. The signature is passed on and checked further in.
-- `/api/private-metadata/credential` is let through for a server to call. The route itself checks the bearer token.
+- The two money-gateway calls (`/v1/gateway-budget/admit` and `/settle`) are let through when the method is POST, the path matches exactly and there is no query string, for machine callers. The signature is passed on and checked further in.
+- `/api/private-metadata/credential` is let through when the method is POST, the path matches exactly and there is no query string, for a server to call. The route itself checks the bearer token.
 - `/api/auth/login`, `/callback` and `/logout`, `/sign-in` and `/invite` are reachable without a session cookie.
 - Every other path with no well-formed session cookie is sent to sign-in. Having a cookie only lets the request through to the page; the page or route still has to check who the person is, which is what the rows list.
 - Signed-in pages are sent with a header telling the browser not to keep them.
