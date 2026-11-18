@@ -42,15 +42,14 @@
 // Keeper custody, not this runtime's store, so the call runs only from its exact approved card
 // and Keeper writes the file (`../lib/vault-note-write.ts`). Same description, input and approval.
 import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
-import { onManagedDoor } from "@lares/agent-kit/door-vault-turn";
-import { DOOR_NOTE_SAVE_NOT_POSSIBLE } from "@lares/agent-kit/door-vault-sentences";
+import { doorSeen, onManagedDoor } from "@lares/agent-kit/door-vault-turn";
 import { writeTool } from "@lares/agent-kit/note-write-tools";
 import { defineTool } from "eve/tools";
 
-import { assertApproval } from "../lib/approvals.js";
+import { assertApproval, requireDoorApproval } from "../lib/approvals.js";
 import { approvalFor } from "../lib/board.js";
 import { vaultWriteAreasForTurn } from "../lib/vault-areas.js";
-import { writeApprovedConsoleNote } from "../lib/vault-note-write.js";
+import { writeApprovedConsoleNote, writeApprovedDoorNote } from "../lib/vault-note-write.js";
 
 const native = writeTool({
   areas: vaultWriteAreasForTurn,
@@ -64,8 +63,9 @@ export default defineTool({
   inputSchema: native.inputSchema,
   approval: native.approval,
   async execute(input: unknown, ctx: unknown) {
-    // On a door of a managed runtime the agent's own files hold no private notes: refuse with the fixed sentence, whatever card there was.
-    if (onManagedDoor(ctx)) throw new Error(DOOR_NOTE_SAVE_NOT_POSSIBLE);
+    // On a door of a managed runtime the agent's own files hold no private notes: the note is written by Keeper, from the claimed
+    // person's exact approved card, or not at all (a call without one is refused with a fixed sentence, never sent to the local folder).
+    if (onManagedDoor(doorSeen(ctx))) return writeApprovedDoorNote(await requireDoorApproval(ctx, "agent-kit__vault_write", input), input);
     if (!isExactApprovalContext(ctx)) return native.execute(input as never, ctx as never);
     const approved = await assertApproval(ctx as never, "agent-kit__vault_write", input);
     if (!approved) throw new Error("A Vault note needs the exact private Console approval");

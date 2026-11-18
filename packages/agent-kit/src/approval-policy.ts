@@ -14,9 +14,17 @@ import { assertSharedRoomAllows } from "./shared-room.js";
 import { isExactApprovalContext, isExactApprovalResponse, isApprovalRecheck, reserveExactApproval, reserveExactApprovalOrDeny,
   approveExactResponse, requireApprovedExecution, requireApprovedRecheck, approvalResponderOf,
   type ApprovedExecution, type ExactApprovalAdapter, type ExactApprovalOptions, type ExactResponseContext } from "./approval-execution.js";
-import { guardConsoleToolContext, type ConsoleAuthorityContext } from "./console-turn-authority.js";
+import { consoleAdmission, guardConsoleToolContext, type ConsoleAuthorityContext } from "./console-turn-authority.js";
+import { getPool } from "./db.js";
+import { APPROVAL_NOT_SHOWN_WHOLE_SENTENCE } from "./approval-reply-sentence.js";
 import { approvalLedger, assertApprovedCall, callIdFrom } from "./approval-ledger.js";
-import { principalFromAuth, type PrincipalPolicy } from "./principals.js";
+import { CONSOLE_AUTHENTICATOR, principalFromAuth, type PrincipalPolicy } from "./principals.js";
+import { doorSeen, onManagedDoor } from "./door-vault-turn.js";
+import { DOOR_NOTE_TOOL_UNAVAILABLE } from "./door-vault-sentences.js";
+import {
+  DoorApprovalFailure, approveDoorExactResponse, requireDoorApprovedExecution, requireDoorApprovedRecheck, reserveDoorExactApprovalOrDeny,
+  type DoorApprovedExecution, type DoorExactDeps, type DoorResponseContext,
+} from "./door-exact-approval.js";
 
 /**
  * Refused because the person who approved is not the person allowed to, on THIS door.
@@ -65,6 +73,10 @@ export interface ApprovalPolicyConfig {
   readonly declaredApprover?: (initiator: unknown) => ApprovalPrincipal | undefined;
   /** The exact-approval adapter for a tool in web chat. Without it no tool has one. */
   readonly adapterFor?: (tool: string, input?: unknown) => ExactApprovalAdapter;
+  /** Tools whose approved call on a chat door of a managed runtime runs through Keeper on the claimed person's
+   *  exact card (the door half of `adapterFor`): the adapter reads the target and policy, `pass` gives the turn's
+   *  Keeper pass and the member it named. Without it no tool does, and a door tool keeps its native road. */
+  readonly doorExact?: { readonly tools: readonly string[]; readonly adapter: ExactApprovalAdapter; readonly pass: DoorExactDeps["pass"] };
   /** What a web chat reservation that cannot be made does: answer a denial with a reason the model
    *  reads, or throw (eve then parks the conversation). */
   readonly reserveRefusal: "deny" | "throw";
@@ -101,6 +113,8 @@ export interface ApprovalPolicy {
   catalogueApprovalRequest(name: string, ctx: unknown, authored: unknown): Promise<unknown>;
   catalogueApprovalResponse(name: string, ctx: unknown): Promise<unknown>;
   guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void>;
+  /** The approved call of a door exact tool, at execution: what Keeper needs to write, or one closed sentence. */
+  requireDoorApproval(ctx: unknown, name: string, input: unknown): Promise<DoorApprovedExecution>;
 }
 
 /** The approval rules bound to one role. */
@@ -108,6 +122,30 @@ export function approvalPolicy(config: ApprovalPolicyConfig): ApprovalPolicy {
   const { principals } = config;
   const exactOptions = (tool: string, input?: unknown): ExactApprovalOptions =>
     config.adapterFor ? { adapter: config.adapterFor(tool, input) } : {};
+  const doorDeps = (): DoorExactDeps => {
+    const door = config.doorExact!;
+    return { adapter: door.adapter, pass: door.pass, isOwner: (authenticator, userId) => principals.isOwnerPrincipal(authenticator, userId) };
+  };
+  /** A door exact tool called on a door of a managed runtime (also when eve resumes it with no current identity). */
+  const isDoorExact = (name: string, ctx: unknown): boolean =>
+    !!config.doorExact && config.doorExact.tools.includes(name) && !isPrivateConsoleContext(ctx) && onManagedDoor(doorSeen(ctx));
+  /**
+   * THE OWNER'S RULE D-6, once for every gated tool on every door: an approval answered on a door does not run unless the
+   * card's record says the request was shown in full there. A cut card, a card whose record cannot say, a card with no
+   * record row and an unreadable record all fail the same way, with one sentence. An answer from the console (it shows
+   * the whole request) and a call that raised no card are not affected.
+   */
+  async function requireShownWhole(ctx: unknown): Promise<void> {
+    const responder = approvalResponderOf(ctx);
+    // The console's Waiting page shows the whole request: its answer needs no mark (the answerer's own check follows).
+    if (responder === undefined || consoleAdmission(responder) || principalFromAuth(responder).authenticator === CONSOLE_AUTHENTICATOR) return;
+    let shown: unknown;
+    try {
+      const { rows } = await getPool().query("SELECT shown_whole FROM approval_asks WHERE call_id=$1", [callIdFrom(ctx) ?? ""]);
+      shown = rows.length === 1 ? rows[0]?.shown_whole : undefined;
+    } catch { shown = undefined; }
+    if (shown !== true) throw new Error(APPROVAL_NOT_SHOWN_WHOLE_SENTENCE);
+  }
   const refusedLabel = (approval: ApprovalPrincipal): string =>
     approval.userId !== undefined && approval.userId.length > 0
       ? `${approval.authenticator ?? "unknown-channel"}:${approval.userId}`
@@ -192,6 +230,8 @@ export function approvalPolicy(config: ApprovalPolicyConfig): ApprovalPolicy {
     const responder = approvalResponderOf(ctx);
     if (responder !== undefined) assertOwnerAnswerer(principalFromAuth(responder));
     else assertApprover(approverFrom(ctx?.session?.auth));
+    // Only the right person's answer is worth checking the card for.
+    await requireShownWhole(ctx);
     await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
     return undefined;
   }
@@ -211,6 +251,7 @@ export function approvalPolicy(config: ApprovalPolicyConfig): ApprovalPolicy {
     await assertPrivateConsoleTool(ctx, name);
     const own = config.ownChecks?.[name];
     if (own) return own.request(ctx);
+    if (!isExactApprovalContext(ctx) && isDoorExact(name, ctx)) return doorRequest(name, ctx, authored);
     if (!isExactApprovalContext(ctx)) {
       await guardConsoleToolContext(ctx);
       const decision = await (authored as (ctx: unknown) => unknown)(ctx);
@@ -233,6 +274,22 @@ export function approvalPolicy(config: ApprovalPolicyConfig): ApprovalPolicy {
     } else {
       await reserveExactApproval(c, name, exactOptions(name, c.toolInput));
     }
+    const decision = await (authored as (ctx: unknown) => unknown)(ctx);
+    if (decision === "denied" || (typeof decision === "object" && decision !== null && "type" in decision && decision.type === "denied")) return decision;
+    return "user-approval";
+  }
+
+  /** The request policy for a door exact tool, the door's twin of the web chat branch: the card is reserved
+   *  first (no pass, no reservation: no card, and a sentence), and an approved call is checked again before it runs. */
+  async function doorRequest(name: string, ctx: unknown, authored: unknown): Promise<unknown> {
+    const c = ctx as { callId?: string; toolInput?: unknown };
+    if (isApprovalRecheck(c)) {
+      try { await requireDoorApprovedRecheck(c, name, c.toolInput, doorDeps()); }
+      catch (error) { return { type: "denied", reason: error instanceof DoorApprovalFailure ? error.message : DOOR_NOTE_TOOL_UNAVAILABLE }; }
+      return "user-approval";
+    }
+    const refused = await reserveDoorExactApprovalOrDeny(c, name, doorDeps());
+    if (refused) return refused;
     const decision = await (authored as (ctx: unknown) => unknown)(ctx);
     if (decision === "denied" || (typeof decision === "object" && decision !== null && "type" in decision && decision.type === "denied")) return decision;
     return "user-approval";
@@ -272,7 +329,15 @@ export function approvalPolicy(config: ApprovalPolicyConfig): ApprovalPolicy {
     await assertPrivateConsoleTool(ctx, name);
     const own = config.ownChecks?.[name];
     if (own) return own.response(ctx);
-    if (!isExactApprovalResponse(ctx)) return nativeAnswerDecision(ctx);
+    if (!isExactApprovalResponse(ctx)) {
+      // A door exact tool's card is answered on its reservation. The answer carries no current identity of its own
+      // (the tap's principal is `response.principal`), so the door is read from the conversation's initiator.
+      const initiator = (ctx as { session?: { initiator?: unknown } }).session?.initiator;
+      if (config.doorExact?.tools.includes(name) && onManagedDoor({ session: { auth: { current: initiator, initiator } } })) {
+        return approveDoorExactResponse(ctx as DoorResponseContext, doorDeps());
+      }
+      return nativeAnswerDecision(ctx);
+    }
     return approveExactResponse(ctx as ExactResponseContext, exactOptions(name, (ctx as ExactResponseContext).request.toolInput));
   }
 
@@ -280,6 +345,12 @@ export function approvalPolicy(config: ApprovalPolicyConfig): ApprovalPolicy {
     await assertPrivateConsoleTool(ctx, name);
     const own = config.ownChecks?.[name];
     if (own) { await own.execution(ctx, input); return; }
+    if (isDoorExact(name, ctx)) {
+      // A door's note is written only from its exact approved card; the answer is `ctx.approval.responder`.
+      if (approvalResponderOf(ctx) === undefined) throw new Error(DOOR_NOTE_TOOL_UNAVAILABLE);
+      await requireDoorApprovedExecution(ctx as never, name, input, doorDeps());
+      return;
+    }
     if (isExactApprovalContext(ctx)) {
       // The answerer of an approved call is `ctx.approval.responder`; `session.auth.current` is the requester.
       if (approvalResponderOf(ctx) !== undefined) {
@@ -290,8 +361,14 @@ export function approvalPolicy(config: ApprovalPolicyConfig): ApprovalPolicy {
       if (config.needsExactCard(name)) throw new Error("Exact approval authority is unavailable or has changed");
     }
     await guardConsoleToolContext(ctx);
+    await requireShownWhole(ctx);
+  }
+
+  async function requireDoorApproval(ctx: unknown, name: string, input: unknown): Promise<DoorApprovedExecution> {
+    if (!isDoorExact(name, ctx)) throw new Error(DOOR_NOTE_TOOL_UNAVAILABLE);
+    return requireDoorApprovedExecution(ctx as never, name, input, doorDeps());
   }
 
   return { approverFrom, assertApprover, assertOwnerAnswerer, assertApproval, nativeAnswerDecision,
-    catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution };
+    catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution, requireDoorApproval };
 }

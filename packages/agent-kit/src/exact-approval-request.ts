@@ -14,6 +14,13 @@ export const exactTargetSchema = z.strictObject({ kind: z.enum(['deadline','dead
 export const exactReservationSchema = z.strictObject({ version: z.literal(1), original: turnAuthoritySchema,
   incarnation: z.string().uuid(), admissionHash: z.string(), target: exactTargetSchema,
   policyHash: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.iso.datetime() });
+/** A card raised on a chat door (Slack, Telegram) for a person Keeper vouches for. It names the door claim the
+ *  card was raised under instead of a console admission, so the console route's parse of the version-1 shape
+ *  refuses it (`exactCardForRequest`), and a console card never parses as a door reservation. */
+export const doorReservationSchema = z.strictObject({ version: z.literal(2), kind: z.literal('door'), original: turnAuthoritySchema,
+  incarnation: z.string().uuid(), door: z.strictObject({ door: z.string().min(1), principal: z.string().min(1), claimRevision: z.string().min(1) }),
+  target: exactTargetSchema, policyHash: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.iso.datetime() });
+export type DoorReservation = z.infer<typeof doorReservationSchema>;
 export interface ExactCardCoordinates { requestId: string; agent: string; incarnation: string; sessionId: string; memberId: string; admissionNonce: string }
 export interface ExactCard { callId: string; tool: string; outcome: string | null; resolvedByMemberId: string | null; used: boolean; alive: boolean; validUntil: string }
 /** Undefined means this request is not an exact card for this member and session: no row, or

@@ -33,6 +33,7 @@
  * scope, so `eve build` (no secrets, no live Postgres) never touches it.
  */
 import { attachExactApproval, settleExactInput } from "./approval-execution.js";
+import { DoorAttachError, attachDoorExactApproval } from "./door-exact-approval.js";
 import { hasConsoleTurnAuthorityTag } from "./console-turn-authority.js";
 import { getPool } from "./db.js";
 import {
@@ -142,6 +143,12 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
         if (from) await origin({ requestId, ...from });
         return;
       }
+      // A card on a door whose call was reserved first (a note save) gets its request id the way a console card does;
+      // without it nothing could ever approve it. Any other card is written down as it always was.
+      if (!deps.record && await attachDoorExactApproval({ requestId, callId, tool: toolName, input: card.input })) {
+        if (from) await origin({ requestId, ...from });
+        return;
+      }
       await record({
         requestId,
         callId,
@@ -151,7 +158,7 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
       });
       if (from) await origin({ requestId, ...from });
     } catch (err) {
-      if (hasConsoleTurnAuthorityTag(ctx)) throw err;
+      if (hasConsoleTurnAuthorityTag(ctx) || err instanceof DoorAttachError) throw err;
       warn("interaction.opened", err);
     }
   }
@@ -171,6 +178,8 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
         await settleExactInput(requestId,outcome);
         return;
       }
+      // A card with a reservation (a door's exact approval) is settled only by the exact record; the legacy writer skips it.
+      if (!deps.answer) await settleExactInput(requestId, outcome);
       await answer({ requestId, outcome, ...(settled.decidedByPerson ? {} : { answeredVia: NOBODY_DECIDED }) });
     } catch (err) {
       if (hasConsoleTurnAuthorityTag(ctx)) throw err;

@@ -32,6 +32,12 @@ vi.mock("@lares/agent-kit/approval-ledger", async (importOriginal) => ({
   }),
 }));
 
+// The card record's "shown in full" mark: the cards in these cases were shown whole (the rule itself: tests/shown-whole-approvals.test.ts).
+vi.mock("@lares/agent-kit/db", async (original) => ({
+  ...(await original<typeof import("@lares/agent-kit/db")>()),
+  getPool: () => ({ query: async () => ({ rows: [{ shown_whole: true }], rowCount: 1 }) }),
+}));
+
 vi.mock("../lib/vault-areas.js", () => ({ vaultWriteAreasForTurn: async () => ["private"] }));
 
 import { ApprovalPayloadChangedError, payloadFingerprint } from "@lares/agent-kit/approval-ledger";

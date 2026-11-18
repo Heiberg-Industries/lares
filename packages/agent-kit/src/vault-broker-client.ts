@@ -15,15 +15,26 @@ const FAILURES={identity:'this agent has no keeper identity',request:'the reques
  deadline:'the keeper did not answer in time',eof:'the connection closed early',close:'the connection closed early',size:'the reply was too large',
  trailing:'the reply was not understood',response:'the reply was not understood',refused:'the keeper refused'} as const;
 type Failure=keyof typeof FAILURES;
-/** Always contains `Vault reader unavailable`: callers and tests match on that. */
+/** A failed request to keeper, with the closed facts a caller may decide on. `reason` is set only for a refusal
+ * keeper named from the closed list. The message always contains `Vault reader unavailable`: callers and tests match on that. */
+export class VaultBrokerError extends Error{
+ constructor(message:string,readonly failure:Failure,readonly reason?:string){super(message);this.name='VaultBrokerError';}
+}
 function unavailable(failure:Failure,reason?:unknown):Error{
- const named=failure==='refused'&&typeof reason==='string'&&VAULT_BROKER_REFUSAL_REASONS.has(reason)?`: ${reason}`:'';
- return new Error(`Vault reader unavailable (${FAILURES[failure]}${named})`);
+ const known=failure==='refused'&&typeof reason==='string'&&VAULT_BROKER_REFUSAL_REASONS.has(reason)?reason:undefined;
+ return new VaultBrokerError(`Vault reader unavailable (${FAILURES[failure]}${known?`: ${known}`:''})`,failure,known);
+}
+/** Whether keeper could not be reached or was too busy to answer just now (so trying again later may work),
+ * as opposed to a refusal that will not change on its own. Anything that is not a keeper error counts as unreachable. */
+export function vaultBrokerUnreachable(error:unknown):boolean{
+ if(!(error instanceof VaultBrokerError))return true;
+ if(error.failure==='refused')return error.reason==='capacity'||error.reason==='deadline';
+ return error.failure!=='identity'&&error.failure!=='request';
 }
 function identity(){
  const agent=process.env.LARES_AGENT_NAME,incarnation=process.env.LARES_AGENT_INCARNATION,path=process.env.LARES_RUNTIME_CONTROL_SECRET_FILE??'/run/secrets/runtime-control';
  if(!agent||!/^[a-z][a-z0-9-]{1,30}$/.test(agent)||!incarnation||!/^[a-f0-9-]{36}$/.test(incarnation))throw unavailable('identity');
- const token=readFileSync(path,'utf8').trim();if(!/^[a-f0-9]{64}$/.test(token))throw unavailable('identity');
+ let token:string;try{token=readFileSync(path,'utf8').trim();}catch{throw unavailable('identity');}if(!/^[a-f0-9]{64}$/.test(token))throw unavailable('identity');
  return {agent,incarnation,key:Buffer.from(token,'hex')};
 }
 async function request<T>(op:string,input:unknown,timeoutMs:number):Promise<T>{

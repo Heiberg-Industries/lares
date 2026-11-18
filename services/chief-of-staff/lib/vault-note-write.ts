@@ -11,7 +11,9 @@ import { parseDefinition } from '@lares/agent-kit/definition';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
 import { canWriteVaultArea } from '@lares/agent-kit/manifest';
 import { stampFor, turnKeyFrom } from '@lares/agent-kit/origin-taint';
-import { vaultBrokerListFolder, vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
+import { VaultBrokerError, vaultBrokerListFolder, vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
+import type { DoorApprovedExecution, DoorPass } from '@lares/agent-kit/door-exact-approval';
+import { DOOR_NOTE_APPROVAL_EXPIRED, DOOR_NOTE_SAVE_FAILED, DOOR_NOTE_TITLE_TAKEN } from '@lares/agent-kit/door-vault-sentences';
 import { parseVaultNoteInput, vaultNotePath, vaultNoteTargetFingerprint, VAULT_NOTE_WRITE_POLICY,
   VAULT_NOTE_WRITE_TOOL } from '@lares/agent-kit/vault-note-write';
 import { vaultTurnCapability } from '../agent/lib/vault-turn.js';
@@ -20,6 +22,16 @@ type NoteContext = { session?: { id?: string; turn?: { id?: string; sequence?: n
 
 /** The note's current content, read through Keeper with this human turn's capability. */
 async function currentPrivateNote(ctx: NoteContext, path: string): Promise<string | null> {
+  // A chat door: the reservation hands over the claimed person's pass, which names the door and the claim, never a member.
+  const doorPass = (ctx as { doorPass?: DoorPass }).doorPass;
+  if (doorPass) {
+    const { route, point, capability } = doorPass;
+    const identity = { turnCapability: capability, turnId: point.turnId, sequence: point.sequence, sessionId: point.sessionId,
+      door: route.door, principal: route.principal, claimRevision: route.claimRevision, area: 'private' };
+    const slash = path.lastIndexOf('/'), folder = slash < 0 ? '' : path.slice(0, slash);
+    if (!(await vaultBrokerListFolder(identity, folder)).includes(path)) return null;
+    return (await vaultBrokerRequest<{ content: string }>('vault.read', { ...identity, operation: 'read', path })).content;
+  }
   const session = ctx.session, own = managedIdentity(process.env), admission = consoleAdmission(session?.auth?.current);
   const turnId = session?.turn?.id, sequence = session?.turn?.sequence;
   if (!own || !session?.id || typeof turnId !== 'string' || !Number.isSafeInteger(sequence) || admission?.purpose !== 'human')
@@ -59,7 +71,7 @@ export const vaultNoteApprovalAdapter: ExactApprovalAdapter = {
     // New notes only: a second note with the same title would replace the first without the
     // card saying so. Keeper refuses the same at write time.
     if (await currentPrivateNote(ctx as NoteContext, path) !== null)
-      throw new ApprovalRefusal('A private note with this title already exists. Choose another title: this tool saves new notes only.');
+      throw new ApprovalRefusal(DOOR_NOTE_TITLE_TAKEN);
     const turnKey = turnKeyFrom(ctx);
     const approvedOrigin = (turnKey ? stampFor('agent', turnKey) : 'third_party') as 'agent'|'synced'|'third_party';
     return { kind: 'vault-note', id: path, ownerMemberId: memberId, fingerprint: vaultNoteTargetFingerprint(null), approvedOrigin };
@@ -77,4 +89,19 @@ export async function writeApprovedConsoleNote(ctx: NoteContext, approved: Appro
     payloadHash: approved.payloadHash, input, target: approved.target, authority: approved.authority };
   return await vaultBrokerRequest('vault.write', { sessionId: session.id, memberId: admission.memberId,
     admissionNonce: admission.admissionNonce, approval, input });
+}
+
+/** The one approved write from a chat door. Keeper rechecks the persisted card, the claim, the grant and the note; it is
+ *  told the door claim and never a member. Whatever goes wrong, the model reads one sentence from the closed list
+ *  (it starts "You approved" and says nothing was saved); nothing Keeper says is copied into it. */
+export async function writeApprovedDoorNote(approved: DoorApprovedExecution, input: unknown): Promise<unknown> {
+  if (approved.toolName !== VAULT_NOTE_WRITE_TOOL || approved.authority.origin !== 'approval-resume') throw new Error(DOOR_NOTE_SAVE_FAILED);
+  const approval = { requestId: approved.authority.requestId, callId: approved.callId, toolName: approved.toolName,
+    payloadHash: approved.payloadHash, input, target: approved.target, authority: approved.authority };
+  try {
+    return await vaultBrokerRequest('vault.write', { sessionId: approved.sessionId, ...approved.door, approval, input });
+  } catch (error) {
+    const gone = error instanceof VaultBrokerError && error.failure === 'refused' && (error.reason === 'replay' || error.reason === 'expired');
+    throw new Error(gone ? DOOR_NOTE_APPROVAL_EXPIRED : DOOR_NOTE_SAVE_FAILED);
+  }
 }

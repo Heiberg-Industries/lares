@@ -27,6 +27,7 @@ type Ctx = { session?: { id?: unknown; turn?: { id?: unknown; sequence?: unknown
 const SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const CAPABILITY = /^[A-Za-z0-9_-]{43}$/;
+const MEMBER_ID = /^[^\s,;\x00-\x1f\x7f]{1,256}$/;
 
 /** Whether this conversation is on a door of a runtime Keeper manages, whoever is speaking (so also a
  *  room, or a person who is not the claimed one). On such a door the agent's own files hold no private notes.
@@ -66,15 +67,17 @@ export function doorVaultPoint(ctx: unknown): DoorVaultPoint | undefined {
 
 /** Asks Keeper for this turn's pass. The agent names the door, the claim and the turn, never a member. */
 export async function openDoorVaultTurn(route: DoorVaultRoute, point: DoorVaultPoint,
-  definition: { definition: unknown; dutiesMd: string; voiceMd: string; hash: string }): Promise<{ capability: string; expiresAt: number }> {
-  const answer = await vaultBrokerRequest<{ turnCapability?: unknown; expiresAt?: unknown }>('door.turn.open', {
+  definition: { definition: unknown; dutiesMd: string; voiceMd: string; hash: string }): Promise<{ capability: string; expiresAt: number; memberId: string }> {
+  const answer = await vaultBrokerRequest<{ turnCapability?: unknown; expiresAt?: unknown; memberId?: unknown }>('door.turn.open', {
     door: route.door, principal: route.principal, claimRevision: route.claimRevision, chat: 'private',
     sessionId: point.sessionId, turnId: point.turnId, sequence: point.sequence, definition,
   });
   const now = Date.now();
   if (typeof answer.turnCapability !== 'string' || !CAPABILITY.test(answer.turnCapability) || typeof answer.expiresAt !== 'number' ||
-      !Number.isSafeInteger(answer.expiresAt) || answer.expiresAt <= now) throw new Error(DOOR_NOTE_READ_FAILED);
-  return { capability: answer.turnCapability, expiresAt: answer.expiresAt };
+      !Number.isSafeInteger(answer.expiresAt) || answer.expiresAt <= now || typeof answer.memberId !== 'string' || !MEMBER_ID.test(answer.memberId)) throw new Error(DOOR_NOTE_READ_FAILED);
+  // The member is Keeper's own finding (its configured owner, checked against the claim). A saved note's card is
+  // reserved for that member, and Keeper names him again when it writes.
+  return { capability: answer.turnCapability, expiresAt: answer.expiresAt, memberId: answer.memberId };
 }
 
 export async function closeDoorVaultTurn(point: { turnId: string; sequence: number }, capability: string): Promise<void> {
@@ -94,4 +97,21 @@ export async function doorVaultRead(route: DoorVaultRoute, point: DoorVaultPoint
       ...(typeof args.folder === 'string' ? { folder: args.folder } : {}), ...(Number.isSafeInteger(args.cursor) ? { cursor: args.cursor } : {}) });
     return await vaultBrokerRequest('vault.read', { ...identity, path: args.path, ...(Number.isSafeInteger(args.offset) ? { offset: args.offset } : {}) });
   } catch { throw new Error(DOOR_NOTE_READ_FAILED); }
+}
+
+/**
+ * This context, seen as the door sees it when eve resumes a turn with no current identity. eve hands an
+ * answered card's call to the requester's context, and a Telegram tap resumes with `auth: null`; the person
+ * who opened the conversation is still real and verified (the same fallback `approverFrom` makes). Only a
+ * missing current identity is replaced, and only by the conversation's initiator: a current identity that is
+ * present is never touched. Everything that asks "is this a door, and whose?" uses this view for a call that
+ * is already approved.
+ */
+export function doorSeen(ctx: unknown): unknown {
+  const session = (ctx as Ctx | undefined)?.session;
+  const auth = session?.auth;
+  if (!session || (auth?.current !== undefined && auth.current !== null)) return ctx;
+  const initiator = auth?.initiator ?? session.initiator;
+  if (initiator === undefined || initiator === null) return ctx;
+  return { ...(ctx as object), session: { ...session, auth: { ...(auth ?? {}), current: initiator, initiator } } };
 }

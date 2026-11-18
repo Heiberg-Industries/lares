@@ -8,7 +8,7 @@ vi.mock("@lares/agent-kit/vault-broker-client", async (original) => {
     keeper.calls.push({ op, input });
     if (op === "door.turn.open" && keeper.gate) await keeper.gate;
     if (keeper.fail) throw new Error("Vault reader unavailable (the keeper refused: grant)");
-    return op === "door.turn.open" ? { ok: true, turnCapability: "p".repeat(43), expiresAt: Date.now() + 60_000 } : { ok: true };
+    return op === "door.turn.open" ? { ok: true, turnCapability: "p".repeat(43), expiresAt: Date.now() + 60_000, memberId: "member-owner" } : { ok: true };
   } };
 });
 vi.mock("../lib/definition.js", () => ({ thisAgent: async () => ({ loaded: { definition: {}, dutiesMd: "", voiceMd: "", hash: "h".repeat(64) } }) }));

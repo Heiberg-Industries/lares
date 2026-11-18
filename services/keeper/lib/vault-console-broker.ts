@@ -112,6 +112,8 @@ function trackTargetPath(tool:string,raw:unknown,reserved:unknown):string{
 }
 // What differs between the two approved Vault writes: a Track change in the one shared area, or a
 // new note in the member's own private area. Every check below runs the same for both.
+// A save that came through a chat door: the claim the card was raised under, and the member Keeper's own configuration names (never the agent).
+type DoorWrite={claim:{door:string;principal:string;claimRevision:string};env:NodeJS.ProcessEnv};
 type ApprovedWrite={tools:ReadonlySet<string>;area:'shared'|'private';policy:string;targetPath:(tool:string,raw:unknown,reserved:unknown)=>string;requestedArea:(tool:string,raw:Record<string,unknown>)=>string|undefined};
 const TRACK_WRITE:ApprovedWrite={tools:TRACK_WRITE_TOOLS,area:'shared',policy:'tracks-write-policy-v1',targetPath:trackTargetPath,
  requestedArea:(tool,raw)=>tool==='track_add_item'||tool==='track_move_item'?String(raw.home).slice('vault:'.length):undefined};
@@ -119,29 +121,38 @@ const NOTE_WRITE:ApprovedWrite={tools:new Set([VAULT_NOTE_WRITE_TOOL]),area:'pri
  targetPath:(_tool,raw,reserved)=>{const target=object(reserved),path=vaultNotePath(parseVaultNoteInput(raw).title);
   if(target.kind!=='vault-note'||target.id!==path||typeof target.ownerMemberId!=='string')throw new Error('approval');return path;}};
 async function trackArea(db:AuthorityPool,agent:string,incarnation:string,proof:Record<string,unknown>,operation:string,rawInput:unknown,
- lockApproval=false,claimed=false,use?:(client:any,meta:any)=>Promise<unknown>,write:ApprovedWrite=TRACK_WRITE):Promise<any>{
+ lockApproval=false,claimed=false,use?:(client:any,meta:any)=>Promise<unknown>,write:ApprovedWrite=TRACK_WRITE,door?:DoorWrite):Promise<any>{
  const sessionId=proof.sessionId,memberId=proof.memberId,nonce=proof.admissionNonce,approval=object(proof.approval),requestId=approval.requestId,callId=approval.callId,tool=approval.toolName;
- if(typeof sessionId!=='string'||typeof memberId!=='string'||typeof nonce!=='string'||typeof requestId!=='string'||typeof callId!=='string'||typeof tool!=='string'||
+ if(typeof sessionId!=='string'||typeof memberId!=='string'||(door?nonce!==undefined:typeof nonce!=='string')||typeof requestId!=='string'||typeof callId!=='string'||typeof tool!=='string'||
    !write.tools.has(tool)||tool!==operation||payloadFingerprint(tool,rawInput)!==approval.payloadHash||payloadFingerprint(tool,rawInput)!==payloadFingerprint(tool,approval.input))throw new Error('approval');
  const target=object(approval.target),path=write.targetPath(tool,rawInput,target);
  const raw=object(rawInput),requestedArea=write.requestedArea(tool,raw);
  const execution=await authorityTransaction(db,async client=>{
-  const rows=await client.query(`SELECT call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,used_at
+  const rows=await client.query(`SELECT call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,used_at,answered_via,shown_whole
     FROM approval_asks WHERE call_id=$1 ${lockApproval?'FOR UPDATE':''}`,[callId]);
   if(rows.rows.length!==1)throw new Error('approval');const row=rows.rows[0] as Record<string,any>;
   const reservation=object(row.original_authority),original=turnAuthoritySchema.parse(reservation.original),storedTarget=object(reservation.target);
   const suppliedAuthority=turnAuthoritySchema.parse(approval.authority),expectedAuthority=turnAuthoritySchema.parse({...original,origin:'approval-resume',
    actingMemberId:memberId,resolvedByMemberId:memberId,requestId});
-  const expiry=Date.parse(String(reservation.expiresAt)),admissionHash=payloadFingerprint('admission',nonce);
+  const expiry=Date.parse(String(reservation.expiresAt)),admissionHash=door?undefined:payloadFingerprint('admission',nonce as string);
+  // A door card is the claimed person's: raised under this claim, answered on this door, and shown to them in full (the owner's rule D-6).
+  if(door&&(reservation.version!==2||reservation.kind!=='door'||payloadFingerprint('door-claim',reservation.door)!==payloadFingerprint('door-claim',door.claim)||
+     original.placeId!==`door:${door.claim.door}:${agent}:${incarnation}:${sessionId}`||row.answered_via!==door.claim.door||row.shown_whole!==true))throw new Error('approval');
   if(row.request_id!==requestId||row.agent!==agent||row.tool!==tool||row.payload_hash!==payloadFingerprint(tool,rawInput)||row.outcome!=='approved'||
      row.resolved_by_member_id!==memberId||row.acting_member_id!==memberId||row.session_id!==sessionId||original.origin!=='human'||
      original.agentId!==agent||original.sessionId!==sessionId||original.actingMemberId!==memberId||original.spokenByMemberId!==memberId||storedTarget.ownerMemberId!==memberId||
      payloadFingerprint('authority',suppliedAuthority)!==payloadFingerprint('authority',expectedAuthority)||
      payloadFingerprint('approval-target',storedTarget)!==payloadFingerprint('approval-target',target)||reservation.incarnation!==incarnation||
-     reservation.admissionHash!==admissionHash||!Number.isFinite(expiry)||expiry<=Date.now()||
+     (!door&&reservation.admissionHash!==admissionHash)||!Number.isFinite(expiry)||expiry<=Date.now()||
      (lockApproval&&row.used_at!==null)||(!lockApproval&&!claimed&&row.used_at!==null)||(claimed&&row.used_at===null))throw new Error('approval');
-  const currentBinding=await requireConsoleSessionBinding({agent,incarnation,sessionId,memberId,admissionNonce:nonce},client);
-  if(currentBinding.placeId!==original.placeId||currentBinding.audienceRevision!==original.audience.revision||currentBinding.policyRevision!==original.policyRevision)throw new Error('approval');
+  if(door){
+   // No console session here: Keeper checks the claim itself (the applied claim, an active owner whose address issued it) and the use grant.
+   await requireDoorClaim(client as never,{...door.claim,memberId},door.env);
+   if(!await new PgGrantStore().captureUseWithExpiry(memberId,agent,{db:client as never}))throw new Error('grant');
+  }else{
+   const currentBinding=await requireConsoleSessionBinding({agent,incarnation,sessionId,memberId,admissionNonce:nonce as string},client);
+   if(currentBinding.placeId!==original.placeId||currentBinding.audienceRevision!==original.audience.revision||currentBinding.policyRevision!==original.policyRevision)throw new Error('approval');
+  }
   const defRows=await client.query(`SELECT r.applied_definition,a.hash FROM agent_resources r JOIN agent_definitions a ON a.name=r.name
     WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending
     AND a.status='valid' AND r.applied_definition IS NOT NULL FOR SHARE OF r,a`,[agent,incarnation]);
@@ -406,7 +417,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    assertNotAborted();const turnCapability=randomBytes(32).toString('base64url'),expiry=turnNow()+5*60_000;
    if(doorTurns.size>=MAX_LIVE)throw new Error('capacity');
    doorTurns.set(turnCapability,{agent:agent as string,incarnation:incarnation as string,sessionId,turnId,sequence:sequence as number,...claim,memberId:ownerId,accessRevision:opened.accessRevision,definition:sessionDefinition,areaIds:opened.areaIds,expiry});
-   return {turnCapability,expiresAt:expiry};
+   return {turnCapability,expiresAt:expiry,memberId:ownerId};
   }
   if(op==='door.turn.close'){
    const cap=input.turnCapability;if(typeof cap!=='string')throw new Error('turn');const pass=doorTurns.get(cap);
@@ -496,14 +507,23 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    // One new note in the member's own private area, from one exact approved card. New notes
    // only: a note already at that path is refused, never replaced, and the card stays unused.
    const rawInput=input.input,approval=object(input.approval),note=parseVaultNoteInput(rawInput);
-   const proof={sessionId:input.sessionId,memberId:input.memberId,admissionNonce:input.admissionNonce,approval};
+   // A save from a chat door names the door claim, never a member: Keeper's configured owner is the member, checked against the claim.
+   let door:DoorWrite|undefined;
+   if(input.door!==undefined){
+    const ownerId=socketOptions.designatedOwnerId;
+    if(Object.keys(input).sort().join(',')!=='approval,claimRevision,door,input,principal,sessionId'||!isValidDoorClaim(input as never)||typeof input.sessionId!=='string'||
+       typeof ownerId!=='string'||!/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(ownerId))throw new Error('approval');
+    door={claim:{door:String(input.door),principal:String(input.principal),claimRevision:String(input.claimRevision)},env:{...process.env,LARES_AGENT_NAME:agent,LARES_AGENT_INCARNATION:incarnation} as NodeJS.ProcessEnv};
+    if(!managedIdentity(door.env))throw new Error('runtime');
+   }
+   const proof={sessionId:input.sessionId,memberId:door?socketOptions.designatedOwnerId:input.memberId,admissionNonce:door?undefined:input.admissionNonce,approval};
    const target=object(approval.target),path=vaultNotePath(note.title);
    const context=async<T>(claimed:boolean,write:boolean,use:(files:GuardedVaultFiles,ctx:{memberId:string;areaId:string;expectedRevision:number;db:any})=>Promise<T>)=>
     await trackArea(pool,agent as string,incarnation as string,proof,VAULT_NOTE_WRITE_TOOL,rawInput,write&&!claimed,claimed,async(db:any,meta:any)=>{
      assertNotAborted();const testPaths=socketOptions.vaultFilesForTests;
      const backings:VaultFilesBackings=new Map([[meta.inventory.backing.id,{kind:'git',root:testPaths?.root??'/srv',areas:new Map<string,{origin:string}>(meta.inventory.areas.map((a:any)=>[a.areaId,{origin:testPaths?join(testPaths.originRoot,`${a.areaId}.git`):a.origin}]))}]]);
      return await use(new GuardedVaultFiles(new PgVaultStore(),backings),{memberId:meta.memberId,areaId:meta.areaId,expectedRevision:meta.revision,db});
-    },NOTE_WRITE);
+    },NOTE_WRITE,door);
    const before=await context(false,false,async(files,ctx)=>{
     try{return await files.read(ctx,path);}catch(error){if(error instanceof NoteNotFoundError)return undefined;throw error;}
    });
