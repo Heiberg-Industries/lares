@@ -1,0 +1,39 @@
+{
+  "release": "2026-11-18-rc.15.test.5",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:ca7aa1b10a511b7cd9dfd28b8d27d9267505fa865d252299cc9e2c209d4b00dc",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:d47b02396cc1f75a0dfa850eab72490528aa83ea95a91e4b21103e6a6cee1748",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:ebffe62c5a6b786b2b842d6e29770c2a17df8f9e7181fd3a21780dee55c86f90",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:0b65dd7dd91a1886c585bb457061a3204fd691263907581949f6b90ea3fa100d",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:e8bad55ae1c7f6afff29a5b7996a5e3448d3519d6de9afbd7fce26b436a8119d",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:bb5dc81e333ad3d1dc06b2e80f445833a8d963dc3c4107557e2c776df46bd4b4",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:d9cd4aac5faa62f76c7df635113b5ef52c30f26ae621c730a0583d48d20d3c24"
+  },
+  "migrations": {
+    "box": "038_approval_card_record.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "This is a test release, not a finished rc.15. Use it only to test it on a test server; see docs/releases/rc.15.test.5-notes.md for what is unfinished.",
+    "A server on rc.12 or earlier cannot update to this release in place: the update refuses it before changing anything, because it lacks the operator database password file (/etc/lares/operator/database-password) that the update checks first, and says that the Compose, credentials, or database do not match one installed Lares target. This follows from the code; it has not been run against a real rc.12 server, and moving such a server to this release has not been tested.",
+    "Put this test release on a test server by a fresh install followed by a restore of a backup made on rc.14 (or an rc.14 test release), or, from rc.15.test.2, rc.15.test.3 or rc.15.test.4, by an in-place lares update. The in-place update from rc.15.test.1 to rc.15.test.2 has been run on a real test server and lares doctor then reported exactly that release with every check passing; it needed backups switched on and verified first, because the update takes a backup before it starts and refuses while none is verified. The in-place update from rc.15.test.4 to this release has not been run on a real server yet, and neither has an in-place update from rc.14.",
+    "This update applies database file 038_approval_card_record.sql. It adds columns to the table that records every approval card (the door a card was shown on, where it sits in Slack or Telegram, the person it was put to, whether it was shown whole, and whether it is an approval or a question), and allows 'answered' as an outcome; it changes no existing row, and rows written before it keep empty values in the four new nullable columns. An update from rc.15.test.3 or earlier also applies 037_person_voice_profiles.sql, which adds a table for members' writing profiles and empty owner and account columns on the two voice tables, and allows 'interrupted' as a voice learn's state; it changes no existing row.",
+    "An approval answered in Slack or Telegram now runs only if the card's record says the request was shown there in full. A card that was cut, a card with no record and a card written before this update (its record has no such mark) are all refused after you approve them, with a sentence that says nothing was done: ask the agent again and approve the new request on the console's Waiting on you page, which shows the whole request. Answers given on that page still run. An approval card that is still open in Slack or Telegram when this update is applied is one of these old cards.",
+    "A Slack approval card is now drawn whole, across as many sections as it needs, and keeps Approve. Only a card too big for one Slack message (50 blocks of 3,000 characters) is still cut: it says how many characters are not shown and offers Deny only.",
+    "A card that asks a question can now be answered by the person it was put to, on Slack and Telegram; an approval can still be answered only by the installation's owner.",
+    "A backup made on rc.14 restores onto this release; a backup in any other layout is refused with nothing changed. Restore right after the install, before lares budget setup: a restore onto a server whose spending limits are already set up finishes with spending closed and says to keep the agents stopped, and this release has no command that reopens it.",
+    "This update ends open web-chat conversations, and so does every later save of a change to a running agent. It stops the Keeper and the agents while it upgrades their stores; if it fails after it has begun upgrading the stores they stay stopped until the same update is run again, and a failure before that starts them again on the previous release.",
+    "Before changing anything, the update refuses a server where any agent store is neither exactly as rc.14 left it nor already at this release (it names the store and how many schema steps it found), and one whose database is not set to UTC.",
+    "The agents run on the agent framework eve 1.0.1 instead of 1.0.0-rc.10. An update while conversations are open, including an approved call that has not run yet, has not been tried on a real server.",
+    "The agents' web chat no longer reads the x-lares-member address header, and the console's waiting page no longer sends it: web chat learns who is writing only from the console's admission. Anything other than the shipped console that named a member with that header alone now names nobody and can approve nothing.",
+    "On an agent another member can use, or one that the installation's owner does not own, model calls outside a conversation (scheduled briefs, mail triage, a tool's own model call) are now refused; only an agent that the installation's owner owns and nobody else can use makes them.",
+    "The e-mail door is gone. An agent definition that still has an email door is refused, and the agent keeps its last valid definition: delete the door from agent.json, then choose the agent's mailbox on its Access tab.",
+    "A chief of staff's Slack app made before rc.15.test.1 needs the bot permission im:write added under OAuth & Permissions in Slack, and the app installed to the workspace again; until then its messages that start on a schedule are expected to be refused by Slack.",
+    "Only Anthropic models are on the tested path in this release. Setting an OpenAI or other model by hand is not, and chat will be refused.",
+    "Selective import from an older installation can only preview; it cannot write anything yet.",
+    "The note list tool returns at most 200 notes per call, with a cursor for the next page, and no longer returns a note count. An agent's duties or skills that expect one list call to return a whole area see only the first page."
+  ]
+}
