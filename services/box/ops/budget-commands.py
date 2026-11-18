@@ -96,7 +96,7 @@ RETIRED_ROLES = ("travel",)
 # (tests/price-table-fresh.test.ts fails when that date falls more than 14 days behind the newest
 # release). The owner confirms them; any other model means typing prices in. A model whose price
 # changes with prompt length is left out, because the budget system has no way to express that.
-PRICES_CHECKED = "3 November 2026"
+PRICES_CHECKED = "18 November 2026"
 # Sources: Anthropic https://platform.claude.com/docs/en/about-claude/pricing (every Anthropic entry below);
 # OpenAI https://developers.openai.com/api/docs/pricing (standard tier, every OpenAI entry);
 # Mistral https://docs.mistral.ai/models/model-cards/mistral-embed-23-12 (the embedding entry).
