@@ -34,7 +34,10 @@ const live = vi.hoisted(() => ({
 }));
 vi.mock("@lares/agent-kit/db", () => ({
   getPool: () => ({
-    query: async () => {
+    query: async (sql: string) => {
+      // The card layer reads the card record for a tap. That is not a day-boundary read, so it is
+      // answered (no card known) without being counted as one.
+      if (sql.includes("approval_asks")) return { rows: [] };
       live.order.push("claim");
       if (live.fails) throw new Error("connection refused");
       return { rows: live.claim === null ? [] : [{ session_id: live.claim }] };

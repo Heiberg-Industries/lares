@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   answeredVia, approvalLedger, askForCall, payloadFingerprint, recordAnswer, recordAsk,
+  applyPostedCard, recordCardOrigin, recordCardPosted, recordQuestion, recordQuestionEnd, resetPostedBeforeRowForTests,
   resetApprovalLedgerWarningForTests,
 } from "../src/approval-ledger.js";
 import { readApprovalCounts } from "../src/approval-stats.js";
@@ -26,6 +27,7 @@ beforeAll(async () => {
   db.on("error", () => undefined);
   db.on("connect", (client) => client.on("error", () => undefined));
   await db.query(readFileSync(SQL, "utf8"));
+  await db.query(readFileSync(SQL.replace("001_baseline", "038_approval_card_record"), "utf8"));
   // `approvalLedger()` builds its own pool, lazily, off DATABASE_URL — point it at the same
   // disposable database so its `markUsed` can be exercised against real Postgres.
   process.env["DATABASE_URL"] = container.getConnectionUri();
@@ -163,5 +165,43 @@ describe("used_at / use_count — counted, never enforced", () => {
       agent: "fixture-agent", tool: "gmail_send", asked: 1, approved: 1, cancelled: 0,
       neverAnswered: 0,
     });
+  });
+});
+
+describe("the card record: door, address, person and question cards", () => {
+  const read = async (id: string) =>
+    (await db.query("SELECT kind, door, put_to, card_address, shown_whole, outcome, tool FROM approval_asks WHERE request_id = $1", [id])).rows[0];
+
+  it("an approval gets its door and person when it opens and its address when the door has posted it; the first address wins", async () => {
+    await recordAsk(db, ask);
+    await recordCardOrigin(db, { requestId: "req-1", door: "slack", putTo: "U1" });
+    await recordCardPosted(db, { requestId: "req-1", door: "slack", address: { channel: "C1", message: "1.2" }, shownWhole: false });
+    await recordCardPosted(db, { requestId: "req-1", door: "slack", address: { channel: "C9", message: "9.9" }, shownWhole: true });
+    expect(await read("req-1")).toEqual({
+      kind: "approval", door: "slack", put_to: "U1", card_address: { channel: "C1", message: "1.2" }, shown_whole: false, outcome: null, tool: "gmail_send",
+    });
+  });
+
+  it("a question is a row of its own kind, settles as answered or ignored, and is not an approval", async () => {
+    await recordQuestion(db, { requestId: "q-1", agent: "fixture-agent", prompt: "Which one?", door: "telegram", putTo: "42" });
+    await recordQuestion(db, { requestId: "q-2", agent: "fixture-agent", prompt: "Which one?" });
+    await recordQuestionEnd(db, { requestId: "q-1", answered: true });
+    await recordQuestionEnd(db, { requestId: "q-2", answered: false });
+    await recordQuestionEnd(db, { requestId: "q-1", answered: false }); // the first end wins
+    expect(await read("q-1")).toMatchObject({ kind: "question", door: "telegram", put_to: "42", outcome: "answered", tool: "question" });
+    expect(await read("q-2")).toMatchObject({ kind: "question", door: null, outcome: "ignored" });
+    expect(await readApprovalCounts(db)).toEqual([]);
+  });
+
+  it("a door that posts before the record hook has made the row is not lost: the address is kept and written when the row appears", async () => {
+    resetPostedBeforeRowForTests();
+    await expect(recordCardPosted(db, { requestId: "late-row", door: "slack", address: { channel: "C2", message: "2.3" }, shownWhole: true })).resolves.toBeUndefined();
+    expect(await read("late-row")).toBeUndefined(); // nothing to write to yet, and nothing thrown
+    await recordAsk(db, { ...ask, requestId: "late-row", callId: "call-late" });
+    await applyPostedCard(db, "late-row");
+    expect(await read("late-row")).toMatchObject({ door: "slack", card_address: { channel: "C2", message: "2.3" }, shown_whole: true });
+    // Applying twice, or for a card nobody posted, does nothing.
+    await applyPostedCard(db, "late-row");
+    await applyPostedCard(db, "never-posted");
   });
 });

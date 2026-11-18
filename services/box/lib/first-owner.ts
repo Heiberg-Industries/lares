@@ -13,8 +13,8 @@
 // No stored identity or forget-ledger hash is re-keyed by publication cleanup.
 import type { Queryable } from "./db.js";
 import { MEMBER_SCOPE } from "./member-scope.js";
-import { REGISTER_TABLES, matchClause } from "./erase-person.js";
-import { resolvePerson, spellingsFor, type PersonIdentity } from "./person-identity.js";
+import { REGISTER_TABLES, matchClause, spellingsForEntry } from "./erase-person.js";
+import { resolvePerson, type PersonIdentity } from "./person-identity.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -173,7 +173,7 @@ export async function isUntouchedEngineSeed(db: Queryable): Promise<boolean> {
       // Not migrated on this box yet: nothing can name anyone in a table that does not exist —
       // read as zero matches, never as a reason to refuse or to guess.
       if (present.get(entry.table) !== true) continue;
-      const spellings = spellingsFor(person, entry.idKind!);
+      const spellings = spellingsForEntry(person, entry);
       const { rows: hits } = await db.query<{ n: number }>(
         `SELECT count(*)::int AS n FROM ${entry.table} WHERE ${matchClause(entry)}`,
         [spellings],

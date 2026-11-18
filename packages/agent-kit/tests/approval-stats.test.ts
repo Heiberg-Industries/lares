@@ -26,6 +26,7 @@ beforeAll(async () => {
   db.on("error", () => undefined);
   db.on("connect", (client) => client.on("error", () => undefined));
   await db.query(readFileSync(SQL, "utf8"));
+  await db.query(readFileSync(SQL.replace("001_baseline", "038_approval_card_record"), "utf8"));
 }, 120_000);
 afterAll(async () => { await db.end(); await container.stop(); });
 beforeEach(async () => { await db.query("TRUNCATE approval_asks"); });

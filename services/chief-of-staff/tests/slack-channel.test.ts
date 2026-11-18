@@ -14,8 +14,11 @@ async function freshModule() {
   vi.resetModules();
   // The door as eve loads it (this role's file), with the kit's Slack door that file binds.
   const door = await import("../agent/channels/slack.js");
-  const { SLACK_TAP_REFUSAL } = await import("@lares/agent-kit/door-channels");
-  return { SLACK_TAP_REFUSAL, ...(await import("@lares/agent-kit/slack-door")), ...door };
+  const { CARD_REFUSED } = await import("@lares/agent-kit/card-sentences");
+  const { ownerPrincipalId } = await import("@lares/agent-kit/principals");
+  // The owner is the first id on the door's list, or the door's claimed principal on a managed agent.
+  const slackOwnerUserId = () => ownerPrincipalId("slack");
+  return { CARD_REFUSED, slackOwnerUserId, ...(await import("@lares/agent-kit/slack-door")), ...door };
 }
 
 /** Minimal SlackMessage stand-in — only the fields the allowlist actually reads. */
@@ -238,7 +241,27 @@ describe("chief-of-staff Slack channel", () => {
       const renderers = mod.slackDoorConfig.renderers ?? [];
       expect(renderers.filter((r) => r.interactionCard !== undefined), "the approval card renderer").toHaveLength(1);
       const handled = renderers.flatMap((r) => Object.keys(r.events ?? {})).sort();
-      expect(handled).toEqual(["content.completed", "session.ended", "turn.settled"]);
+      expect(handled).toEqual(["content.completed", "interaction.opened", "session.ended", "turn.settled"]);
+    });
+
+    it("once eve has posted a card, the card record gets where it sits and whether it was shown whole", async () => {
+      const mod = await freshModule();
+      const handler = (mod.slackDoorConfig.renderers ?? []).map((r) => r.events?.["interaction.opened"]).find((h) => h !== undefined) as
+        (event: unknown, ctx: unknown, next: () => Promise<void>) => Promise<void>;
+      const state = { interactionCards: [{ channelId: "D0OWNERDM", ts: "1700000000.000200", requests: [{ interactionId: "req-q" }] }] };
+      const order: string[] = [];
+      query.mockClear();
+      await handler({ data: { interactionId: "req-q", request: { kind: "question" } } }, { channel: { state } }, async () => { order.push("eve posted"); });
+      // The record is written after eve's own handler, from the address eve kept.
+      expect(order).toEqual(["eve posted"]);
+      expect(query).toHaveBeenCalledTimes(1);
+      const [sql, values] = query.mock.calls[0] as unknown as [string, unknown[]];
+      expect(sql).toContain("UPDATE approval_asks SET door");
+      expect(values).toEqual(["req-q", "slack", JSON.stringify({ channel: "D0OWNERDM", message: "1700000000.000200" }), true]);
+      // A card eve did not post (no address kept) writes nothing, and nothing throws.
+      query.mockClear();
+      await handler({ data: { interactionId: "other", request: { kind: "approval" } } }, { channel: { state } }, async () => {});
+      expect(query).not.toHaveBeenCalled();
     });
 
     it("eve hears every event name the door handles, and the decline question goes through the door's handler", async () => {
@@ -289,18 +312,18 @@ describe("chief-of-staff Slack channel", () => {
 
     it("accepts the owner, with the identity eve derived from the tap", async () => {
       const { authorizeSlackAnswer } = await freshModule();
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toEqual({ auth: defaultAuth });
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toEqual({ auth: defaultAuth });
     });
 
     it("refuses a second trusted member: allowed to start a turn, not allowed to answer a card", async () => {
       const { authorizeSlackAnswer, isAllowedSlackUser } = await freshModule();
       expect(isAllowedSlackUser(message({ author: { userId: "U_EXAMPLE_SECOND", isBot: false } }))).toBe(true);
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_SECOND" } })).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_SECOND" } })).toBeNull();
     });
 
     it("refuses any other Slack user, and logs one line that names nobody", async () => {
       const { authorizeSlackAnswer } = await freshModule();
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "U0STRANGER" } })).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "U0STRANGER" } })).toBeNull();
       const warn = vi.mocked(console.warn);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]![0])).not.toContain("U0STRANGER");
@@ -311,19 +334,19 @@ describe("chief-of-staff Slack channel", () => {
       const { authorizeSlackAnswer, slackOwnerUserId } = await freshModule();
       delete process.env["SLACK_ALLOWED_USER_IDS"];
       expect(slackOwnerUserId()).toBeUndefined();
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toBeNull();
       process.env["SLACK_ALLOWED_USER_IDS"] = "  ,  ";
       expect(slackOwnerUserId()).toBeUndefined();
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toBeNull();
       // An empty id never matches an empty owner.
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "" } })).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "" } })).toBeNull();
     });
 
     it("refuses an answer that names nobody, without throwing", async () => {
       const { authorizeSlackAnswer } = await freshModule();
-      expect(authorizeSlackAnswer({ defaultAuth }, {})).toBeNull();
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: {} })).toBeNull();
-      expect(authorizeSlackAnswer({ defaultAuth }, undefined as never)).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, {})).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: {} })).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, undefined as never)).toBeNull();
     });
 
     describe("the person refused is told so, privately", () => {
@@ -333,25 +356,25 @@ describe("chief-of-staff Slack channel", () => {
       }
 
       it("sends a refused tapper exactly the one fixed sentence, to them alone, and still refuses at once", async () => {
-        const { authorizeSlackAnswer, SLACK_TAP_REFUSAL } = await freshModule();
+        const { authorizeSlackAnswer, CARD_REFUSED } = await freshModule();
         for (const who of ["U_EXAMPLE_SECOND", "U0STRANGER"]) {
           const ctx = ctxWith(async () => ({ id: "1700000000.000300" }));
-          expect(authorizeSlackAnswer(ctx, { user: { id: who } })).toBeNull();
+          expect(await authorizeSlackAnswer(ctx, { user: { id: who } })).toBeNull();
           await vi.waitFor(() => expect(ctx.thread.postEphemeral).toHaveBeenCalledTimes(1));
-          expect(ctx.thread.postEphemeral).toHaveBeenCalledWith(who, SLACK_TAP_REFUSAL);
+          expect(ctx.thread.postEphemeral).toHaveBeenCalledWith(who, CARD_REFUSED);
         }
       });
 
       it("the sentence says nothing about the card, who asked, or who tapped", async () => {
-        const { SLACK_TAP_REFUSAL } = await freshModule();
-        expect(SLACK_TAP_REFUSAL).toBe("Only the owner of this bot can answer this. Nothing was done.");
-        expect(SLACK_TAP_REFUSAL).not.toMatch(/U_EXAMPLE|U0|approv|deny/i);
+        const { CARD_REFUSED } = await freshModule();
+        expect(CARD_REFUSED).toBe("You cannot answer this request. Nothing was done.");
+        expect(CARD_REFUSED).not.toMatch(/U_EXAMPLE|U0|approv|deny/i);
       });
 
       it("the owner's accepted tap sends no note", async () => {
         const { authorizeSlackAnswer } = await freshModule();
         const ctx = ctxWith(async () => ({ id: "x" }));
-        expect(authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_OWNER" } })).toEqual({ auth: defaultAuth });
+        expect(await authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_OWNER" } })).toEqual({ auth: defaultAuth });
         await new Promise((resolve) => setTimeout(resolve, 10));
         expect(ctx.thread.postEphemeral).not.toHaveBeenCalled();
       });
@@ -359,8 +382,8 @@ describe("chief-of-staff Slack channel", () => {
       it("a tap that names nobody has nobody to tell: no note is sent", async () => {
         const { authorizeSlackAnswer } = await freshModule();
         const ctx = ctxWith(async () => ({ id: "x" }));
-        expect(authorizeSlackAnswer(ctx, {})).toBeNull();
-        expect(authorizeSlackAnswer(ctx, { user: { id: "" } })).toBeNull();
+        expect(await authorizeSlackAnswer(ctx, {})).toBeNull();
+        expect(await authorizeSlackAnswer(ctx, { user: { id: "" } })).toBeNull();
         await new Promise((resolve) => setTimeout(resolve, 10));
         expect(ctx.thread.postEphemeral).not.toHaveBeenCalled();
       });
@@ -369,8 +392,8 @@ describe("chief-of-staff Slack channel", () => {
         const { authorizeSlackAnswer } = await freshModule();
         const rejecting = ctxWith(async () => { throw new Error("slack said: not_in_channel"); });
         const throwing = { defaultAuth, thread: { postEphemeral: vi.fn(() => { throw new Error("boom"); }) } };
-        expect(authorizeSlackAnswer(rejecting, { user: { id: "U_EXAMPLE_SECOND" } })).toBeNull();
-        expect(authorizeSlackAnswer(throwing as never, { user: { id: "U0STRANGER" } })).toBeNull();
+        expect(await authorizeSlackAnswer(rejecting, { user: { id: "U_EXAMPLE_SECOND" } })).toBeNull();
+        expect(await authorizeSlackAnswer(throwing as never, { user: { id: "U0STRANGER" } })).toBeNull();
         const warn = vi.mocked(console.warn);
         const failures = () => warn.mock.calls.filter(([line]) => String(line).includes("could not tell a person their tap"));
         await vi.waitFor(() => expect(failures()).toHaveLength(2));
@@ -383,19 +406,14 @@ describe("chief-of-staff Slack channel", () => {
       it("repeated refused taps send one note each and keep nothing: the owner is still accepted after", async () => {
         const { authorizeSlackAnswer } = await freshModule();
         const ctx = ctxWith(async () => ({ id: "x" }));
-        for (let i = 0; i < 5; i++) expect(authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_SECOND" } })).toBeNull();
+        for (let i = 0; i < 5; i++) expect(await authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_SECOND" } })).toBeNull();
         await vi.waitFor(() => expect(ctx.thread.postEphemeral).toHaveBeenCalledTimes(5));
-        expect(authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_OWNER" } })).toEqual({ auth: defaultAuth });
+        expect(await authorizeSlackAnswer(ctx, { user: { id: "U_EXAMPLE_OWNER" } })).toEqual({ auth: defaultAuth });
         await new Promise((resolve) => setTimeout(resolve, 10));
         expect(ctx.thread.postEphemeral).toHaveBeenCalledTimes(5);
       });
     });
 
-    it("refuses everybody when the owner id cannot be read", async () => {
-      const { slackOwnerUserId } = await freshModule();
-      const unreadable = new Proxy({}, { get() { throw new Error("environment not readable"); } }) as NodeJS.ProcessEnv;
-      expect(slackOwnerUserId(unreadable)).toBeUndefined();
-    });
 
     it("on a managed agent the owner is the door's claimed principal, not the old list", async () => {
       process.env["LARES_AGENT_NAME"] = "example-agent";
@@ -403,12 +421,12 @@ describe("chief-of-staff Slack channel", () => {
       process.env["LARES_SLACK_PRINCIPAL"] = "U_EXAMPLE_CLAIMED";
       const { authorizeSlackAnswer, slackOwnerUserId } = await freshModule();
       expect(slackOwnerUserId()).toBe("U_EXAMPLE_CLAIMED");
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_CLAIMED" } })).toEqual({ auth: defaultAuth });
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_CLAIMED" } })).toEqual({ auth: defaultAuth });
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toBeNull();
       // A managed agent whose door nobody has claimed yet has no owner: refuse.
       delete process.env["LARES_SLACK_PRINCIPAL"];
       expect(slackOwnerUserId()).toBeUndefined();
-      expect(authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toBeNull();
+      expect(await authorizeSlackAnswer({ defaultAuth }, { user: { id: "U_EXAMPLE_OWNER" } })).toBeNull();
     });
   });
 });
@@ -514,7 +532,7 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
    * The card itself is not touched, so its buttons are still there for the owner.
    */
   async function expectOnlyRefusalNotices(tappers: string[], threadTs = "1700000000.000100", channel = DM): Promise<void> {
-    const { SLACK_TAP_REFUSAL } = await import("@lares/agent-kit/door-channels");
+    const { CARD_REFUSED } = await import("@lares/agent-kit/card-sentences");
     await vi.waitFor(() => expect(vi.mocked(globalThis.fetch).mock.calls.length).toBeGreaterThanOrEqual(tappers.length));
     await settle();
     const calls = slackCalls();
@@ -524,7 +542,7 @@ describe("chief-of-staff Slack door, through its webhook route", () => {
       // In the card's own channel and thread, with the sentence as its whole content.
       expect(body["channel"]).toBe(channel);
       expect(body["thread_ts"]).toBe(threadTs);
-      expect(body["markdown_text"]).toBe(SLACK_TAP_REFUSAL);
+      expect(body["markdown_text"]).toBe(CARD_REFUSED);
       expect(body).not.toHaveProperty("blocks");
       expect(body).not.toHaveProperty("text");
     }

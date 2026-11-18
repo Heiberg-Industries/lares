@@ -43,8 +43,15 @@ vi.mock("@lares/agent-kit/telegram-fetch", () => ({
   },
 }));
 
-const ledger = vi.hoisted(() => ({ answeredVia: async (_id: string): Promise<string | null> => null }));
-vi.mock("@lares/agent-kit/approval-ledger", () => ({ answeredVia: (id: string) => ledger.answeredVia(id) }));
+const ledger = vi.hoisted(() => ({
+  answeredVia: async (_id: string): Promise<string | null> => null,
+  posted: [] as Array<{ requestId: string; door: string; address: { channel: string; message: string }; shownWhole: boolean }>,
+}));
+vi.mock("@lares/agent-kit/approval-ledger", () => ({
+  answeredVia: (id: string) => ledger.answeredVia(id),
+  recordCardPosted: async (_db: unknown, a: (typeof ledger.posted)[number]) => { ledger.posted.push(a); },
+}));
+vi.mock("@lares/agent-kit/db", () => ({ getPool: () => ({}) }));
 
 import * as doorModule from "../agent/channels/telegram.js";
 import {
@@ -528,10 +535,10 @@ describe("4. a card that could not show everything points to the console", () =>
     it("the note says it cannot be approved here, where it can, and that Deny still works", () => {
       const withLink = shortenedCardNote(LINK);
       expect(withLink).toContain("cannot be approved here");
-      expect(withLink).toContain(`approve it in the console: ${LINK}`);
+      expect(withLink).toContain(`Open it in the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: ${LINK}`);
       expect(withLink).toContain("Deny still works here.");
       const without = shortenedCardNote(null);
-      expect(without).toContain("Open the console to read the whole of it and approve it there.");
+      expect(without).toContain("Open it in the Waiting on you page in the console, where it shows in full, to approve it.");
       expect(without).not.toContain("http");
       expect(without).toContain("Deny still works here.");
     });
@@ -607,6 +614,16 @@ describe("4. a card that could not show everything points to the console", () =>
       expect(String(calls[1]!.body["text"]).endsWith(`\n\n${APPROVAL_OUTCOME_TEXT.denied}`)).toBe(true);
       expect(String(calls[1]!.body["text"])).not.toContain("console");
       expect(state["laresShortenedCardNotes"]).toEqual({});
+    });
+
+    it("writes the posted card's address and whether it was shown whole into the card record", async () => {
+      process.env["LARES_CONSOLE_URL"] = CONSOLE;
+      ledger.posted.length = 0;
+      await deliverOpened(overTheLimit);
+      expect(ledger.posted).toEqual([expect.objectContaining({ door: "telegram", address: { channel: "123456789", message: expect.stringMatching(/^[0-9]+$/) }, shownWhole: false })]);
+      ledger.posted.length = 0;
+      await deliverOpened(approvalRequest);
+      expect(ledger.posted).toEqual([expect.objectContaining({ door: "telegram", address: { channel: "123456789", message: expect.stringMatching(/^[0-9]+$/) }, shownWhole: true })]);
     });
 
     it("decided in the console: approved there, the card says so and the note goes", async () => {

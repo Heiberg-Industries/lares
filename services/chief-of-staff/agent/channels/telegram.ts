@@ -39,7 +39,15 @@ import { continuityAuthAttributes, nativeConversationContinuity } from "../../li
 import { TELEGRAM_INNER_ROUTE } from "@lares/agent-kit/telegram-routes";
 import { mdToTelegramHtml, splitTelegramHtml } from "@lares/agent-kit/telegram-markdown";
 import { getPool } from "@lares/agent-kit/db";
-import { answeredVia } from "@lares/agent-kit/approval-ledger";
+import { answeredVia, recordCardPosted } from "@lares/agent-kit/approval-ledger";
+import { placesShowingWhole } from "@lares/agent-kit/card-layer";
+import {
+  CARD_NOTE_CLOSED_TEXT,
+  CARD_OUTCOME_TEXT,
+  CARD_PROMPT_OUTCOME_TEXT,
+  CARD_REVISED_TEXT,
+  shortenedCardSentence,
+} from "@lares/agent-kit/card-sentences";
 import { OFFICE_MEDIA_TYPES } from "@lares/agent-kit/attachment-hydration";
 import { telegramUnreadableNote } from "@lares/agent-kit/unreadable-content";
 import {
@@ -382,16 +390,14 @@ export function waitingPageLink(interactionId: string, env: NodeJS.ProcessEnv = 
   return url.href;
 }
 
-/** What is said under a card that could not show everything. EXPORTED for tests. */
+/** What is said under a card that could not show everything: the card layer's sentence (the doors
+ *  that show a long card whole come from its door table). EXPORTED for tests. */
 export function shortenedCardNote(link: string | null): string {
-  const lead = "The request above is shortened: Telegram cannot show all of it, so it cannot be approved here.";
-  return link === null
-    ? `${lead} Open the console to read the whole of it and approve it there. Deny still works here.`
-    : `${lead} Read the whole of it and approve it in the console: ${link}\nDeny still works here.`;
+  return shortenedCardSentence(placesShowingWhole(), link);
 }
 
 /** What a note that could not be removed is changed to, once its request is decided. */
-export const SHORTENED_NOTE_CLOSED_TEXT = "The request above is closed.";
+export const SHORTENED_NOTE_CLOSED_TEXT = CARD_NOTE_CLOSED_TEXT;
 
 /** This door's own record of the notes it posted, by request: the Telegram message each one is.
  *  Kept in the channel's state under a key of the door's own, as eve's upgrade guide asks. */
@@ -427,6 +433,25 @@ function wasPostedWithoutApprove(state: object, interactionId: string): boolean 
   return answers.length > 0 && !answers.includes(APPROVE_OPTION_ID);
 }
 
+/**
+ * Writes the posted card's address (this chat and the message eve posted it as) and whether it was
+ * shown whole into the card record. This is the door's adapter function 3; what an address is for
+ * is the card layer's business. The message id is read from eve's own channel state, the one place
+ * it exists, and a missing one writes nothing (the card is then unknown to the layer, which the
+ * owner can still answer). Never throws.
+ */
+async function recordPostedCard(state: object, interactionId: string, shownWhole: boolean): Promise<void> {
+  try {
+    const held = state as { hitlPrompts?: unknown; chatId?: unknown };
+    const prompt = isRecord(held.hitlPrompts) ? held.hitlPrompts[interactionId] : undefined;
+    const message = isRecord(prompt) ? prompt["messageId"] : undefined;
+    if (typeof held.chatId !== "string" || held.chatId === "" || typeof message !== "string" || message === "") return;
+    await recordCardPosted(getPool(), { requestId: interactionId, door: "telegram", address: { channel: held.chatId, message }, shownWhole });
+  } catch (err) {
+    console.error("telegram approval card: could not record where a card was posted", err instanceof Error ? err.message : "unknown error");
+  }
+}
+
 /** The slice of eve's event context `onLineCommitted` uses. */
 interface CommittedLineContext {
   readonly channel: {
@@ -459,11 +484,13 @@ export async function onLineCommitted(
       if (fact.type !== "interaction.opened" || !isRecord(fact.data)) continue;
       const interactionId = fact.data["interactionId"];
       const request = fact.data["request"];
-      if (typeof interactionId !== "string" || !isRecord(request) || request["kind"] !== "approval") continue;
+      if (typeof interactionId !== "string" || !isRecord(request) || (request["kind"] !== "approval" && request["kind"] !== "question")) continue;
       // Only where Approve was on offer and eve left it off. A request that never offered it is
       // not "shortened".
-      const offered = Array.isArray(request["options"]) && request["options"].some((o) => isRecord(o) && o["id"] === APPROVE_OPTION_ID);
-      if (!offered || !wasPostedWithoutApprove(ctx.channel.state, interactionId)) continue;
+      const offered = request["kind"] === "approval" && Array.isArray(request["options"]) && request["options"].some((o) => isRecord(o) && o["id"] === APPROVE_OPTION_ID);
+      const cut = offered && wasPostedWithoutApprove(ctx.channel.state, interactionId);
+      await recordPostedCard(ctx.channel.state, interactionId, !cut);
+      if (!cut) continue;
       const notes = postedNotes(ctx.channel.state);
       if (notes[interactionId] !== undefined) continue;
 
@@ -500,19 +527,14 @@ async function removeShortenedCardNote(ctx: SettledCardContext, interactionId: s
 
 // ── The card, once it is settled ────────────────────────────────────────────────────────
 
-/** What a settled approval card says under its text. */
-export const APPROVAL_OUTCOME_TEXT = {
-  approved: "✅ Approved",
-  denied: "✖ Denied",
-  /** Nobody decided: the request was withdrawn, interrupted, expired or otherwise closed. */
-  notApproved: "✖ Not approved — this was closed without an answer.",
-} as const;
+/** What a settled approval card says under its text: the card layer's sentences. */
+export const APPROVAL_OUTCOME_TEXT = CARD_OUTCOME_TEXT;
 
 /** Added under the outcome when the card was closed because the agent proposed a revised one. */
-export const APPROVAL_REVISED_TEXT = "Revised — see the new card";
+export const APPROVAL_REVISED_TEXT = CARD_REVISED_TEXT;
 
 /** What a settled card that is not an approval says (a question with buttons, a budget prompt). */
-export const PROMPT_OUTCOME_TEXT = { answered: "Answered", closed: "No longer needed" } as const;
+export const PROMPT_OUTCOME_TEXT = CARD_PROMPT_OUTCOME_TEXT;
 
 /** Telegram's cap on one message's text. */
 const TELEGRAM_TEXT_MAX = 4096;

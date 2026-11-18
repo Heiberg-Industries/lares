@@ -41,7 +41,9 @@ import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
 import { makeApp, run, source, abort, ensureProbeExtensionBuilt } from './proof-harness.mjs';
 // The REAL proxy and the REAL approver check. Not copies, not re-implementations.
-import { forwardChat, ROUTE_USERNAME, MEMBER_HEADER } from '../../../services/console/lib/chat-proxy.ts';
+import { forwardChat, ROUTE_USERNAME } from '../../../services/console/lib/chat-proxy.ts';
+// The header the proxy used to set; it sets none now (this older proof checks a forged one is dropped).
+const MEMBER_HEADER = 'x-lares-member';
 // `lib/principals.ts` is imported here as well as run inside the fixture, so item 1 resolves the
 // recorded context with the SHIPPED code rather than a paraphrase. `lib/approvals.ts` is NOT
 // imported into this process: Node's strip-only TypeScript cannot parse its `constructor(readonly

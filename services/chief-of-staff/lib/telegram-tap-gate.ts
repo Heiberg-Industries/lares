@@ -2,8 +2,12 @@
  * lib/telegram-tap-gate.ts — which button taps may reach the agent on Telegram.
  *
  * WHY THIS EXISTS. A tap on an approval card executes a real action, and the webhook front door
- * (`agent/channels/telegram-webhook.ts`) is the first code of ours that sees it. This gate
- * refuses a tap from anyone who is not an allowed approver THERE, before the update is forwarded
+ * (`agent/channels/telegram-webhook.ts`) is the first code of ours that sees it. This gate is the
+ * door's adapter for Telegram (ADR-0025 rule 5): it recognises a tap, reads who tapped (Telegram's
+ * own verified id) and where the card sits (the chat and message the button is on), and asks the
+ * card layer (`@lares/agent-kit/card-layer`) whether the tap counts. It holds NO rule about who
+ * may answer, no table of cards and no sentence: the only decision it keeps is the door's own
+ * gate, whether the sender is on this door's allow-list. A tap the layer refuses is not forwarded
  * to the framework at all: nothing is resumed, nothing is recorded as an answer, and the card
  * stays up for whoever may actually answer it.
  *
@@ -33,7 +37,7 @@
  *
  * FAIL CLOSED FOR A TAP. The gate decides from what it positively recognises:
  *   - a proposal button is forwarded (that lane refuses a stranger itself);
- *   - one of eve's own buttons is forwarded only for an allowed approver;
+ *   - one of eve's own buttons is forwarded only when the card layer says the tap counts;
  *   - ANYTHING ELSE that is a tap is refused, whoever tapped: callback data in no known lane,
  *     data that only resembles eve's (`eve:` with something other than a base-36 number after
  *     it), no data at all, a `callback_query` that is not an object. If a later eve changes how
@@ -46,15 +50,16 @@
  * gate looks at `callback_query` regardless, so an update carrying both cannot use the one to
  * hide the other.)
  *
- * The question asked is "is this Telegram id an allowed approver". No id is hard-coded here and
- * no new environment variable is introduced: adding a second approver stays a comma in
- * `TELEGRAM_PRINCIPAL_ID`, not a code change.
+ * No id is hard-coded here and no new environment variable is introduced: the allow-list is
+ * `TELEGRAM_PRINCIPAL_ID`, and the owner is its first id (`@lares/agent-kit/principals`).
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isAllowedPrincipalId } from "@lares/agent-kit/principals";
+import { decideTap, type CardDb } from "@lares/agent-kit/card-layer";
+import { CARD_REFUSED, CARD_UNRECOGNISED } from "@lares/agent-kit/card-sentences";
+import { isAllowedPrincipalId, ownerPrincipalId } from "@lares/agent-kit/principals";
 import { parseProposalCallback } from "./proposal-buttons.js";
 
 /**
@@ -66,12 +71,6 @@ export const HITL_CALLBACK_PREFIX = "eve:";
 
 /** eve's own prefix for a sign-in button (`TELEGRAM_AUTHORIZATION_CALLBACK_PREFIX`). */
 export const SIGN_IN_CALLBACK_PREFIX = "eve_auth:";
-
-/** What a refused tapper who is not an allowed approver is told, on the tap itself. Names no payload. */
-export const TAP_REFUSAL = "Only this installation's owner can answer an approval. Nothing was done.";
-
-/** What anyone is told about a tap the gate does not recognise. Names no payload. */
-export const TAP_UNRECOGNISED = "This button is not recognised, so nothing was done.";
 
 /** Which lane a tap's callback data belongs to. */
 export type TapLane = "approval" | "sign-in" | "proposal" | "unrecognised";
@@ -96,10 +95,11 @@ export interface RefusedTap {
   chatId: string | null;
 }
 
-/** A refused tap, with why. */
+/** A refused tap, with why, and the sentence the card layer gave for it (said on the tap itself). */
 export interface TapRefusal extends RefusedTap {
   /** `not-allowed`: the tapper may not answer. `unrecognised`: the gate does not know the button. */
   reason: "not-allowed" | "unrecognised";
+  sentence: string;
 }
 
 /** Telegram sends numeric ids; eve's normalisation stringifies them. Accept both, refuse the rest. */
@@ -117,10 +117,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 /**
  * A tap that must NOT be forwarded, or `null` for everything that may be: a message, a proposal
- * button, one of eve's own buttons tapped by an allowed approver, a body that is not a tap at
+ * button, one of eve's own buttons whose tap the card layer accepts, a body that is not a tap at
  * all. Never throws.
  */
-export function refusedTap(raw: string, env: NodeJS.ProcessEnv = process.env): TapRefusal | null {
+export async function refusedTap(raw: string, env: NodeJS.ProcessEnv = process.env, db?: CardDb): Promise<TapRefusal | null> {
   let update: unknown;
   try {
     update = JSON.parse(raw);
@@ -134,22 +134,34 @@ export function refusedTap(raw: string, env: NodeJS.ProcessEnv = process.env): T
 
   // From here on the update IS a tap, so every way out that is not a positive recognition refuses.
   const query = asRecord(envelope["callback_query"]);
-  const chat = asRecord(asRecord(query?.["message"])?.["chat"]);
-  const refusal = (reason: TapRefusal["reason"]): TapRefusal => ({
+  const message = asRecord(query?.["message"]);
+  const chat = asRecord(message?.["chat"]);
+  const refusal = (reason: TapRefusal["reason"], sentence: string): TapRefusal => ({
     callbackQueryId: asId(query?.["id"]) ?? "",
     chatId: asId(chat?.["id"]) ?? null,
     reason,
+    sentence,
   });
-  if (query === undefined) return refusal("unrecognised");
+  if (query === undefined) return refusal("unrecognised", CARD_UNRECOGNISED);
 
   const lane = tapLane(query["data"]);
   if (lane === "proposal") return null; // Its own identity check, in `handleProposalCallback`.
 
   const from = asRecord(query["from"]);
   const tapper = from === undefined || from["is_bot"] === true ? undefined : asId(from["id"]);
-  if (!isAllowedPrincipalId("telegram", tapper, env)) return refusal("not-allowed");
-  if (lane === "unrecognised") return refusal("unrecognised");
-  return null;
+  // The door's own gate: is the sender on this door's allow-list. Who may answer is the layer's.
+  if (!isAllowedPrincipalId("telegram", tapper, env)) return refusal("not-allowed", CARD_REFUSED);
+  if (lane === "unrecognised") return refusal("unrecognised", CARD_UNRECOGNISED);
+
+  // Where the button sits: adapter function 3, read off the update Telegram signed.
+  const channel = asId(chat?.["id"]);
+  const messageId = asId(message?.["message_id"]);
+  const cards = channel !== undefined && messageId !== undefined ? [{ door: "telegram", address: { channel, message: messageId } }] : [];
+  const verdict = await decideTap(
+    { door: "telegram", tapper, cards },
+    { ownerOf: () => ownerPrincipalId("telegram", env), ...(db === undefined ? {} : { db }) },
+  );
+  return verdict.deliver ? null : refusal("not-allowed", verdict.sentence);
 }
 
 // ── The live probe's capture ────────────────────────────────────────────────────────────
@@ -214,8 +226,8 @@ export function tapShape(raw: string): Record<string, unknown> | null {
  * `null`. Kept under the name and with the shape this module has always exported, for callers
  * that only ask whether a tap is refused.
  */
-export function refusedApprovalTap(raw: string, env: NodeJS.ProcessEnv = process.env): RefusedTap | null {
-  const refused = refusedTap(raw, env);
+export async function refusedApprovalTap(raw: string, env: NodeJS.ProcessEnv = process.env): Promise<RefusedTap | null> {
+  const refused = await refusedTap(raw, env);
   return refused === null ? null : { callbackQueryId: refused.callbackQueryId, chatId: refused.chatId };
 }
 

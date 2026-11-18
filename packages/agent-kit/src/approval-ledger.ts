@@ -196,6 +196,134 @@ export async function recordAnswer(
 }
 
 /**
+ * Writes down where a card came from: the door it was raised on and the person it was put to (the
+ * one who started the conversation). Written when the card opens; a value already there is kept.
+ * `shownWhole` is given by a door whose cards are always whole (web chat); the others write it when
+ * they post. Questions are put to a person; an approval is answered by the owner whoever it was put to, so
+ * for an approval `putTo` only says who asked.
+ *
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
+ */
+export async function recordCardOrigin(
+  db: Queryable,
+  a: { requestId: string; door: string; putTo?: string; shownWhole?: boolean },
+): Promise<void> {
+  try {
+    await db.query(
+      `UPDATE approval_asks SET door = COALESCE(door, $2), put_to = COALESCE(put_to, $3),
+                                shown_whole = COALESCE(shown_whole, $4)
+       WHERE request_id = $1`,
+      [a.requestId, a.door, a.putTo ?? null, a.shownWhole ?? null],
+    );
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/** Where a card sits on a platform: the chat it is in and its message id, both strings (Slack: the
+ *  channel id and the message `ts`; Telegram: the chat id and the message id). The record stores
+ *  it as JSON and finds a card by it. */
+export interface CardAddress { readonly channel: string; readonly message: string }
+
+type PostedCard = { requestId: string; door: string; address: CardAddress; shownWhole: boolean };
+
+/** Addresses a door wrote before the card's row existed, kept until the record hook writes the row
+ *  (both run on the same event, in either order). Bounded; the oldest goes first. */
+const postedBeforeRow = new Map<string, PostedCard>();
+const POSTED_BEFORE_ROW_MAX = 256;
+
+async function writePosted(db: Queryable, a: PostedCard): Promise<number | undefined> {
+  const result = await db.query(
+    `UPDATE approval_asks SET door = COALESCE(door, $2), card_address = $3::jsonb, shown_whole = $4
+     WHERE request_id = $1 AND card_address IS NULL`,
+    [a.requestId, a.door, JSON.stringify(a.address), a.shownWhole],
+  );
+  return (result as { rowCount?: number | null }).rowCount ?? undefined;
+}
+
+/**
+ * Writes down, once the door has posted a card, where it sits and whether it was shown whole
+ * (nothing cut). The first address wins. The door and the record hook both act on the card's
+ * opening and may run in either order: when the door is first there is no row yet, so the address
+ * is kept in memory and {@link applyPostedCard} writes it as soon as the hook has made the row.
+ * Nothing is lost silently: a card whose row never appears is logged once when it is dropped.
+ *
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
+ */
+export async function recordCardPosted(db: Queryable, a: PostedCard): Promise<void> {
+  try {
+    if ((await writePosted(db, a)) === 0) {
+      postedBeforeRow.set(a.requestId, a);
+      if (postedBeforeRow.size > POSTED_BEFORE_ROW_MAX) {
+        const oldest = postedBeforeRow.keys().next().value as string;
+        postedBeforeRow.delete(oldest);
+        console.warn("approval-ledger: a posted card never got a record row, so its address was dropped; a tap on it is an unknown card");
+      }
+    }
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/** Called by the record hook right after it has made a card's row: writes the address a door
+ *  posted first, if there is one. Best-effort; never throws. */
+export async function applyPostedCard(db: Queryable, requestId: string): Promise<void> {
+  const kept = postedBeforeRow.get(requestId);
+  if (kept === undefined) return;
+  postedBeforeRow.delete(requestId);
+  try {
+    await writePosted(db, kept);
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/** Empties the kept addresses. Test-only. */
+export function resetPostedBeforeRowForTests(): void {
+  postedBeforeRow.clear();
+}
+
+/**
+ * Writes down a question card (a request for words or a choice that is not an approval). It is a
+ * row of its own kind: no tool call stands behind it, so the call id is derived from the request
+ * id and the payload hash is of the prompt. The card record lists questions so that a late tap on
+ * one is told apart from a tap on a card nobody knows.
+ *
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
+ */
+export async function recordQuestion(
+  db: Queryable,
+  a: { requestId: string; agent: string; prompt: string; door?: string; putTo?: string },
+): Promise<void> {
+  try {
+    await db.query(
+      `INSERT INTO approval_asks (request_id, call_id, agent, tool, payload_hash, kind, door, put_to)
+       VALUES ($1, $2, $3, 'question', $4, 'question', $5, $6)
+       ON CONFLICT DO NOTHING`,
+      [a.requestId, `question:${a.requestId}`, a.agent, payloadFingerprint("question", a.prompt), a.door ?? null, a.putTo ?? null],
+    );
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/** Settles a question card: `answered` when a person answered it, `ignored` when nobody did. */
+export async function recordQuestionEnd(
+  db: Queryable,
+  a: { requestId: string; answered: boolean },
+): Promise<void> {
+  try {
+    await db.query(
+      `UPDATE approval_asks SET answered_at = now(), outcome = $2
+       WHERE request_id = $1 AND kind = 'question' AND outcome IS NULL`,
+      [a.requestId, a.answered ? "answered" : "ignored"],
+    );
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+  }
+}
+
+/**
  * Reads the card for a call id, or null when there is none — a missing table, a missing row, or
  * an unreadable database all answer null rather than throwing.
  *
