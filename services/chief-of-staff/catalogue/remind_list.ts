@@ -3,12 +3,13 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { getPool } from "@lares/agent-kit/db";
+import { doorName } from "@lares/agent-kit/card-sentences";
 import { listPending } from "../lib/reminders-store.js";
 
 export default defineTool({
   description:
     "List the owner's pending reminders, soonest due first: id, when it's due, recurrence " +
-    "(if any), the message text, and which door it's pinned to.",
+    "(if any), the message text, and which door it's pinned to (by name, like Telegram).",
   inputSchema: z.object({}),
   async execute() {
     const rows = await listPending(getPool());
@@ -18,7 +19,8 @@ export default defineTool({
         dueAt: r.due_at.toISOString(),
         recurrence: r.recurrence,
         message: r.payload.text,
-        door: r.payload.door,
+        // The word a person reads ("Telegram"), not the stored id ("telegram").
+        door: doorName(r.payload.door),
         createdBy: r.created_by,
       })),
     };

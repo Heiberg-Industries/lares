@@ -296,8 +296,16 @@ before the build.
   says where the whole card can be read, from the door table (each row says where a person is sent,
   in words that are true of that place: today the console's "Waiting on you" page). The layer owns
   the "shown whole" mark on the card record and the sentence; it does not remove the button. On
-  Telegram eve's patched card does that; Slack still keeps Approve on a card it cut, and its table
-  row says it does not show a long card whole until the Slack renderer draws one across blocks.
+  Telegram eve's patched card does that. Slack draws the card's one shape (`approvalCardShape` in
+  the kit: title, then the exact change with every detail) across as many sections as it needs
+  (3,000 characters a section, 50 blocks a message), so an ordinary note, draft or calendar change is
+  shown whole and keeps Approve. Only a card that does not fit one message is cut: it says how many
+  characters are not shown, offers no Approve (a second `patches/eve.patch` hunk in eve's Slack card
+  code asks the kit, because eve rejects a renderer that changes the buttons) and Deny stays.
+- The sentence for a shortened card names only places that hold that card: a card is on the door it
+  was raised on and in the console's Waiting on you page, so Slack is not named for a card cut on
+  Telegram (row field `listsCardsFromEveryDoor`). A door appears only while it is connected for the
+  owner.
 - A door is a row in the layer's table (who answers an approval, what an unknown card means, the
   owner's id, where a long card is read) plus an adapter; the layer names no door in its logic.
 - Erasing a person also removes the card records put to them (`put_to`), matched on every alias.

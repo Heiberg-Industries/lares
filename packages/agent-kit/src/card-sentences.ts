@@ -42,6 +42,28 @@ export const CARD_NOTE_CLOSED_TEXT = "The request above is closed.";
 /** The name of web chat in a sentence. */
 export const WEB_CHAT_NAME = "web chat";
 
+/** The plain name of a door, as a person reads it. Ids that are not a door pass through. */
+export const DOOR_NAMES: Readonly<Record<string, string>> = Object.freeze({
+  slack: "Slack",
+  telegram: "Telegram",
+  console: WEB_CHAT_NAME,
+  web: WEB_CHAT_NAME,
+});
+
+/** "Telegram", not "telegram": every card or reminder line that names a door says this word. */
+export function doorName(door: string): string {
+  return Object.hasOwn(DOOR_NAMES, door) ? DOOR_NAMES[door]! : door;
+}
+
+/** The markers a cut leaves in a card's text: the kit's own notices (`approval-summary.ts`) and
+ *  the framework patch's. A text with one was cut. */
+const CUT_MARKERS = /— shortened —|\(shortened[,)]|…\(truncated\)/;
+
+/** True when the text of a card shows the whole of what it is about. */
+export function textShownWhole(text: string): boolean {
+  return !CUT_MARKERS.test(text);
+}
+
 /** The console page where a card raised on any door is shown whole and can be answered. It is not
  *  web chat (the Chat page holds its own conversations), so a sentence that sends a person there
  *  names this page. */

@@ -178,6 +178,56 @@ describe("a shortened card (D-6)", () => {
   });
 });
 
+describe("where a person is sent to read a card too long for its door", () => {
+  const SLACK_LIST = "SLACK_ALLOWED_USER_IDS";
+  const sentence = (env: NodeJS.ProcessEnv, link: string | null) => shortenedCardSentence(placesShowingWhole(env), link);
+
+  it("Slack's row says it draws a long card whole; the console's page is the only place that lists every door's cards", () => {
+    expect(CARD_DOORS["slack"]!.showsLongCardWhole).toBe(true);
+    expect(CARD_DOORS["slack"]!.listsCardsFromEveryDoor).toBe(false);
+    expect(CARD_DOORS["telegram"]!.showsLongCardWhole).toBe(false);
+    expect(CARD_DOORS["console"]!.listsCardsFromEveryDoor).toBe(true);
+  });
+
+  it.each([
+    ["Slack connected, console address set", { [SLACK_LIST]: "U_OWNER" }, "https://console.example/waiting?request=r"],
+    ["Slack connected, no console address", { [SLACK_LIST]: "U_OWNER" }, null],
+    ["Slack not connected, console address set", {}, "https://console.example/waiting?request=r"],
+    ["Slack not connected, no console address", {}, null],
+  ] as const)("%s: names the page in the console, never Slack (the request is not on Slack), and a link only when there is one", (_name, env, link) => {
+    const text = sentence(env, link);
+    expect(text).toContain("Open it in the Waiting on you page in the console, where it shows in full, to approve it.");
+    expect(text).not.toContain("Slack");
+    expect(text).not.toContain("Telegram");
+    expect(text.includes("http")).toBe(link !== null);
+    expect(text.endsWith("\nDeny still works here.")).toBe(true);
+  });
+
+  it("a door that lists every door's cards is named only while it is connected, best first", () => {
+    const doors = {
+      first: { ...CARD_DOORS["console"]!, whereToOpen: "First", opensWithLink: false, connected: (env: NodeJS.ProcessEnv) => env["FIRST"] === "yes" },
+      console: CARD_DOORS["console"]!,
+    };
+    expect(placesShowingWhole({ FIRST: "yes" }, doors).map((p) => p.where)).toEqual(["First", "the Waiting on you page in the console"]);
+    expect(placesShowingWhole({}, doors).map((p) => p.where)).toEqual(["the Waiting on you page in the console"]);
+    const broken = { ...doors, first: { ...doors.first, connected: () => { throw new Error("unreadable"); } } };
+    expect(placesShowingWhole({}, broken).map((p) => p.where)).toEqual(["the Waiting on you page in the console"]);
+  });
+
+  it("a door that shows a long card whole but lists only its own is never named for a card cut elsewhere", () => {
+    const only = { slack: { ...CARD_DOORS["slack"]!, connected: () => true } };
+    expect(placesShowingWhole({}, only)).toEqual([]);
+  });
+
+  it("door names are plain words", () => {
+    expect(sentences.doorName("telegram")).toBe("Telegram");
+    expect(sentences.doorName("slack")).toBe("Slack");
+    expect(sentences.doorName("console")).toBe("web chat");
+    expect(sentences.doorName("web")).toBe("web chat");
+    for (const [id, row] of Object.entries(CARD_DOORS)) expect(row.label, id).toBe(sentences.doorName(id));
+  });
+});
+
 describe("the card record lookup", () => {
   it("two rows for one card are as good as none", async () => {
     const rows = [card({ request_id: "a" }), card({ request_id: "a" })];

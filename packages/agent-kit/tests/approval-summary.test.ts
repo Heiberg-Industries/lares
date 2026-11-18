@@ -14,6 +14,8 @@ import {
   DETAILS_VALUES_SHORTENED,
   SUMMARY_SHORTENED,
   shortenedNotice,
+  approvalCardShape,
+  CARD_TITLE_SHOWN_MAX,
 } from "../src/approval-summary.js";
 import { inboxNotePath } from "../src/note-paths.js";
 
@@ -134,7 +136,7 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
     // "tomorrow 09:00" is not a parseable date — it falls through unchanged rather than
     // rendering "Invalid Date".
     expect(summarizeApproval("remind_set", { message: "file VAT", dueAt: "tomorrow 09:00", recurrence: "monthly", door: "telegram" }))
-      .toBe('Set reminder "file VAT" for tomorrow 09:00 repeating monthly via telegram');
+      .toBe('Set reminder "file VAT" for tomorrow 09:00 repeating monthly via Telegram');
   });
 
   it("renders the CRM writes distinctly, including the conditional one", () => {
@@ -282,7 +284,7 @@ describe("dates on a card are for a human, not a machine", () => {
     const summary = summarizeApproval("remind_set", {
       message: "Test klokka", dueAt: "2026-08-19T09:00:00+02:00", door: "slack",
     });
-    expect(summary).toBe('Set reminder "Test klokka" for Wednesday 2026-08-19 09:00 (Europe/Berlin) via slack');
+    expect(summary).toBe('Set reminder "Test klokka" for Wednesday 2026-08-19 09:00 (Europe/Berlin) via Slack');
     expect(summary).not.toContain("T09:00:00");
   });
 
@@ -725,5 +727,72 @@ describe("withCardTitle — a gated tool's approval is always the object form wi
       expect((a.request as () => unknown)()).toBe("user-approval");
       expect(a.prompt).toBe(cardTitle);
     }
+  });
+});
+
+describe("approvalCardShape — one card shape for every door", () => {
+  const MAIL = { to: ["a@example.com", "b@example.com", "c@example.com"], subject: "Weekly notes", bodyText: "Hello,\n\n" + "word ".repeat(2_000) };
+
+  it("holds the title and the exact change in full, and the short form Telegram reads", () => {
+    const shape = approvalCardShape("gmail_send", MAIL);
+    expect(shape.title).toBe('Send email to a@example.com and 2 more — "Weekly notes" (shortened)');
+    // Every recipient, the subject and the whole body: nothing cut, nothing admitted as cut.
+    expect(shape.body).toHaveLength(1);
+    const text = shape.body[0]!.text;
+    expect(text).toContain("*To:* a@example.com, b@example.com, c@example.com");
+    expect(text).toContain("*Subject:* Weekly notes");
+    expect(text.trimEnd().endsWith("word")).toBe(true);
+    expect(text).not.toContain("shortened");
+    expect(text.length).toBeGreaterThan(DETAILS_MAX_LENGTH);
+    // The short form is what the Telegram card has always read: cut at the same length, with the notice.
+    expect(shape.shortDetails).toBe(detailsForApproval("gmail_send", MAIL));
+    expect(shape.shortDetails!.length).toBeLessThanOrEqual(DETAILS_MAX_LENGTH);
+    expect(shape.shortDetails).toContain("— shortened —");
+  });
+
+  it("a long address is shown whole in the body, as it was typed", () => {
+    const address = `${"a".repeat(90)}@example.com`;
+    const shape = approvalCardShape("calendar_create_event", { summary: "Lunch", start: "2026-12-01T11:00:00Z", attendees: [address] });
+    expect(shape.body.map((p) => p.text).join("\n")).toContain(address);
+  });
+
+  it("a summarised tool whose title was cut gets the whole request as JSON under it", () => {
+    const message = "m".repeat(120);
+    const input = { message, dueAt: "2026-09-01T08:00:00Z", door: "telegram" };
+    const shape = approvalCardShape("remind_set", input);
+    expect(shape.title).toContain("(shortened)");
+    expect(shape.title).toContain("via Telegram");
+    expect(shape.body).toEqual([{ kind: "json", text: JSON.stringify(input, null, 2) }]);
+  });
+
+  it("a summarised tool whose title says everything has no body", () => {
+    const shape = approvalCardShape("remind_set", { message: "file VAT", dueAt: "2026-09-01T08:00:00Z", door: "slack" });
+    expect(shape.title).toContain("via Slack");
+    expect(shape.body).toEqual([]);
+    expect(shape.shortDetails).toBeUndefined();
+  });
+
+  it("a tool nobody summarised gets the whole request as JSON", () => {
+    const input = { target: "x", n: 2 };
+    expect(approvalCardShape("some_unknown_tool", input).body).toEqual([{ kind: "json", text: JSON.stringify(input, null, 2) }]);
+    expect(approvalCardShape("some_unknown_tool", {}).body).toEqual([]);
+  });
+
+  it("a title longer than eve's Slack card shows is repeated whole in the body", () => {
+    const shape = approvalCardShape("calendar_create_event", { summary: "s".repeat(100), start: "2026-12-01T11:00:00Z", attendees: ["a".repeat(100) + "@e.com", "b@e.com"], notify: true });
+    expect(shape.title!.length).toBeGreaterThan(CARD_TITLE_SHOWN_MAX);
+    expect(shape.body.some((p) => p.kind === "text" && p.text === shape.title)).toBe(true);
+  });
+
+  it("never throws, whatever it is given", () => {
+    for (const input of [null, undefined, 3, "text", [], { a: 1n }, { get x(): never { throw new Error("no"); } }]) {
+      expect(() => approvalCardShape("gmail_send", input)).not.toThrow();
+      expect(() => approvalCardShape(42, input)).not.toThrow();
+    }
+  });
+
+  it("leaves the cut flag clean for the next card", () => {
+    approvalCardShape("gmail_send", MAIL);
+    expect(summarizeApproval("gmail_send", { to: ["a@example.com"], subject: "Hi" })).toBe('Send email to a@example.com — "Hi"');
   });
 });

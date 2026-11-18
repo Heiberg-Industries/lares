@@ -32,7 +32,8 @@ import {
   CARD_REFUSED,
   CARD_UNCHECKED,
   CONSOLE_WAITING_PAGE_NAME,
-  WEB_CHAT_NAME,
+  DOOR_NAMES,
+  textShownWhole,
   type ShortenedCardPlace,
 } from "./card-sentences.js";
 import type { CardAddress } from "./approval-ledger.js";
@@ -48,9 +49,17 @@ export interface CardDoor {
   readonly whereToOpen: string;
   /** Whether {@link whereToOpen} has a page address the sentence can give (the console does). */
   readonly opensWithLink: boolean;
-  /** Whether the door shows a long card whole (every field, nothing cut). A door that does not is
-   *  where a shortened card gets no Approve. */
+  /** Whether the door shows a long card whole (every field, nothing cut, as many messages or blocks
+   *  as it takes). A door that does not is where a shortened card gets no Approve. */
   readonly showsLongCardWhole: boolean;
+  /** Whether the door lists the cards that were raised on OTHER doors. A card is only on the door
+   *  it was raised on, except in the console's Waiting on you page, which lists every door's. So
+   *  only a door that does this can be where a person is sent to read a card raised elsewhere. */
+  readonly listsCardsFromEveryDoor: boolean;
+  /** Whether this door is connected for the person who answers (the installation's owner, for an
+   *  approval): a door the person cannot reach is never named as a place to go. Read from what the
+   *  process already holds (the allow-list); absent means always connected. */
+  readonly connected?: (env: NodeJS.ProcessEnv) => boolean;
   /** Whether the door can show buttons at all (ADR-0025 rule 5, item 5). A door that cannot never
    *  lets typed text answer an approval. */
   readonly canShowButtons: boolean;
@@ -66,20 +75,22 @@ export interface CardDoor {
 
 /**
  * One row per door that shows cards. In the order a person is pointed to when a card is too long:
- * Slack first, Telegram, the console last. Slack's flag is false until Slack draws a long card
- * whole across blocks; flipping it (and nothing else) makes the sentence name Slack.
+ * Slack first, Telegram, the console last. Slack draws a long card whole across blocks, so its row
+ * says so; it lists only the cards raised on Slack, so a card cut elsewhere is not sent there.
  */
 export const CARD_DOORS: Readonly<Record<string, CardDoor>> = Object.freeze({
   slack: {
-    label: "Slack", whereToOpen: "Slack", opensWithLink: false, showsLongCardWhole: false, canShowButtons: true,
+    label: DOOR_NAMES["slack"]!, whereToOpen: "Slack", opensWithLink: false, showsLongCardWhole: true, listsCardsFromEveryDoor: false,
+    connected: (env) => ownerPrincipalId("slack", env) !== undefined, canShowButtons: true,
     answeredBy: "owner", unknownCard: "owner-goes-through", ownerId: (env) => ownerPrincipalId("slack", env),
   },
   telegram: {
-    label: "Telegram", whereToOpen: "Telegram", opensWithLink: false, showsLongCardWhole: false, canShowButtons: true,
+    label: DOOR_NAMES["telegram"]!, whereToOpen: "Telegram", opensWithLink: false, showsLongCardWhole: false, listsCardsFromEveryDoor: false,
+    connected: (env) => ownerPrincipalId("telegram", env) !== undefined, canShowButtons: true,
     answeredBy: "owner", unknownCard: "owner-goes-through", ownerId: (env) => ownerPrincipalId("telegram", env),
   },
   console: {
-    label: WEB_CHAT_NAME, whereToOpen: CONSOLE_WAITING_PAGE_NAME, opensWithLink: true, showsLongCardWhole: true, canShowButtons: true,
+    label: DOOR_NAMES["console"]!, whereToOpen: CONSOLE_WAITING_PAGE_NAME, opensWithLink: true, showsLongCardWhole: true, listsCardsFromEveryDoor: true, canShowButtons: true,
     answeredBy: "card-member", unknownCard: "not-waiting",
   },
 });
@@ -88,20 +99,54 @@ export function isCardDoor(door: unknown): door is string {
   return typeof door === "string" && Object.hasOwn(CARD_DOORS, door);
 }
 
-/** Where a person is sent to read a card too long for the door it came on: the doors that show a
- *  long card whole, best first. The input of {@link shortenedCardSentence}. */
-export function placesShowingWhole(): ShortenedCardPlace[] {
-  return Object.values(CARD_DOORS).filter((d) => d.showsLongCardWhole).map((d) => ({ where: d.whereToOpen, hasLink: d.opensWithLink }));
+/**
+ * Where a person is sent to read a card too long for the door it came on: the doors that show a
+ * long card whole, are connected for this person, and hold this card, best first. The input of
+ * {@link shortenedCardSentence}.
+ *
+ * A card is on the door it was raised on and in the console's Waiting on you page, so the places
+ * are the doors that list every door's cards. A door that shows long cards whole but lists only its
+ * own (Slack) is not named for a card that was cut somewhere else: a sentence that named it would
+ * send a person to look for a request that is not there.
+ */
+export function placesShowingWhole(
+  env: NodeJS.ProcessEnv = process.env,
+  doors: Readonly<Record<string, CardDoor>> = CARD_DOORS,
+): ShortenedCardPlace[] {
+  return Object.values(doors)
+    .filter((d) => d.showsLongCardWhole && d.listsCardsFromEveryDoor && isConnected(d, env))
+    .map((d) => ({ where: d.whereToOpen, hasLink: d.opensWithLink }));
 }
 
-/** The markers a cut leaves in a card's text: the kit's own notices (`approval-summary.ts`) and
- *  the framework patch's. A text with one was cut. */
-const CUT_MARKERS = /— shortened —|\(shortened[,)]|…\(truncated\)/;
-
-/** True when the text of a card shows the whole of what it is about. */
-export function textShownWhole(text: string): boolean {
-  return !CUT_MARKERS.test(text);
+function isConnected(door: CardDoor, env: NodeJS.ProcessEnv): boolean {
+  try {
+    return door.connected === undefined || door.connected(env);
+  } catch {
+    return false; // a door whose state cannot be read is not named
+  }
 }
+
+/**
+ * The console's Waiting on you page for one request, from `LARES_CONSOLE_URL`, or null when it is
+ * unset or not an http(s) address. The page selects the request by eve's interaction id
+ * (`?request=<id>`).
+ */
+export function waitingPageLink(interactionId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env["LARES_CONSOLE_URL"]?.trim();
+  if (!raw) return null;
+  let base: URL;
+  try {
+    base = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (base.protocol !== "https:" && base.protocol !== "http:") return null;
+  const url = new URL("waiting", base.href.endsWith("/") ? base.href : `${base.href}/`);
+  url.searchParams.set("request", interactionId);
+  return url.href;
+}
+
+export { textShownWhole };
 
 /* ------------------------------------------------------------------------------------------- *
  * The card record, read.
