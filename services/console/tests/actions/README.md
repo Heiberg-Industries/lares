@@ -48,6 +48,25 @@ The generator follows each page, action and route into the guard calls it makes,
 - Checks made outside the console. For example the keeper decides, per agent, whether a member may edit it. The inventory says `member` for those rows; the real answer is narrower.
 - Controls that are hidden or shown by client-side code. A button the page hides from a non-owner is not a guard.
 - A guard written in a shape the generator does not recognise. That shows up as `unknown`, never as a silent `owner`.
+- The gate in `middleware.ts` (see the next section).
+
+## How actions are found
+
+Every file under `app`, `components` and `lib` that starts with `"use server"` is read. Each exported function is a row. An export that is not a plain function (a wrapped call, a re-export, a default export, a destructured name) is a row marked `unknown`, because the browser can still call it. A `"use server"` inside a function body is a row `inline:<file>#<number>`, also `unknown` until resolved. The test counts every `"use server"` in those three folders with a separate scanner and fails if the count differs from what the generator listed (`useServerDirectives` in the inventory).
+
+## Not covered: the gate in `middleware.ts`
+
+`middleware.ts` runs before every page and route, and the inventory does not list it as rows. The generator reads functions and their guards; the gate is a chain of path and method checks that it cannot turn into truthful per-page rows. When a page or route is replaced, whoever does it must check these by hand:
+
+- Any request that is not a read (not GET, HEAD or OPTIONS) must come from the console's own address, or it is refused. The three exceptions below are let through before this check.
+- Slack and Telegram event posts (`/api/doors/<name>/slack/events` and `/telegram/events`) are let through by path and method alone, for the platforms to call. The console does not check who sent them; it passes the platform's signature on to be checked further in.
+- The two money-gateway calls (`/v1/gateway-budget/admit` and `/settle`) are let through the same way, for machine callers. The signature is passed on and checked further in.
+- `/api/private-metadata/credential` is let through for a server to call. The route itself checks the bearer token.
+- `/api/auth/login`, `/callback` and `/logout`, `/sign-in` and `/invite` are reachable without a session cookie.
+- Every other path with no well-formed session cookie is sent to sign-in. Having a cookie only lets the request through to the page; the page or route still has to check who the person is, which is what the rows list.
+- Signed-in pages are sent with a header telling the browser not to keep them.
+
+Removing or loosening any of these is a change to who can reach the console, and is its own pull request, decided by the owner.
 
 ## When a row is `unknown`
 

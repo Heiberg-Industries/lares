@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import ts from "typescript";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 // Real lib/auth with the same stand-ins tests/auth.test.ts uses: used only to prove that the guards the
@@ -9,7 +11,7 @@ vi.mock("../../lib/db", () => ({ pool: { query: mocks.query } }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: mocks.cookie }) }));
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`redirect:${path}`); } }));
 
-import { generate, inventoryPath, overridesPath, render, type Overrides, type Row } from "./generate";
+import { consoleRoot, generate, inventoryPath, overridesPath, render, scanActionSource, type Overrides, type Row } from "./generate";
 import { isConsoleOwner, requireConsoleMember, requireConsolePage, requireMember, verify } from "../../lib/auth";
 
 const REGENERATE = "Run `pnpm -C services/console run actions:inventory`, read the diff, and commit it on purpose.";
@@ -20,6 +22,53 @@ const overrides = JSON.parse(readFileSync(overridesPath, "utf8")) as Overrides;
 const inventory = generate();
 const rows: Row[] = [...inventory.pages, ...inventory.actions, ...inventory.routes];
 const pages = inventory.pages.filter(p => p.kind === "page");
+
+/** Counts "use server" string literals with the TypeScript scanner, a different route from the generator's tree walk. */
+function countDirectives(text: string): number {
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.JSX, text);
+  let count = 0;
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    if (token === ts.SyntaxKind.StringLiteral && scanner.getTokenValue() === "use server") count++;
+  }
+  return count;
+}
+const sourceFiles = (folder: string): string[] =>
+  readdirSync(folder).flatMap(name => {
+    const path = join(folder, name);
+    if (name === "node_modules" || name === ".next") return [];
+    return statSync(path).isDirectory() ? sourceFiles(path) : /\.tsx?$/.test(name) ? [path] : [];
+  });
+
+describe("action discovery does not miss anything", () => {
+  it("accounts for every \"use server\" directive in app, components and lib, at the top of a file or inside a function", () => {
+    let onDisk = 0;
+    for (const folder of ["app", "components", "lib"]) for (const file of sourceFiles(join(consoleRoot, folder))) onDisk += countDirectives(readFileSync(file, "utf8"));
+    expect(inventory.useServerDirectives, "A \"use server\" directive exists that the generator did not list. Find it with grep and make the generator read it.").toBe(onDisk);
+  });
+
+  it("turns an exported name it cannot read as a function into an unknown row (fixture)", () => {
+    const wrapped = scanActionSource("fixture.ts", `"use server";\nexport const danger = wrap(async () => {});\nexport async function ok() {}\nexport const arrow = async () => {};\n`);
+    expect(wrapped).toMatchObject({ fileLevel: true, functions: ["ok", "arrow"], unrecognised: ["danger"], inline: 0 });
+    const others = scanActionSource("fixture.ts", `'use server';\nexport { a } from "./a";\nexport * from "./b";\nexport default async function () {}\nexport const { x } = obj;\nexport type T = string;\nexport interface I {}\n`);
+    expect(others.unrecognised).toEqual(["a", "*", "default", "(destructured export)"]);
+    expect(others.functions).toEqual([]);
+  });
+
+  it("finds a directive inside a function body, and does not count a file without one (fixture)", () => {
+    const page = scanActionSource("page.tsx", `export default function Page() {\n  async function save() {\n    "use server";\n  }\n  return null;\n}\n`);
+    expect(page).toMatchObject({ fileLevel: false, inline: 1, functions: [], unrecognised: [] });
+    expect(scanActionSource("plain.ts", `export const a = 1; // "use server" in a comment\n`)).toMatchObject({ fileLevel: false, inline: 0 });
+    const both = scanActionSource("both.ts", `"use server";\nexport async function a() { async function b() { "use server"; } }\n`);
+    expect(both).toMatchObject({ fileLevel: true, inline: 1, functions: ["a"] });
+  });
+
+  it("makes the count check able to fail: counting only the top of the file would miss a hidden directive (fixture)", () => {
+    const text = `"use server";\nexport async function a() { if (x) { "use server"; } }\n`;
+    const scan = scanActionSource("f.ts", text);
+    expect((scan.fileLevel ? 1 : 0) + scan.inline).toBe(countDirectives(text));
+    expect(scan.fileLevel ? 1 : 0).not.toBe(countDirectives(text));
+  });
+});
 
 describe("console action inventory", () => {
   it("is exactly what the generator produces from the code now", () => {

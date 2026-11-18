@@ -50,7 +50,7 @@ export interface Row {
   methods?: string;
   changesState?: boolean;
 }
-export interface Inventory { note: string; pages: Row[]; actions: Row[]; routes: Row[] }
+export interface Inventory { note: string; useServerDirectives: number; pages: Row[]; actions: Row[]; routes: Row[] }
 
 const rank: Record<string, number> = { none: 0, member: 1, owner: 2 };
 const posix = (p: string) => p.split("\\").join("/");
@@ -120,17 +120,46 @@ function functionIndex(file: string): Map<string, FnNode> {
   return index;
 }
 const isExported = (node: ts.Node) => !!ts.canHaveModifiers(node) && !!ts.getModifiers(node)?.some(m => m.kind === ts.SyntaxKind.ExportKeyword);
-function exportedFunctionNames(file: string): string[] {
-  const names: string[] = [];
-  for (const statement of parse(file).statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name && isExported(statement)) names.push(statement.name.text);
-    else if (ts.isVariableStatement(statement) && isExported(statement)) {
-      for (const d of statement.declarationList.declarations) {
-        if (ts.isIdentifier(d.name) && d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) names.push(d.name.text);
+const hasModifier = (node: ts.Node, kind: ts.SyntaxKind) => !!ts.canHaveModifiers(node) && !!ts.getModifiers(node)?.some(m => m.kind === kind);
+
+/** What one source file says about server actions. `unrecognised` are exports the generator cannot read as a plain function. */
+export interface ActionScan { fileLevel: boolean; functions: string[]; unrecognised: string[]; inline: number }
+/** Reads a source text (a real file or a test fixture). A "use server" directive counts at the top of the file and, as `inline`, anywhere else. */
+export function scanActionSource(path: string, text: string): ActionScan {
+  const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, path.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const fileLevel = directive(source);
+  let directives = 0;
+  const visit = (node: ts.Node) => {
+    if (ts.isExpressionStatement(node) && ts.isStringLiteral(node.expression) && node.expression.text === "use server") directives++;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  const functions: string[] = [];
+  const unrecognised: string[] = [];
+  if (fileLevel) {
+    for (const statement of source.statements) {
+      if (ts.isFunctionDeclaration(statement) && isExported(statement)) {
+        if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword) || !statement.name) unrecognised.push("default");
+        else if (statement.body) functions.push(statement.name.text);
+        else unrecognised.push(statement.name.text);
+      } else if (ts.isVariableStatement(statement) && isExported(statement)) {
+        for (const d of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(d.name)) unrecognised.push("(destructured export)");
+          else if (d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) functions.push(d.name.text);
+          else unrecognised.push(d.name.text);
+        }
+      } else if (ts.isExportDeclaration(statement)) {
+        if (statement.isTypeOnly) continue;
+        if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+          for (const e of statement.exportClause.elements) if (!e.isTypeOnly) unrecognised.push(e.name.text);
+        } else unrecognised.push("*");
+      } else if (ts.isExportAssignment(statement)) unrecognised.push("default");
+      else if ((ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement) || ts.isModuleDeclaration(statement)) && isExported(statement)) {
+        unrecognised.push(statement.name && ts.isIdentifier(statement.name) ? statement.name.text : "default");
       }
     }
   }
-  return names;
+  return { fileLevel, functions, unrecognised, inline: directives - (fileLevel ? 1 : 0) };
 }
 function directive(body: ts.Node | undefined): boolean {
   const first = body && (ts.isSourceFile(body) ? body.statements[0] : ts.isBlock(body) ? body.statements[0] : undefined);
@@ -329,12 +358,13 @@ const routePattern = (file: string) => {
 };
 const patternRegex = (pattern: string) => new RegExp(`^${pattern.replace(/[.*+?^${}()|\\]/g, "\\$&").replace(/\\\[\\\.\\\.\\\.[^\]]+\\\]/g, ".+").replace(/\\\[[^\]]+\\\]/g, "[^/]+")}/?$`);
 
-function actionFiles(): { file: string; names: string[] }[] {
-  const found: { file: string; names: string[] }[] = [];
+/** Every file under app, components and lib that has a "use server" directive, at the top or inside a function. */
+function actionFiles(): { file: string; names: string[]; unrecognised: string[]; inline: number; fileLevel: boolean }[] {
+  const found: { file: string; names: string[]; unrecognised: string[]; inline: number; fileLevel: boolean }[] = [];
   for (const folder of ["app", "components", "lib"]) {
     for (const file of walk(join(consoleRoot, folder)).filter(f => /\.tsx?$/.test(f)).sort()) {
-      const source = parse(file);
-      if (directive(source)) found.push({ file, names: exportedFunctionNames(file) });
+      const scan = scanActionSource(file, readFileSync(file, "utf8"));
+      if (scan.fileLevel || scan.inline) found.push({ file, names: scan.functions, unrecognised: scan.unrecognised, inline: scan.inline, fileLevel: scan.fileLevel });
     }
   }
   return found;
@@ -343,7 +373,7 @@ function actionFiles(): { file: string; names: string[] }[] {
 export function generate(overrides: Overrides = JSON.parse(readFileSync(overridesPath, "utf8")) as Overrides): Inventory {
   analysisCache.clear();
   const actionFileList = actionFiles();
-  const actionByFile = new Map(actionFileList.map(a => [a.file, a]));
+  const actionByFile = new Map(actionFileList.filter(a => a.fileLevel).map(a => [a.file, a]));
   const actionId = (file: string, name: string) => `${posix(relative(join(consoleRoot, "app/actions"), file)).replace(/\.tsx?$/, "")}.${name}`;
 
   // routes first: pages refer to them by string
@@ -436,13 +466,26 @@ export function generate(overrides: Overrides = JSON.parse(readFileSync(override
 
   // actions
   const actionRows = new Map<string, Row>();
-  for (const { file, names } of actionFileList) {
+  let directivesAccountedFor = 0;
+  for (const { file, names, unrecognised, inline, fileLevel } of actionFileList) {
     const index = functionIndex(file);
     for (const name of names) {
       const id = actionId(file, name);
       const a = analyseFunction(file, name, index.get(name)!);
       actionRows.set(id, finish({ id, kind: "action", file: rel(file), act: derivedWho(a), guards: [...a.via].sort(), source: "derived", ...(a.ownerExtras ? { ownerExtras: true as const } : {}), usedBy: [] }, overrides));
     }
+    // An export the generator cannot read as a function (a wrapped call, a re-export, a default) is still callable
+    // from the browser: it becomes an unknown row until a person resolves it.
+    for (const name of unrecognised) {
+      const id = actionId(file, name);
+      actionRows.set(id, finish({ id, kind: "action", file: rel(file), act: "unknown", guards: [], source: "derived", usedBy: [] }, overrides));
+    }
+    // A "use server" inside a function body is an action the file-level scan cannot name.
+    for (let n = 1; n <= inline; n++) {
+      const id = `inline:${rel(file)}#${n}`;
+      actionRows.set(id, finish({ id, kind: "action", file: rel(file), act: "unknown", guards: [], source: "derived", usedBy: [] }, overrides));
+    }
+    directivesAccountedFor += (fileLevel ? 1 : 0) + inline;
   }
 
   // pages and the shared layout
@@ -484,6 +527,7 @@ export function generate(overrides: Overrides = JSON.parse(readFileSync(override
   const byRowId = (a: Row, b: Row) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   return {
     note: "Generated by tests/actions/generate.ts. Do not edit by hand; see README.md in this folder.",
+    useServerDirectives: directivesAccountedFor,
     pages: pageRows.sort(byRowId), actions: [...actionRows.values()].sort(byRowId), routes: routeRows.sort(byRowId),
   };
 }
