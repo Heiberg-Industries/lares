@@ -36,7 +36,7 @@ import { installSlackProxyDispatcher } from "./slack-dispatcher.js";
 import { slackUnreadableNote } from "./unreadable-content.js";
 import { respondToTurnFailed } from "./gateway-budget.js";
 import { anyCallCompleted, conversationTooLongSlackSentence, withPartlyDone } from "./conversation-too-long.js";
-import { approvalCardRenderer, slackCardShownWhole } from "./slack-approval-card.js";
+import { approvalCardRenderer, installSlackCardHook, slackCardPostedWhole } from "./slack-approval-card.js";
 
 const DEFAULT_BOT_TOKEN_FILE = "/run/secrets/eve-slack-bot-token";
 const DEFAULT_SIGNING_SECRET_FILE = "/run/secrets/eve-slack-signing-secret";
@@ -221,6 +221,8 @@ installSlackProxyDispatcher();
 /** The Slack door bound to one role. */
 export function slackDoor(settings: SlackDoorSettings): SlackDoor {
   const { role } = settings;
+  // The framework patch asks this whether a card was cut, to leave Approve off it (D-6).
+  installSlackCardHook();
 
   /**
    * A tap on a card (or a typed answer in eve's modal). The door's part is small: it says who
@@ -337,11 +339,11 @@ export function slackDoor(settings: SlackDoorSettings): SlackDoor {
       const requestId = event.data.interactionId;
       const kind = event.data.request?.kind;
       if (typeof requestId !== "string" || (kind !== "approval" && kind !== "question")) return;
-      const cards = (ctx.channel?.state as { interactionCards?: ReadonlyArray<{ channelId?: string; ts?: string; requests?: ReadonlyArray<{ interactionId?: string }> }> } | undefined)?.interactionCards;
+      const cards = (ctx.channel?.state as { interactionCards?: ReadonlyArray<{ channelId?: string; ts?: string; requests?: ReadonlyArray<{ interactionId?: string; blocks?: unknown }> }> } | undefined)?.interactionCards;
       const posted = cards?.find((card) => card.requests?.some((r) => r.interactionId === requestId));
       if (typeof posted?.channelId !== "string" || typeof posted.ts !== "string") return;
       const asked = kind === "approval" ? askedCallOf(ctx, requestId) : undefined;
-      const shownWhole = kind === "approval" && asked !== undefined ? slackCardShownWhole(asked.name, asked.input) : kind === "question";
+      const shownWhole = kind === "approval" && asked !== undefined ? slackCardPostedWhole(asked.name, asked.input, posted.requests?.find((r) => r.interactionId === requestId)?.blocks) : kind === "question";
       await recordCardPosted(getPool(), { requestId, door: "slack", address: { channel: posted.channelId, message: posted.ts }, shownWhole });
     } catch (error) {
       console.warn(`${role} slack: could not record where a card was posted`, slackFailureCode(error));

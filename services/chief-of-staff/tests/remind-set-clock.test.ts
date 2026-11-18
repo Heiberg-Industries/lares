@@ -65,3 +65,14 @@ describe("remind_set clock guard", () => {
     expect(String(error)).not.toMatch(/is in the past/);
   });
 });
+
+describe("remind_set door names", () => {
+  it("takes the plain names a reminder list prints, in any of the two cases", () => {
+    const schema = (remindSet as unknown as { inputSchema: { parse(v: unknown): { door: string } } }).inputSchema;
+    const base = { message: "m", dueAt: "2030-01-01T09:00:00Z" };
+    expect(schema.parse({ ...base, door: "Telegram" }).door).toBe("telegram");
+    expect(schema.parse({ ...base, door: "Slack" }).door).toBe("slack");
+    expect(schema.parse({ ...base, door: "telegram" }).door).toBe("telegram");
+    expect(() => schema.parse({ ...base, door: "web chat" })).toThrow();
+  });
+});
