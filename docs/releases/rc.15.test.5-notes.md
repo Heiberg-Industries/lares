@@ -33,9 +33,11 @@ comparison of digests below):
   Caddy configuration or the Compose files changed since rc.15.test.4.
 - The proxy in front of the console (Caddy) and the database image are copied unchanged from the
   rc.15.test.4 record.
-- The Keeper, the console, both agent images and sync jobs are built from changed files. The
-  egress proxy and the firewall helper are built from files that did not change; a publishing run
-  builds all seven images, so their digests may still differ from rc.15.test.4's.
+- The Keeper, the console, both agent images and sync jobs are built from changed files (the agent
+  kit, and for the agent images and the console the public documentation too). The egress proxy and
+  the firewall helper are listed by the image selector only because the publishing workflow reads the
+  release records; no file of their own changed. A publishing run builds all seven images, so their
+  digests may still differ from rc.15.test.4's.
 
 What the digests show: all seven images built in the three publishing runs have a different digest from
 the one in the rc.15.test.4 record, including the egress proxy and the firewall helper, whose input
