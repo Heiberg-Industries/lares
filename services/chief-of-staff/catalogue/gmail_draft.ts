@@ -1,5 +1,5 @@
-// Create a reply DRAFT in the connected mailbox's Drafts folder (nothing is sent). Drafting is
-// autonomous by default; an installation can re-gate this specific action on the permissions board.
+// Create a reply DRAFT in the connected mailbox's Drafts folder (nothing is sent). A draft writes to
+// the owner's real mailbox, so it follows the definition's mail level: gated means a card first.
 //
 // Set `threadId` (from gmail_read or gmail_search) to make it a reply: the tool reads the
 // thread and sets In-Reply-To, References and the subject itself (lib/reply-threading.ts), so the

@@ -207,16 +207,11 @@ describe("gmail_signature", () => {
 });
 
 // -----------------------------------------------------------------------------------------
-// Draft writes are autonomous by default; sends remain gated.
+// Drafts and sends are both gated by the definition's mail level (tests/gated-writes-ask.test.ts).
 // -----------------------------------------------------------------------------------------
 
 describe("gmail_draft", () => {
   const INPUT = { from: "owner@owner.example", to: ["someone@example.com"], subject: "Re: hi", bodyText: "Thanks!" };
-
-  it("defaults its draft action to autonomous (no approval card)", async () => {
-    expect(gmailDraft.approval).toBeTypeOf("function");
-    await expect(gmailDraft.approval!({ toolInput: INPUT } as never)).resolves.toBe("not-applicable");
-  });
 
   it("on a valid approver, builds the MIME envelope and creates the draft", async () => {
     const calls = await enroll({ createDraft: { data: { id: "d1", message: { id: "m1", threadId: "t1" } } } });
@@ -353,11 +348,6 @@ describe("gmail_draft_recipients", () => {
     'MIME-Version: 1.0\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\nHei alle,\r\n\r\nTakk for i dag.\r\n';
   const rawB64 = Buffer.from(RAW, "utf8").toString("base64url");
   const getDraft = { data: { id: "d1", message: { id: "m1", threadId: "t1", raw: rawB64 } } };
-
-  it("defaults its draft-edit action to autonomous (no approval card)", async () => {
-    expect(gmailDraftRecipients.approval).toBeTypeOf("function");
-    await expect(gmailDraftRecipients.approval!({ toolInput: { draftId: "d1" } } as never)).resolves.toBe("not-applicable");
-  });
 
   it("by draft id: reads the raw draft, rewrites only To/Cc, updates the same draft, keeps the body byte for byte", async () => {
     const calls = await enroll({ getDraft });

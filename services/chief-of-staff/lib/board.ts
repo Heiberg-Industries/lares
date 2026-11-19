@@ -14,21 +14,26 @@ import manifest from "../agent.json";
 import { isKnownRecipient } from "./contact-history.js";
 import { thisAgent } from "./definition.js";
 
+// The definition's own level for a capability, read per session. Every gated tool starts here.
+const definitionLevel = async (capability: string, sessionId?: string) => {
+  const { loaded } = await thisAgent(sessionId);
+  return autonomyOf(loaded.definition, capability);
+};
+
 export const approvalFor = (tool: string) =>
   boardApproval(manifest, tool, {
     contactHistory: isKnownRecipient,
     // The session id ties this to the SAME read of the definition the conversation's persona and
     // model came from, so the level applied can never disagree with the duties the model was told.
-    startingLevel: async (capability, sessionId) => {
-      const { loaded } = await thisAgent(sessionId);
-      return autonomyOf(loaded.definition, capability);
-    },
+    startingLevel: definitionLevel,
   });
 
-/** Draft-only writes contact nobody. They default to autonomous, but installations can tighten
- * either action back to gated/never without changing the broader Gmail send policy. */
+/** Draft-only writes contact nobody, but they still write to the owner's real mailbox, so they
+ * follow the definition's mail level like every other gated write: gated means a card first.
+ * The board can still set either action by itself. A fixed "autonomous" default here once
+ * outranked the definition and let drafts through with no card. */
 export const draftApprovalFor = (tool: "gmail_draft" | "gmail_draft_recipients") =>
-  boardApproval(manifest, tool, { action: tool, defaultLevel: "autonomous" });
+  boardApproval(manifest, tool, { action: tool, startingLevel: definitionLevel });
 
 /** Track operations keep their neutral tool names, but Twenty-backed writes use the same
  * capability/board action as the existing Twenty create or stage tool. */
