@@ -120,6 +120,7 @@ export const DOCKERFILES_NO_WORKFLOW_BUILDS: readonly { readonly dockerfile: str
 /** Workflows that build no image. A workflow file that is neither here nor an image's workflow is an unknown path. */
 export const WORKFLOWS_THAT_BUILD_NO_IMAGE: readonly { readonly workflow: string; readonly why: string }[] = [
   { workflow: ".github/workflows/tests.yml", why: "it runs the tests and the typecheck on pull requests; it has no image build step" },
+  { workflow: ".github/workflows/publish-test-release.yml", why: "it only plans, calls the image workflows and writes the release record; the image workflows it calls build the images" },
 ];
 
 /**
