@@ -7,8 +7,7 @@
  * its raw message, rewrites ONLY the To/Cc headers (lib/draft-recipients.ts) and writes the same
  * bytes back with drafts.update: body, HTML part and signature untouched, same draft id.
  *
- * Autonomous by default because this only edits an unsent draft. An installation can re-gate the
- * specific action. Refuses a change that would leave nobody in To.
+ * Follows the definition's mail level like every gated write (gated asks first). Refuses a change that would leave nobody in To.
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";

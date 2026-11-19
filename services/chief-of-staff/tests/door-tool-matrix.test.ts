@@ -263,8 +263,8 @@ const TABLE: readonly Row[] = [
   ["gmail_signature",                     R,       H,       R,       H,       H],
   ["gmail_send",                          C,       H,       C,       H,       H],
   // Found: web chat shows the owner these two and refuses every call (see the `it.fails` below).
-  ["gmail_draft",                         R,       H,       R,       X,       H],
-  ["gmail_draft_recipients",              R,       H,       R,       X,       H],
+  ["gmail_draft",                         C,       H,       C,       X,       H],
+  ["gmail_draft_recipients",              C,       H,       C,       X,       H],
   // Calendar
   ["calendar_list_events",                R,       H,       R,       R,       H],
   ["calendar_list_calendars",             R,       H,       R,       R,       H],

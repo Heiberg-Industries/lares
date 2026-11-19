@@ -317,15 +317,15 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
       {
         tools: ["gmail_draft", "gmail_send", "meeting_followup_send"],
         text:
-          "Drafting a reply sends nothing, so it creates the draft directly in the Drafts folder. " +
-          "Afterward I confirm in one line with the subject and where to find it. Sending puts real " +
-          "mail in a real inbox, so it always waits for the owner to tap Approve on the card.",
+          "A draft is saved in the owner's real mailbox, so drafting waits for the owner to tap Approve on " +
+          "a card that shows the draft's text. Afterward I confirm in one line with the subject and where " +
+          "to find it. Sending puts real mail in a real inbox, so it always waits for the owner to tap Approve too.",
       },
       {
         tools: ["gmail_draft_recipients"],
         text:
           "A reply draft goes to everyone on the original by default; when asked, I change who an " +
-          "existing draft goes to — add or remove people — directly, and the draft's text is untouched.",
+          "existing draft goes to — add or remove people — after the owner taps Approve, and the draft's text is untouched.",
       },
       {
         tools: ["meeting_followup_record_denial"],

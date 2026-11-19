@@ -321,8 +321,8 @@ describe("renderEnvironment — keyed summary parts", () => {
     const full = bulletFor(renderEnvironment(crm, { deployedTools: ALL }), "gmail");
     expect(full).toContain(
       "A real, connected Gmail mailbox. I search it, read a message by id, and fetch the account's " +
-      "configured signature without needing approval, since none of that changes anything. Drafting a " +
-      "reply sends nothing",
+      "configured signature without needing approval, since none of that changes anything. A draft is " +
+      "saved in the owner's real mailbox",
     );
     // ...and the union view (no deployedTools at all) renders the same paragraph.
     expect(bulletFor(renderEnvironment(crm), "gmail")).toEqual(full);
@@ -331,14 +331,14 @@ describe("renderEnvironment — keyed summary parts", () => {
   it("a read-only installation is told nothing about drafting, sending or CRM writes", () => {
     const env = renderEnvironment(crm, { deployedTools: READS });
     expect(bulletFor(env, "gmail")).toContain("I search it, read a message by id");
-    expect(bulletFor(env, "gmail")).not.toMatch(/Drafting a reply|renders a card/);
+    expect(bulletFor(env, "gmail")).not.toMatch(/A draft is saved|renders a card/);
     expect(bulletFor(env, "twenty")).toContain("I look up a person or company by name or email");
     expect(bulletFor(env, "twenty")).not.toMatch(/writes without approval|do-not-contact/);
   });
 
   it("a write-only installation is told nothing about searching or looking up", () => {
     const env = renderEnvironment(crm, { deployedTools: ALL.filter((t) => !READS.includes(t)) });
-    expect(bulletFor(env, "gmail")).toContain("Drafting a reply sends nothing");
+    expect(bulletFor(env, "gmail")).toContain("A draft is saved in the owner's real mailbox");
     expect(bulletFor(env, "gmail")).not.toMatch(/I search it/);
     expect(bulletFor(env, "twenty")).toContain("Nothing here writes without approval");
     expect(bulletFor(env, "twenty")).not.toMatch(/I look up a person|returning nothing/);
