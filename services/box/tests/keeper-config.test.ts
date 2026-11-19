@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadKeeperConfig } from "../../keeper/lib/config.js";
 import { main as renderConfigCommand } from "../bin/render-keeper-config.js";
-import { renderKeeperConfig, AGENTS_COMPOSE_FILE } from "../lib/keeper-config.js";
+import { renderKeeperConfig, decideNotionSlot, AGENTS_COMPOSE_FILE } from "../lib/keeper-config.js";
 import { keeperConfigDifferences, parseProvenanceRecord } from "../lib/doctor-parity.js";
 import type { KeeperConfigOptions } from "../lib/keeper-config.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
@@ -312,11 +312,11 @@ describe("the generated keeper configuration", () => {
   });
 });
 
-it("exposes an explicit administrator and unprepared Notion slot without adopting an external token", () => {
+it("prepares the Notion slot on a fresh install without adopting an external token", () => {
   const config = renderKeeperConfig(MANIFEST, { ...OPTS, credentialAdministrator: "owner@example.invalid" });
   expect(loadAsKeeperWould(config).credentials).toEqual({
     administrator: "owner@example.invalid", slot: "notion:shared", binding: "NOTION_TOKEN_FILE",
-    prepared: false, inventoryComplete: false, retainedConsumers: [],
+    prepared: true, inventoryComplete: true, retainedConsumers: [],
   });
   expect(config.secretsDir).toBe("/srv/lares/secrets");
   expect(Object.values(config.lifecycle!.defaultBindings!).every(b => !b!.secrets.NOTION_TOKEN_FILE)).toBe(true);
@@ -414,10 +414,10 @@ describe("an installer re-run keeps agent settings set by hand in keeper.json", 
     const root = join(f, "srv"); mkdirSync(join(root, "installation"), { recursive: true });
     const args = (tz: string) => [release, out, env, live, "lares", root, "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.2", "http://lares-gateway:4000", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", tz, prefix];
     const render = (tz = "Europe/Berlin") => {
-      const lines: string[] = [];
+      const lines: string[] = [], said: string[] = [];
       const spy = vi.spyOn(process.stderr, "write").mockImplementation((s: string | Uint8Array) => { lines.push(String(s)); return true; });
-      try { expect(renderConfigCommand(args(tz), () => {})).toBe(0); } finally { spy.mockRestore(); }
-      return { config: JSON.parse(readFileSync(out, "utf8")), stderr: lines.join("") };
+      try { expect(renderConfigCommand(args(tz), m => said.push(m))).toBe(0); } finally { spy.mockRestore(); }
+      return { config: JSON.parse(readFileSync(out, "utf8")), stderr: lines.join(""), stdout: said.join("\n") };
     };
     const install = (c: unknown) => writeFileSync(live, JSON.stringify(c));
     return { render, install, root, sidecar: `${out}.rendered` };
@@ -452,6 +452,61 @@ describe("an installer re-run keeps agent settings set by hand in keeper.json", 
     const again = r.render().config;
     expect(chief(again).environment.DEADLINE_CALENDAR_FILE).toBeUndefined();
     expect(chief(again).mounts).toEqual([]);
+  });
+
+  describe("the Notion key slot across installer runs", () => {
+    const slot = (c: { credentials?: unknown }) => c.credentials as { prepared: boolean; inventoryComplete: boolean; retainedConsumers: unknown[] };
+    const unprepared = (c: { credentials?: unknown }) => { Object.assign(slot(c), { prepared: false, inventoryComplete: false }); };
+
+    it("keeps a prepared slot prepared on a re-run", () => {
+      const r = runner();
+      const first = r.render().config;
+      expect(slot(first)).toMatchObject({ prepared: true, inventoryComplete: true });
+      r.install(first);
+      expect(slot(r.render().config)).toMatchObject({ prepared: true, inventoryComplete: true });
+    });
+
+    it("prepares an existing install that was left unprepared and has no other Notion user", () => {
+      const r = runner();
+      const first = r.render().config;
+      unprepared(first);
+      r.install(first);
+      const { config, stdout } = r.render();
+      expect(slot(config)).toMatchObject({ prepared: true, inventoryComplete: true, retainedConsumers: [] });
+      expect(stdout).not.toContain("left unprepared");
+    });
+
+    it("never switches a prepared slot back, and keeps what an administrator recorded", () => {
+      const r = runner();
+      const first = r.render().config;
+      Object.assign(slot(first), { inventoryComplete: false, retainedConsumers: [{ name: "old-sync", category: "unmanaged-service" }] });
+      r.install(first);
+      expect(slot(r.render().config)).toMatchObject({ prepared: true, inventoryComplete: false, retainedConsumers: [{ name: "old-sync", category: "unmanaged-service" }] });
+    });
+
+    it("leaves the slot alone, with a line saying why, when another Notion user exists", () => {
+      const cases: [string, (c: any) => void, string][] = [
+        ["a service outside the engine reaches Notion", c => { c.lifecycle.egress.legacyConsumers = [{ name: "old-sync", hosts: ["api.notion.com"] }]; }, "outside the engine"],
+        ["an agent has its own key file", c => { c.lifecycle.defaultBindings["chief-of-staff"].secrets.NOTION_TOKEN_FILE = "/etc/lares/secrets/notion-token"; }, "its own Notion key file"],
+        ["an administrator recorded consumers", c => { c.credentials.retainedConsumers = [{ name: "x-svc", category: "external-binding" }]; }, "recorded services"],
+        ["an older per-agent-image install", c => { c.mode = "overlay"; }, "not set up by the current installer"],
+      ];
+      for (const [name, change, why] of cases) {
+        const r = runner();
+        const first = r.render().config as any;
+        unprepared(first);
+        change(first);
+        r.install(first);
+        const { config, stdout } = r.render();
+        expect(slot(config), name).toMatchObject({ prepared: false, inventoryComplete: false });
+        expect(stdout, name).toContain(why);
+      }
+    });
+
+    it("decides from the evidence alone", () => {
+      expect(decideNotionSlot(undefined)).toMatchObject({ prepared: true, inventoryComplete: true });
+      expect(decideNotionSlot({ legacyConsumerHosts: [], bindingSecretKeys: [] })).toMatchObject({ prepared: false });
+    });
   });
 
   it("drops an invalid previous value with one line naming the key and never the value", () => {

@@ -9,7 +9,7 @@ import { StatePill } from './StatePill';
 
 const guidance = {
   'configure-administrator': 'Ask the host operator to configure one credential administrator.',
-  'prepare-managed-slot': 'Ask the host operator to prepare the managed Notion slot. Existing external key files are not adopted here.',
+  'prepare-managed-slot': 'This installation is not ready to store a Notion key yet. On the server, run `lares update`, then reload this page and the key field will appear. If it still does not, Notion is already in use outside Lares here: see "Meeting follow-ups and Notion" in the install guide.',
   'prepare-writable-storage': 'Ask the host operator to prepare protected writable credential storage.',
   'review-consumers': 'Ask the host operator to review every consumer. Unmanaged services and external bindings cannot be changed here.',
   'inspect-journal': 'Recovery required. Ask the host operator to inspect the recorded operation and explicitly recover it before another change.',

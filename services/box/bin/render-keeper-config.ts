@@ -30,7 +30,7 @@ import { readFileSync, writeFileSync, chmodSync, lstatSync, existsSync } from "n
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest, imageFor } from "../lib/release-manifest.js";
-import { renderKeeperConfig } from "../lib/keeper-config.js";
+import { decideNotionSlot, renderKeeperConfig, type PreviousNotionSlot } from "../lib/keeper-config.js";
 import { provenanceRecord } from "../lib/doctor-parity.js";
 import { DEADLINE_CALENDAR_IN_CONTAINER } from "../lib/stack-compose.js";
 import { runtimeBindingsSchema } from "../../keeper/lib/runtime-bindings.js";
@@ -180,9 +180,11 @@ const HELP_TEXT = [
   "not a release, names an image by anything but a digest, or names no image for the keeper,",
   "its egress proxy, its firewall helper or one of the three roles.",
   "",
-  "The Notion slot starts unprepared. A host administrator must prepare keeper-only storage,",
-  "review all shared consumers and set prepared/inventoryComplete in root-owned keeper.json.",
-  "Existing external token files are never adopted; the installation secret mount stays read-only.",
+  "The Notion key slot is prepared here when nothing else could be using a Notion key: always on",
+  "a fresh install, and on an existing one whose earlier keeper.json was rendered by this installer",
+  "and names no other Notion user. A prepared slot is never switched back. Otherwise it is left",
+  "unprepared and a line says why. Existing external token files are never adopted; the",
+  "installation secret mount stays read-only.",
   "",
   "Exit codes:",
   "  0  both files were written",
@@ -239,6 +241,7 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     ...(previous.gatewayBudget?{previousGatewayBudget:previous.gatewayBudget}:{}),
     ...(previous.outsideCustody?{previousOutsideCustody:previous.outsideCustody}:{}),
     ...(previous.outsideRouteConsumer?{previousOutsideRouteConsumer:previous.outsideRouteConsumer}:{}),
+    ...(previous.notionSlot?{previousNotionSlot:previous.notionSlot}:{}),
     modelPurposeConsoleSigningKeyFile: modelPurposeKeyFile,
     modelPurposeRuntimeDir: modelPurposeKeyFile ? join(at("socketDir"), "model-purpose") : null,
     project: at("project"),
@@ -265,6 +268,9 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     ...(previous.schedulesLive !== undefined ? { previousSchedulesLive: previous.schedulesLive } : {}),
     ...(deadlineCalendarFile ? { deadlineCalendarFile } : {}),
   });
+  const notionSlot = decideNotionSlot(previous.notionSlot);
+  if (notionSlot.leftUnpreparedBecause)
+    out(`The Notion key slot was left unprepared: ${notionSlot.leftUnpreparedBecause}. Nothing else is affected; review it before adding a Notion key.`);
   // What the installer itself decided, recorded before anything carried from the old file is added.
   const rendered = provenanceRecord(config);
   carryHandSetBindings(config, previous.defaultBindings);
@@ -365,7 +371,7 @@ function optionalModelPurposeKey(path: string): string | null {
  *  provider blocks (configured separately) and the schedules switch (the owner may have chosen). */
 type PreviousBindings = Record<string, { environment?: Record<string, unknown>; mounts?: unknown[] } | undefined>;
 
-function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean; budgetFinancial?:KeeperConfig["budgetFinancial"]; budgetNative?:KeeperConfig["budgetNative"]; gatewayBudget?:KeeperConfig["gatewayBudget"]; outsideCustody?:KeeperConfig['outsideCustody']; outsideRouteConsumer?:NonNullable<KeeperConfig['lifecycle']>['egress']['legacyConsumers'][number]; defaultBindings?: PreviousBindings } {
+function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean; budgetFinancial?:KeeperConfig["budgetFinancial"]; budgetNative?:KeeperConfig["budgetNative"]; gatewayBudget?:KeeperConfig["gatewayBudget"]; outsideCustody?:KeeperConfig['outsideCustody']; outsideRouteConsumer?:NonNullable<KeeperConfig['lifecycle']>['egress']['legacyConsumers'][number]; defaultBindings?: PreviousBindings; notionSlot?: PreviousNotionSlot } {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -400,7 +406,17 @@ function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: Keeper
     ?.lifecycle?.runtime;
   const rawBindings = (parsed as { lifecycle?: { defaultBindings?: unknown } } | null)?.lifecycle?.defaultBindings;
   const previousBindings = rawBindings && typeof rawBindings === "object" && !Array.isArray(rawBindings) ? rawBindings as PreviousBindings : undefined;
+  const lifecycleParts = (parsed as { lifecycle?: { bindings?: unknown; egress?: { legacyConsumers?: unknown } } } | null)?.lifecycle;
+  const bindingMaps = [lifecycleParts?.bindings, rawBindings].filter((m): m is Record<string, { secrets?: unknown }> => !!m && typeof m === "object" && !Array.isArray(m));
+  const notionSlot: PreviousNotionSlot = {
+    mode: (parsed as { mode?: unknown } | null)?.mode,
+    credentials: ((parsed as { credentials?: unknown } | null)?.credentials ?? undefined) as PreviousNotionSlot["credentials"],
+    legacyConsumerHosts: (Array.isArray(lifecycleParts?.egress?.legacyConsumers) ? lifecycleParts!.egress!.legacyConsumers as { hosts?: unknown }[] : [])
+      .map(c => Array.isArray(c?.hosts) ? c.hosts.filter((h): h is string => typeof h === "string") : []),
+    bindingSecretKeys: bindingMaps.flatMap(m => Object.values(m).flatMap(b => b && typeof b.secrets === "object" && b.secrets ? Object.keys(b.secrets) : [])),
+  };
   return {
+    notionSlot,
     ...(budgetFinancial?{budgetFinancial}:{}),
     ...(budgetNative?{budgetNative}:{}),
     ...(gatewayBudget?{gatewayBudget}:{}),
