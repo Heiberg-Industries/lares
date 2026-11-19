@@ -187,7 +187,7 @@ describe("images-to-build: a change the selector can place", { timeout: 60_000 }
       expect(table).toContain("| egress-proxy | rebuild | images/egress-proxy/Dockerfile is the Dockerfile egress-proxy is built from |");
       expect(table).toContain("| keeper | keep | no changed file is an input of this image |");
       expect(table.match(/^\| (chief-of-staff-runtime|creative-runtime|keeper|firewall-helper|egress-proxy) \| (rebuild|keep) \| /gm)).toHaveLength(5);
-      expect(table).toContain('An image marked "keep" is not built, probed or pushed by this run.');
+      expect(table).toContain("A kept image is not pushed by this run");
     } finally {
       rmSync(outputs, { force: true });
       rmSync(summary, { force: true });

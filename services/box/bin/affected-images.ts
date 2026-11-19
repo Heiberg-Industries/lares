@@ -1,5 +1,5 @@
 // services/box/bin/affected-images.ts — prints, as JSON, which images a change can affect
-// (lib/affected-images.ts). Nothing calls this yet; no workflow reads its answer.
+// (lib/affected-images.ts). The image workflow's select job reads it through bin/images-to-build.ts, and bin/plan-release.ts reads it to plan a test release.
 //
 // Usage:
 //   affected-images.ts --base <commit> --head <commit>   the paths that differ between two commits

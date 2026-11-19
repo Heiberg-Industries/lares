@@ -207,7 +207,7 @@ describe("doubt never skips a build", () => {
     ].join("\n");
   const KEEP_EVERYTHING = OUTPUT_NAMES.map((name) => `${name}=false\n`).join("");
 
-  function runStep(options: { cwd: string; publishing?: string; base?: string; sha?: string }): { status: number | null; outputs: string; summary: string; log: string } {
+  function runStep(options: { cwd: string; publishing?: string; base?: string; sha?: string; selection?: string }): { status: number | null; outputs: string; summary: string; log: string } {
     const dir = join(scratch, `run-${(runs += 1)}`);
     mkdirSync(join(dir, "temp"), { recursive: true });
     writeFileSync(join(dir, "step.sh"), script);
@@ -221,6 +221,7 @@ describe("doubt never skips a build", () => {
     };
     if (options.publishing !== undefined) env.PUBLISHING = options.publishing;
     if (options.base !== undefined) env.BASE = options.base;
+    if (options.selection !== undefined) env.SELECTION = options.selection;
     writeFileSync(env.GITHUB_OUTPUT!, "");
     writeFileSync(env.GITHUB_STEP_SUMMARY!, "");
     const result = spawnSync("bash", ["-e", join(dir, "step.sh")], { cwd: options.cwd, env, encoding: "utf8" });
@@ -249,6 +250,28 @@ describe("doubt never skips a build", () => {
     expectEverything(runStep({ cwd: checkoutWith(keepsEverything), publishing: "true", base: "abc" }), /Every image is built and probed: publishing run: every image is built, probed and pushed, whatever changed/);
     // And it does not need the script, or a base, for that.
     expectEverything(runStep({ cwd: checkoutWith(null), publishing: "true" }), /publishing run/);
+  });
+
+  describe("when the caller brings its own selection", () => {
+    const whole = { all: false, chiefRuntime: false, creativeRuntime: true, keeper: false, firewallHelper: false, egressProxy: true, anyKeeperFamily: true };
+
+    it("uses it on a publishing run, without asking the script", () => {
+      const result = runStep({ cwd: checkoutWith(null), publishing: "true", selection: JSON.stringify(whole) });
+      expect(result.status, result.log).toBe(0);
+      expect(result.outputs).toBe("all=false\nchiefRuntime=false\ncreativeRuntime=true\nkeeper=false\nfirewallHelper=false\negressProxy=true\nanyKeeperFamily=true\n");
+      expect(result.summary).toContain("| creative-runtime | rebuild | chosen by the caller's plan |");
+      expect(result.summary).toContain("| keeper | keep | chosen by the caller's plan |");
+    });
+
+    it.each([
+      ["is not JSON", "not json"],
+      ["lacks a flag", JSON.stringify({ ...whole, keeper: undefined })],
+      ["gives a flag a word, not true or false", JSON.stringify({ ...whole, keeper: "no" })],
+      ["lacks `all`", JSON.stringify({ ...whole, all: undefined })],
+      ["is empty JSON", "{}"],
+    ])("builds everything when it %s", (_name, selection) => {
+      expectEverything(runStep({ cwd: checkoutWith(null), publishing: "true", selection }), /the caller's selection is not whole, so nothing is skipped/);
+    });
   });
 
   it.each([["missing", undefined], ["empty", ""], ["something else", "yes"], ["True", "True"]])("builds everything when it is not known whether the run publishes (%s)", (_name, publishing) => {
@@ -297,7 +320,7 @@ describe("doubt never skips a build", () => {
 
 describe("nothing else about the image workflow moved", () => {
   it("starts on the same events, branches and paths", () => {
-    expect(Object.keys(workflow.on)).toEqual(["push", "workflow_dispatch"]);
+    expect(Object.keys(workflow.on)).toEqual(["push", "workflow_dispatch", "workflow_call"]);
     expect(workflow.on.push).toEqual({
       branches: ["main"],
       paths: [
@@ -327,7 +350,12 @@ describe("nothing else about the image workflow moved", () => {
 
   it("keeps its permissions, its environment, its runner and its actions", () => {
     expect(workflow.name).toBe("keeper and neutral runtime images");
-    expect(workflow.permissions).toEqual({ contents: "read", packages: "write" });
+    // Only the two jobs that push images may write packages.
+    expect(workflow.permissions).toEqual({ contents: "read" });
+    expect(Object.entries<any>(workflow.jobs).filter(([, job]) => job.permissions !== undefined).map(([id, job]) => [id, job.permissions])).toEqual([
+      ["runtime", { contents: "read", packages: "write" }],
+      ["keeper", { contents: "read", packages: "write" }],
+    ]);
     expect(workflow.env).toEqual({ EVE_TELEMETRY_DISABLED: "1" });
     expect(workflow.concurrency).toBeUndefined();
     for (const [id, job] of Object.entries<any>(workflow.jobs)) expect(job["runs-on"], id).toBe("ubuntu-24.04");
@@ -402,6 +430,8 @@ describe("nothing else about the image workflow moved", () => {
       "Run the agent-declaration conformance suite against the compiled manifest [if: matrix.role != 'chief-of-staff']",
       "Prove studio run ownership in the final creative image [if: matrix.role == 'creative']",
       "docker/build-push-action@v6 ghcr.io/heiberg-industries/lares-engine-${{ matrix.role }}-runtime:sha-${{ github.sha }}",
+      `Write down the pushed digest [if: \${{ ${PUBLISHES} }}]`,
+      `actions/upload-artifact@v4 published-\${{ matrix.role }} [if: \${{ ${PUBLISHES} }}]`,
     ],
     keeper: [
       "actions/checkout@v4",
@@ -442,6 +472,8 @@ describe("nothing else about the image workflow moved", () => {
       "docker/build-push-action@v6 ghcr.io/heiberg-industries/lares-engine-keeper:sha-${{ github.sha }}",
       "docker/build-push-action@v6 ghcr.io/heiberg-industries/lares-engine-firewall-helper:sha-${{ github.sha }}",
       "docker/build-push-action@v6 ghcr.io/heiberg-industries/lares-engine-egress-proxy:sha-${{ github.sha }}",
+      `Write down the pushed digests [if: \${{ ${PUBLISHES} }}]`,
+      `actions/upload-artifact@v4 published-keeper-family [if: \${{ ${PUBLISHES} }}]`,
     ],
   };
 

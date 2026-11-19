@@ -21,7 +21,33 @@ on:
         description: "Commit to compare this ref with (a full commit id, a tag, or origin/<branch>), so that only the images the difference affects are built and probed. Empty builds every image. A publishing run builds every image whatever is given here"
         type: string
         default: ''
-permissions: {contents: read, packages: write}
+  # Called by publish-test-release.yml, which has already decided image by image what to build.
+  # `inputs.publish` and the rest mean here what they mean for a manual run, and the caller's own
+  # event is `workflow_dispatch`, so every condition below reads the same in both ways in.
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish the images this run builds
+        type: boolean
+        default: false
+      docs_release:
+        description: Public docs identity (candidate, or the exact release ID whose source is this ref)
+        type: string
+        default: candidate
+      real_install_only:
+        description: Run only the real install proof
+        type: boolean
+        default: false
+      base:
+        description: Commit to compare with; empty builds every image
+        type: string
+        default: ''
+      selection:
+        description: "The caller's own answer, as JSON: one true or false for each of chiefRuntime, creativeRuntime, keeper, firewallHelper, egressProxy and anyKeeperFamily. Used even on a publishing run, but only when it is whole; anything less builds every image"
+        type: string
+        default: ''
+# Only the two jobs that push images may write packages.
+permissions: {contents: read}
 env:
   EVE_TELEMETRY_DISABLED: "1"
 # Every workflow names its runner exactly (ubuntu-24.04), never ubuntu-latest: the image proofs
@@ -68,6 +94,7 @@ jobs:
         env:
           PUBLISHING: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}
           BASE: ${{ github.event_name == 'workflow_dispatch' && inputs.base || github.event_name == 'push' && github.event.before || '' }}
+          SELECTION: ${{ inputs.selection }}
         run: |
           flags="chiefRuntime creativeRuntime keeper firewallHelper egressProxy anyKeeperFamily"
           outputs="$RUNNER_TEMP/images-to-build.outputs"
@@ -84,7 +111,32 @@ jobs:
             } > "$summary"
           }
           rm -f "$outputs" "$summary"
-          if [ "${PUBLISHING-}" = "true" ]; then
+          if [ -n "${SELECTION-}" ]; then
+            # The caller decided image by image. Its answer counts only if it is whole: the same
+            # check as for the script's answer below, and anything less builds everything.
+            node -e 'const s = JSON.parse(process.argv[1]); for (const n of process.argv.slice(2)) console.log(n + "=" + String(s[n]));' "$SELECTION" all $flags > "$outputs" 2>/dev/null || rm -f "$outputs"
+            complete=true
+            expected=0
+            for flag in all $flags; do
+              expected=$((expected + 1))
+              [ "$(grep -cxE "$flag=(true|false)" "$outputs" 2>/dev/null)" = "1" ] || complete=false
+            done
+            [ "$(grep -c '' "$outputs" 2>/dev/null)" = "$expected" ] || complete=false
+            if [ "$complete" != "true" ]; then
+              build_everything "the caller's selection is not whole, so nothing is skipped"
+            else
+              {
+                echo "The caller (publish-test-release) chose these images; this run compares nothing further."
+                echo
+                echo "| image | decision | reason |"
+                echo "| --- | --- | --- |"
+                for pair in chiefRuntime:chief-of-staff-runtime creativeRuntime:creative-runtime keeper:keeper firewallHelper:firewall-helper egressProxy:egress-proxy; do
+                  if [ "$(grep -cx "${pair%%:*}=true" "$outputs")" = "1" ]; then decision=rebuild; else decision=keep; fi
+                  echo "| ${pair#*:} | $decision | chosen by the caller's plan |"
+                done
+              } > "$summary"
+            fi
+          elif [ "${PUBLISHING-}" = "true" ]; then
             build_everything "publishing run: every image is built, probed and pushed, whatever changed"
           elif [ "${PUBLISHING-}" != "false" ]; then
             build_everything "it is not known whether this run publishes, so nothing is skipped"
@@ -177,6 +229,7 @@ jobs:
           if-no-files-found: error
   runtime:
     needs: select
+    permissions: {contents: read, packages: write}
     if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && (needs.select.outputs.chiefRuntime != 'false' || needs.select.outputs.creativeRuntime != 'false') }}
     runs-on: ubuntu-24.04
     env:
@@ -326,6 +379,7 @@ jobs:
         if: matrix.role == 'creative'
         run: python3 -B services/keeper/tests/studio-owner-image.probe.py lares-runtime:test
       - uses: docker/build-push-action@v6
+        id: push-runtime
         with:
           context: .
           file: services/${{ matrix.role }}/Dockerfile
@@ -333,8 +387,27 @@ jobs:
           push: "${{ ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true')) && !(matrix.role == 'chief-of-staff' && needs.select.outputs.chiefRuntime == 'false') && !(matrix.role == 'creative' && needs.select.outputs.creativeRuntime == 'false') }}"
           tags: ghcr.io/heiberg-industries/lares-engine-${{ matrix.role }}-runtime:sha-${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares
+      # The digest of the image this step pushed, from the step's own output (never read back from a
+      # tag), written down for the caller. A publishing run that pushed nothing fails here.
+      - name: Write down the pushed digest
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}
+        env:
+          DIGEST: ${{ steps.push-runtime.outputs.digest }}
+          ROLE: ${{ matrix.role }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/published"
+          printf '{"key":"%s","reference":"%s","sourceCommit":"%s"}\n' "$ROLE" "ghcr.io/heiberg-industries/lares-engine-$ROLE-runtime@$DIGEST" "$GITHUB_SHA" > "$RUNNER_TEMP/published/$ROLE.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}
+        with:
+          name: published-${{ matrix.role }}
+          path: ${{ runner.temp }}/published
+          if-no-files-found: error
   keeper:
     needs: select
+    permissions: {contents: read, packages: write}
     if: ${{ (vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch') && !inputs.real_install_only && needs.select.outputs.anyKeeperFamily != 'false' }}
     runs-on: ubuntu-24.04
     steps:
@@ -533,8 +606,37 @@ jobs:
           path: ${{ runner.temp }}/proxy-proof.json
           if-no-files-found: error
       - uses: docker/build-push-action@v6
+        id: push-keeper
         with: {context: ., file: services/keeper/Dockerfile, push: "${{ ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true')) && needs.select.outputs.keeper != 'false' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-keeper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
       - uses: docker/build-push-action@v6
+        id: push-firewall
         with: {context: ., file: images/firewall-helper/Dockerfile, push: "${{ ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true')) && needs.select.outputs.firewallHelper != 'false' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-firewall-helper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
       - uses: docker/build-push-action@v6
+        id: push-egress
         with: {context: ., file: images/egress-proxy/Dockerfile, push: "${{ ((github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true')) && needs.select.outputs.egressProxy != 'false' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-egress-proxy:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
+      # The digests of the images this job pushed, from the push steps' own outputs (never read back
+      # from a tag). An image that was not pushed has an empty output and no file.
+      - name: Write down the pushed digests
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}
+        env:
+          KEEPER: ${{ steps.push-keeper.outputs.digest }}
+          FIREWALL: ${{ steps.push-firewall.outputs.digest }}
+          EGRESS: ${{ steps.push-egress.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/published"
+          written=0
+          for entry in "lares-keeper:lares-engine-keeper:$KEEPER" "lares-firewall-helper:lares-engine-firewall-helper:$FIREWALL" "lares-egress-proxy:lares-engine-egress-proxy:$EGRESS"; do
+            key="${entry%%:*}"; rest="${entry#*:}"; name="${rest%%:*}"; digest="${rest#*:}"
+            [ -n "$digest" ] || continue
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            printf '{"key":"%s","reference":"%s","sourceCommit":"%s"}\n' "$key" "ghcr.io/heiberg-industries/$name@$digest" "$GITHUB_SHA" > "$RUNNER_TEMP/published/$key.json"
+            written=$((written + 1))
+          done
+          [ "$written" -ge 1 ]
+      - uses: actions/upload-artifact@v4
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}
+        with:
+          name: published-keeper-family
+          path: ${{ runner.temp }}/published
+          if-no-files-found: error

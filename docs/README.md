@@ -36,6 +36,8 @@ Numbering has gaps; see [`decisions/README.md`](decisions/README.md).
 
 ## releases
 
+Maintainers publish a test release with one command: [`publishing-a-test-release.md`](publishing-a-test-release.md).
+
 Release notes say what changed, what breaks and how to upgrade. The newest published notes are
 [`rc.14-notes.md`](releases/rc.14-notes.md); earlier ones are
 [rc.12](releases/rc.12-notes.md), [rc.11](releases/rc.11-notes.md), [rc.10](releases/rc.10-notes.md), [rc.9](releases/rc.9-notes.md),

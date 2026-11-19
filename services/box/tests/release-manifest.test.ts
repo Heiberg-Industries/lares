@@ -46,3 +46,19 @@ describe("a release manifest", () => {
     expect(DIGEST_REFERENCE.test("ghcr.io/example/x:latest")).toBe(false);
   });
 });
+
+describe("the optional sources of a release", () => {
+  const withSources = (sources: unknown): string => JSON.stringify({ ...JSON.parse(good), sources });
+
+  it("reads the commit each image was built from", () => {
+    const m = parseReleaseManifest(withSources({ console: "a".repeat(40) }));
+    expect(m.sources).toEqual({ console: "a".repeat(40) });
+    expect(parseReleaseManifest(good).sources).toBeUndefined();
+  });
+
+  it("refuses a source that is not a full commit id, or that names an image the release lacks", () => {
+    expect(() => parseReleaseManifest(withSources({ console: "abc1234" }))).toThrow(/console.*40/);
+    expect(() => parseReleaseManifest(withSources({ unlisted: "a".repeat(40) }))).toThrow(/unlisted/);
+    expect(() => parseReleaseManifest(withSources(["a"]))).toThrow(/map an image/);
+  });
+});

@@ -1,0 +1,214 @@
+name: publish test release
+
+# The one entry for a test release. One manual run:
+#
+#   gh workflow run publish-test-release.yml --ref main -f release=2026-11-20-rc.15.test.7 -f publish=true
+#
+# 1. `plan` compares each image with the commit THAT image was last built from (the `sources` of
+#    the newest file under releases/) and decides: build it, or carry its digest over unchanged.
+#    Doubt builds. The decision, with the reason for every image, is in the run summary.
+# 2. The three image workflows run, unchanged in what they build and prove, for the images the plan
+#    builds, and push them only if `publish` is on. Each pushed image's digest is written down from
+#    the push step's own output.
+# 3. Only when every needed image is built, probed and pushed does `record` write the release file
+#    and the notes from those digests, and push them to the branch release/<release>. It never
+#    pushes to main. A pull request opened by a workflow with the default token gets no checks, and
+#    a pull request without checks cannot pass the merge queue; so the run prints the one
+#    `gh pr create` line instead, to be run by a person (their pull request does get its checks).
+#
+# With `publish` off (the default) nothing is pushed and no branch is made: images are built and
+# probed, and `record` only checks that a record could be written.
+#
+# Starting it again with the same release name after a failure: "Re-run failed jobs" on the run
+# keeps every job that finished and repeats only the rest. A new run with the same name starts over;
+# nothing is recorded until every image is done, so no half-made candidate can reach main. The run
+# refuses a name that already has a record or a branch.
+#
+# One run at a time; a second one waits. Whether a day already has a test release is a rule for
+# people, and nothing here enforces it.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Release name, for example 2026-11-20-rc.15.test.7"
+        type: string
+        required: true
+      publish:
+        description: "Push the images and the record branch. Off: build and probe only, push nothing"
+        type: boolean
+        default: false
+      docs_release:
+        description: "Public docs identity baked into the images (candidate, or the exact release id)"
+        type: string
+        default: candidate
+      base:
+        description: "Only for an image the previous record gives no source commit for: compare it with this commit. Empty builds such an image"
+        type: string
+        default: ''
+concurrency:
+  group: publish-test-release
+  cancel-in-progress: false
+permissions:
+  contents: read
+env:
+  EVE_TELEMETRY_DISABLED: "1"
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      selection: ${{ steps.plan.outputs.selection }}
+      keeperRuntime: ${{ steps.plan.outputs.keeperRuntime }}
+      console: ${{ steps.plan.outputs.console }}
+      syncJobs: ${{ steps.plan.outputs.syncJobs }}
+      previous: ${{ steps.plan.outputs.previous }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: Plan the release
+        id: plan
+        env:
+          RELEASE: ${{ inputs.release }}
+          PUBLISH: ${{ inputs.publish }}
+          BASE: ${{ inputs.base }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-rc\.[0-9]+(\.test\.[0-9]+)?$ ]] || { echo "::error::'$RELEASE' is not a release name like 2026-11-20-rc.15.test.7"; exit 1; }
+          if [ "$PUBLISH" = "true" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::A publishing run builds main exactly; this run was started on $REF"; exit 1
+          fi
+          test ! -e "releases/$RELEASE.json" || { echo "::error::releases/$RELEASE.json already exists"; exit 1; }
+          if git ls-remote --exit-code --heads origin "release/$RELEASE" >/dev/null 2>&1; then
+            echo "::error::The branch release/$RELEASE already exists: this release was already prepared. Open its pull request instead."; exit 1
+          fi
+          previous="$(ls releases/*.json | LC_ALL=C sort | tail -n 1)"
+          echo "previous release file: $previous"
+          node services/box/bin/plan-release.ts --previous "$previous" --head "$GITHUB_SHA" --base "$BASE" --out "$RUNNER_TEMP/plan"
+          cat "$RUNNER_TEMP/plan/outputs" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          { echo "### Images of $RELEASE"; echo; cat "$RUNNER_TEMP/plan/summary.md"; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/plan/plan.json
+          if-no-files-found: error
+
+  keeper-runtime:
+    needs: plan
+    if: ${{ needs.plan.outputs.keeperRuntime == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/keeper-runtime-images.yml
+    with:
+      publish: ${{ inputs.publish }}
+      docs_release: ${{ inputs.docs_release }}
+      selection: ${{ needs.plan.outputs.selection }}
+
+  console:
+    needs: plan
+    if: ${{ needs.plan.outputs.console == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/console-image.yml
+    with:
+      publish: ${{ inputs.publish }}
+
+  sync-jobs:
+    needs: plan
+    if: ${{ needs.plan.outputs.syncJobs == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/sync-jobs-image.yml
+    with:
+      publish: ${{ inputs.publish }}
+
+  record:
+    needs: [plan, keeper-runtime, console, sync-jobs]
+    # Every image that had to be built was built and probed; a group the plan skipped counts as done.
+    if: ${{ !cancelled() && needs.plan.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      # contents: write only to push the record branch release/<release>; nothing here pushes main.
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-plan
+          path: ${{ runner.temp }}/plan
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ inputs.publish }}
+        with:
+          pattern: published-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/published
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ inputs.publish }}
+        with:
+          pattern: "*image-scan*"
+          path: ${{ runner.temp }}/scans
+      - name: Write the release record
+        env:
+          RELEASE: ${{ inputs.release }}
+          PUBLISH: ${{ inputs.publish }}
+          BASE: ${{ inputs.base }}
+          PREVIOUS: ${{ needs.plan.outputs.previous }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/published" "$RUNNER_TEMP/scans"
+          gh run view "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --json jobs --jq '{jobs: [.jobs[] | select(.conclusion != null)]}' > "$RUNNER_TEMP/jobs.json" || echo '{"jobs":[]}' > "$RUNNER_TEMP/jobs.json"
+          mode=""
+          if [ "$PUBLISH" != "true" ]; then mode="--dry-run"; fi
+          node services/box/bin/write-release-record.ts --release "$RELEASE" --head "$GITHUB_SHA" --previous "$PREVIOUS" \
+            --plan "$RUNNER_TEMP/plan/plan.json" --digests "$RUNNER_TEMP/published" --scans "$RUNNER_TEMP/scans" \
+            --jobs "$RUNNER_TEMP/jobs.json" --run-url "$RUN_URL" --base "$BASE" --root "$GITHUB_WORKSPACE" $mode
+      - name: Push the record to its own branch
+        if: ${{ inputs.publish }}
+        env:
+          RELEASE: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          short="${RELEASE#????-??-??-}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "release/$RELEASE"
+          git add "releases/$RELEASE.json" "docs/releases/$short-notes.md"
+          {
+            echo "release: record the $short test release"
+            echo
+            echo "The images of this release were built from commit $GITHUB_SHA by one run of the publish test release workflow."
+            echo
+            echo "The release file and the notes were written from that run's own digests; the notes' section on what changed and what breaks is still to be written by a person."
+            echo
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } > "$RUNNER_TEMP/commit-message"
+          git commit --file "$RUNNER_TEMP/commit-message"
+          git push origin "release/$RELEASE"
+          {
+            echo "### The record is on the branch release/$RELEASE"
+            echo
+            echo "Open its pull request with this one line (a pull request opened by a person gets its checks):"
+            echo
+            echo '```'
+            echo "gh pr create --repo $GITHUB_REPOSITORY --head release/$RELEASE --base main --fill"
+            echo '```'
+            echo
+            echo "The checks stay red until the section 'What changed, and what breaks' of the notes and the 'breaking' line of the release file are written."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -8,7 +8,8 @@
  * list of changes, unless the caller says an empty list is expected: an empty list is also what a
  * failed `git diff` looks like. And so does a change to this selector itself.
  *
- * Nothing uses this yet. No workflow reads its answer.
+ * Used by bin/images-to-build.ts (the image workflow's select job) and bin/plan-release.ts (which
+ * plans a test release, image by image, against the commit each image was last built from).
  *
  * What an image's inputs are, and where each comes from:
  *   - its Dockerfile, and every path that Dockerfile COPYs in the stages its build target reaches

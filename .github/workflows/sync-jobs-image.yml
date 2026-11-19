@@ -27,6 +27,14 @@ on:
         description: Publish this exact manually selected ref
         type: boolean
         default: false
+  # Called by publish-test-release.yml, whose own event is workflow_dispatch: every condition below
+  # reads the same as for a manual run.
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish the image this run builds
+        type: boolean
+        default: false
 
 concurrency:
   group: sync-jobs-image
@@ -116,3 +124,21 @@ jobs:
             echo "ghcr.io/heiberg-industries/lares-sync-jobs@$DIGEST"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The digest of the image the push step pushed, from its own output (never read back from a
+      # tag), written down for the caller. A publishing run that pushed nothing fails here.
+      - name: Write down the pushed digest
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/published"
+          printf '{"key":"%s","reference":"%s","sourceCommit":"%s"}\n' "sync-jobs" "ghcr.io/heiberg-industries/lares-sync-jobs@$DIGEST" "$GITHUB_SHA" > "$RUNNER_TEMP/published/sync-jobs.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}
+        with:
+          name: published-sync-jobs
+          path: ${{ runner.temp }}/published
+          if-no-files-found: error

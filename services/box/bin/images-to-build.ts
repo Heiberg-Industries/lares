@@ -173,7 +173,7 @@ export function outputLines(answer: Answer): string {
 export function summaryMarkdown(result: Result): string {
   const cell = (text: string): string => text.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
   return [
-    result.answer.all ? `Every image is built and probed: ${cell(result.answer.because)}` : `Only the images this change affects are built and probed (${cell(result.answer.because)}). An image marked "keep" is not built, probed or pushed by this run.`,
+    result.answer.all ? `Every image is built and probed: ${cell(result.answer.because)}` : `Only the images this change affects are pushed (${cell(result.answer.because)}). A kept image is not pushed by this run, and a job that would build only kept images is skipped; the real-install job, and the keeper job when any of its three images is rebuilt, still build the kept images to prove them together.`,
     "",
     "| image | decision | reason |",
     "| --- | --- | --- |",
