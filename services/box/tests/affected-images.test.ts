@@ -594,6 +594,8 @@ describe("guards: the selector's tables against the repository", () => {
     expect([...workflowFiles].sort()).toEqual(known);
     for (const entry of WORKFLOWS_THAT_BUILD_NO_IMAGE) {
       expect(workflowText(entry.workflow), entry.workflow).not.toMatch(/docker\/build-push-action|docker\s+(buildx\s+)?build\b|docker\s+push\b/);
+      // A workflow that calls an image workflow decides what is built: a change to it must rebuild every image.
+      if (/uses: \.\/\.github\/workflows\//.test(workflowText(entry.workflow))) expect(SELECTOR_FILES, entry.workflow).toContain(entry.workflow);
     }
   });
 
@@ -773,6 +775,8 @@ describe("guards: the selector's tables against the repository", () => {
     }
     // A workflow that builds no image is covered the same way.
     for (const entry of WORKFLOWS_THAT_BUILD_NO_IMAGE) {
+      // One that carries the selector's authority rebuilds everything, by its own rule.
+      if (SELECTOR_FILES.includes(entry.workflow)) continue;
       for (const image of selectAffectedImages([entry.workflow], repo).images.filter((decision) => decision.rebuild)) {
         expect(image.reason).toMatch(/copies whole/);
       }

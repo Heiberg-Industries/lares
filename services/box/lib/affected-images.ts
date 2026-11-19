@@ -120,7 +120,7 @@ export const DOCKERFILES_NO_WORKFLOW_BUILDS: readonly { readonly dockerfile: str
 /** Workflows that build no image. A workflow file that is neither here nor an image's workflow is an unknown path. */
 export const WORKFLOWS_THAT_BUILD_NO_IMAGE: readonly { readonly workflow: string; readonly why: string }[] = [
   { workflow: ".github/workflows/tests.yml", why: "it runs the tests and the typecheck on pull requests; it has no image build step" },
-  { workflow: ".github/workflows/publish-test-release.yml", why: "it only plans, calls the image workflows and writes the release record; the image workflows it calls build the images" },
+  { workflow: ".github/workflows/publish-test-release.yml", why: "it builds no image itself: it plans, calls the image workflows and writes the release record. It decides what a release builds, so a change to it rebuilds every image (see SELECTOR_FILES)" },
 ];
 
 /**
@@ -193,7 +193,12 @@ export const IN_NO_IMAGE: readonly { readonly path: string; readonly why: string
  * The selector itself. When one of these changes, the rules that decide "keep" have changed, so no
  * image is kept on their word: every image is rebuilt. (The test file is not here: it changes no answer.)
  */
-export const SELECTOR_FILES: readonly string[] = ["services/box/lib/affected-images.ts", "services/box/bin/affected-images.ts"];
+export const SELECTOR_FILES: readonly string[] = [
+  "services/box/lib/affected-images.ts",
+  "services/box/bin/affected-images.ts",
+  // The workflow that acts on the selector's answer for a release: it carries the same authority.
+  ".github/workflows/publish-test-release.yml",
+];
 
 /** What `pnpm install` reads from the build context besides the package.json files themselves. */
 const INSTALL_FILES: readonly string[] = ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", ".npmrc", ".pnpmfile.cjs"];
