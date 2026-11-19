@@ -662,30 +662,181 @@ const deadlineMintDetails: Details = (i, tz) => {
   }
 };
 
+/** `*Label:* value` for a single short value, or null when absent. */
+function fieldLine(label: string, v: unknown): string | null {
+  const s = str(v);
+  return s === null ? null : `*${label}:* ${escapeMrkdwn(s)}`;
+}
+
+/** `*Label:*` then the value on its own lines, for text of any length (a note, a reason). */
+function blockLine(label: string, v: unknown): string | null {
+  const s = str(v);
+  return s === null ? null : `*${label}:*\n${escapeMrkdwn(s)}`;
+}
+
+function listLine(label: string, v: unknown): string | null {
+  const list = stringList(v);
+  return list.length === 0 ? null : `*${label}:* ${escapeMrkdwn(list.join(", "))}`;
+}
+
+/** The parts that exist, in order, or null when none does. */
+function detailsOf(...parts: (string | null)[]): string | null {
+  const kept = parts.filter((p): p is string => p !== null);
+  return kept.length === 0 ? null : shorten(kept.join("\n\n"));
+}
+
+function eventTimes(i: Record<string, unknown>, tz: string): string | null {
+  const start = when(i["start"], tz);
+  const end = when(i["end"], tz);
+  if (start === null && end === null) return null;
+  return [start === null ? null : `*Starts:* ${start}`, end === null ? null : `*Ends:* ${end}`].filter((p) => p !== null).join("\n");
+}
+
+function eventWhere(i: Record<string, unknown>): string | null {
+  const parts = [fieldLine("Account", i["account"]), fieldLine("Calendar", i["calendarId"])].filter((p) => p !== null);
+  return parts.length === 0 ? null : parts.join("\n");
+}
+
+/** A note about to be written: title, tags and the whole text. `shared` also names the file. */
+function noteDetails(i: Record<string, unknown>, shared: boolean): string | null {
+  const title = str(i["title"]);
+  return detailsOf(
+    fieldLine("Title", title),
+    shared && title !== null ? `*Saved as:* ${escapeMrkdwn(inboxNotePath(title))}` : null,
+    listLine("Tags", i["tags"]),
+    blockLine("Note", i["body"]),
+  );
+}
+
 const DETAILS: Record<string, Details> = {
   gmail_send: mailDetails,
   gmail_draft: mailDetails,
   meeting_followup_send: mailDetails,
   deadline_mint_statutory: deadlineMintDetails,
-  // Every guest of a calendar invitation, named in full — never abbreviated to "and N more",
-  // which would hide who is about to be invited — plus the line that says guests see the event
-  // on their own calendars whether or not `notify` sends an email (the D-C ruling in
-  // `always-ask.ts`, stated on the card as well as in prose).
+  "agent-kit__vault_write": (i) => noteDetails(i, false),
+  vault_write: (i) => noteDetails(i, true),
+  "agent-kit__vault_file": (i) => detailsOf(fieldLine("Move from", i["path"]), fieldLine("Move to", i["destination"])),
+  "agent-kit__vault_drop": (i) => detailsOf(fieldLine("Delete note", i["path"])),
+
+  // The whole event: every guest named in full (never "and N more", which would hide who is about to
+  // be invited), the time span, the description and the calendar it lands on, plus the line that says
+  // guests see the event on their own calendars whether or not `notify` sends an email (the D-C ruling
+  // in `always-ask.ts`, stated on the card as well as in prose).
   calendar_create_event: (i, tz) => {
     const guests = allRecipients(i["attendees"]);
-    if (guests === null) return null;
-    const whenStr = when(i["start"], tz); // reuse the existing `when(v, tz)` helper
-    return shorten(
-      [
-        `*Guests:* ${escapeMrkdwn(guests)}`,
-        whenStr === null ? null : `*When:* ${whenStr}`,
-        "Invited guests see it on their own calendars whether or not an email notification is sent.",
-      ]
-        .filter((p): p is string => p !== null)
-        .join("\n\n"),
+    return detailsOf(
+      fieldLine("Event", i["summary"]),
+      eventTimes(i, tz),
+      guests === null ? null : `*Guests:* ${escapeMrkdwn(guests)}`,
+      blockLine("Description", i["description"]),
+      eventWhere(i),
+      i["notify"] === true ? "Guests will be emailed." : null,
+      guests === null ? null : "Invited guests see it on their own calendars whether or not an email notification is sent.",
     );
   },
+  calendar_update_event: (i, tz) =>
+    detailsOf(
+      fieldLine("Event", i["eventId"]),
+      fieldLine("New title", i["summary"]),
+      eventTimes(i, tz),
+      blockLine("New description", i["description"]),
+      eventWhere(i),
+      i["notify"] === true ? "Guests will be emailed." : null,
+    ),
+  calendar_delete_event: (i) =>
+    detailsOf(
+      fieldLine("Delete event", i["eventId"]),
+      eventWhere(i),
+      i["notify"] === true ? "Guests will be emailed." : null,
+      blockLine("Reason given by the agent", i["reason"]),
+    ),
+
+  remind_set: (i, tz) =>
+    detailsOf(
+      blockLine("Reminder", i["message"]),
+      when(i["dueAt"], tz) === null ? null : `*Due:* ${when(i["dueAt"], tz)}`,
+      fieldLine("Repeats", i["recurrence"]),
+      str(i["door"]) === null ? null : `*Sent in:* ${escapeMrkdwn(doorName(str(i["door"])!))}`,
+    ),
+  remind_cancel: (i) => detailsOf(fieldLine("Cancel reminder", i["id"])),
+
+  deadline_done: (i) => detailsOf(fieldLine("Close deadline", i["id"]), blockLine("Evidence", i["evidence"])),
+  deadline_dismiss: (i) =>
+    detailsOf(fieldLine("Dismiss deadline", i["id"]), fieldLine("Candidate thread", i["candidateThreadId"]), blockLine("Reason", i["reason"])),
+
+  gmail_draft_recipients: (i) =>
+    detailsOf(
+      fieldLine("Add", allRecipients(i["add"])),
+      fieldLine("Remove", allRecipients(i["remove"])),
+      fieldLine("Mailbox", i["account"]),
+      fieldLine("Thread", i["threadId"]),
+      fieldLine("Draft", i["draftId"]),
+    ),
+
+  twenty_comm_state: (i) =>
+    detailsOf(fieldLine("Record", i["recordId"]), fieldLine("New state", i["state"]), fieldLine("Only if currently", i["expectedPrevious"])),
+  twenty_set_stage: (i) => detailsOf(fieldLine("Opportunity", i["opportunityId"]), fieldLine("New stage", i["stage"])),
+  twenty_create_opportunity: (i) =>
+    detailsOf(fieldLine("Name", i["name"]), fieldLine("Stage", i["stage"]), fieldLine("Brand", i["brand"]), fieldLine("Point of contact", i["pointOfContactId"])),
+  twenty_note: (i) => detailsOf(fieldLine("Added to", i["target"]), fieldLine("Title", i["title"]), blockLine("Note", i["body"])),
+  twenty_do_not_contact: (i) => detailsOf(fieldLine("Record", i["recordId"]), blockLine("Reason", i["reason"])),
+
+  track_create: (i) =>
+    detailsOf(
+      fieldLine("Track", i["trackId"]),
+      fieldLine("Name", i["name"]),
+      blockLine("Purpose", i["purpose"]),
+      listLine("Steps", i["steps"]),
+      listLine("Closing steps", i["closingSteps"]),
+    ),
+  track_set_steps: (i) =>
+    detailsOf(fieldLine("Track", i["trackId"]), listLine("Steps", i["steps"]), listLine("Closing steps", i["closingSteps"])),
+  track_add_item: (i) => {
+    const who = i["who"] !== null && typeof i["who"] === "object" ? (i["who"] as Record<string, unknown>) : {};
+    return detailsOf(
+      fieldLine("Track", i["trackId"]),
+      fieldLine("Person", who["personId"]),
+      fieldLine("Organisation", who["organisationId"]),
+      fieldLine("Step", i["step"]),
+      blockLine("Note", i["note"]),
+      fieldLine("Source", i["sourceSignal"]),
+      fieldLine("Home", i["home"]),
+    );
+  },
+  track_move_item: (i) =>
+    detailsOf(
+      fieldLine("Track", i["trackId"]),
+      fieldLine("Item", i["itemId"]),
+      fieldLine("Move to step", i["step"]),
+      blockLine("Note", i["note"]),
+      fieldLine("Source", i["sourceSignal"]),
+      fieldLine("Home", i["home"]),
+    ),
+
 };
+
+/**
+ * Gated tools whose card needs no details text, each with the reason. A tool is here only when its
+ * title already says the whole change, or the change lives somewhere the input cannot reach. The
+ * coverage test fails for a gated tool that is in neither this list nor `DETAILS`, so adding a write
+ * tool without deciding what its card shows is not possible by accident.
+ */
+export const CARD_NEEDS_NO_DETAILS: Readonly<Record<string, string>> = Object.freeze({
+  echo_note: "a gate-proof tool; its whole input is the one note and the title shows it",
+  read_url: "the title shows the address whole, which is the entire decision",
+  meeting_followup_auto: "the title is the series and the level, which is the whole change",
+  meeting_followup_redraft: "the input is one page id; the change is a reset of that follow-up, named in the title",
+  personal_mailbox_send: "asks through the private console flow, which shows account, recipients, subject and body",
+  atlas_resolve_proposal: "the input is a proposal number and a decision; the proposal text is stored, not in the input",
+  notion_resolve_proposal: "the input is a proposal number and a decision; the proposal text is stored, not in the input",
+  memory_resolve_proposal: "the input is a proposal number and a decision; the proposal text is stored, not in the input",
+  forget: "the input is a fact number; the fact text is stored, not in the input",
+});
+
+/** True when this tool has a details text under its card. */
+export function hasCardDetails(toolName: string): boolean {
+  return Object.prototype.hasOwnProperty.call(DETAILS, toolName);
+}
 
 /**
  * The second entry point the eve patch calls: mrkdwn to render under the card, or `undefined`

@@ -305,20 +305,19 @@ describe("an email approval card", () => {
 
 describe("a summarised tool with nothing more to show", () => {
   it("is the card alone: no draft section and no raw JSON", () => {
-    const { parts } = render(approval("calendar_delete_event", { eventId: "evt-example-1", notify: false }));
+    const { parts } = render(approval("read_url", { url: "https://example.com/a" }));
     expect(blocksOf(parts).map((b) => b.type)).toEqual(["card"]);
     expect(parts.details).toBeUndefined();
     expect(text(parts)).not.toContain("```");
   });
 
-  it("shows the title it was given, reason included, and adds nothing", () => {
+  it("shows the title it was given, reason included, and the whole reason under it", () => {
     const reason = 'Cancellation mail from the hotel, 18 Aug 2026: "Your reservation has been cancelled".';
     const interaction = approval("calendar_delete_event", { eventId: "e1", reason });
     expect(interaction.request.prompt).toContain(reason);
     const { parts } = render(interaction);
-    expect(blocksOf(parts)).toEqual(compactCardFor(interaction).controls.blocks);
     expect(text(parts)).toContain("Your reservation has been cancelled");
-    expect(parts.details).toBeUndefined();
+    expect(blocksOf(parts).map((b) => b.type)).toEqual(["card", "section"]);
   });
 });
 
@@ -502,7 +501,7 @@ describe("a card eve draws itself is never counted whole, and the hook fails clo
   });
 
   it("a short card with nothing under its title is whole either way", () => {
-    expect(slackCardPostedWhole("calendar_delete_event", { eventId: "e1" }, [{ type: "card" }])).toBe(true);
+    expect(slackCardPostedWhole("read_url", { url: "https://example.com/a" }, [{ type: "card" }])).toBe(true);
   });
 
   it("a hook that throws takes Approve off: Deny only, and eve still accepts our card", () => {

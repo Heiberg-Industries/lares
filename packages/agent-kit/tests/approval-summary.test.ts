@@ -467,8 +467,8 @@ describe("detailsForApproval — the draft itself, rendered under a mail card", 
   });
 
   it("is undefined for a tool whose arguments are not a message —'s card-only shape stays theirs", () => {
-    expect(detailsForApproval("calendar_delete_event", { eventId: "e1" })).toBeUndefined();
-    expect(detailsForApproval("twenty_note", { recordId: "r1", body: "note" })).toBeUndefined();
+    expect(detailsForApproval("read_url", { url: "https://example.com" })).toBeUndefined();
+    expect(detailsForApproval("forget", { id: 3 })).toBeUndefined();
   });
 
   it("is undefined when neither subject nor body resolved, rather than an empty block", () => {
@@ -762,14 +762,18 @@ describe("approvalCardShape — one card shape for every door", () => {
     const shape = approvalCardShape("remind_set", input);
     expect(shape.title).toContain("(shortened)");
     expect(shape.title).toContain("via Telegram");
-    expect(shape.body).toEqual([{ kind: "json", text: JSON.stringify(input, null, 2) }]);
+    // The whole reminder text is under the card, and the cut title still brings the whole request.
+    expect(shape.body[0]).toMatchObject({ kind: "text" });
+    expect(shape.body[0]!.text).toContain(message);
+    expect(shape.body[1]).toEqual({ kind: "json", text: JSON.stringify(input, null, 2) });
   });
 
-  it("a summarised tool whose title says everything has no body", () => {
+  it("a summarised tool whose title says everything still shows its details", () => {
     const shape = approvalCardShape("remind_set", { message: "file VAT", dueAt: "2026-09-01T08:00:00Z", door: "slack" });
     expect(shape.title).toContain("via Slack");
-    expect(shape.body).toEqual([]);
-    expect(shape.shortDetails).toBeUndefined();
+    expect(shape.body).toHaveLength(1);
+    expect(shape.body[0]!.text).toContain("file VAT");
+    expect(shape.shortDetails).toContain("file VAT");
   });
 
   it("a tool nobody summarised gets the whole request as JSON", () => {
@@ -794,5 +798,50 @@ describe("approvalCardShape — one card shape for every door", () => {
   it("leaves the cut flag clean for the next card", () => {
     approvalCardShape("gmail_send", MAIL);
     expect(summarizeApproval("gmail_send", { to: ["a@example.com"], subject: "Hi" })).toBe('Send email to a@example.com — "Hi"');
+  });
+});
+
+describe("details for every gated write — the exact change under the card", () => {
+  it("a private note shows its title, tags and whole text", () => {
+    const body = "first line\nsecond & <third>";
+    const out = detailsForApproval("agent-kit__vault_write", { area: "private", title: "Plan", body, tags: ["x", "y"] })!;
+    expect(out).toContain("*Title:* Plan");
+    expect(out).toContain("*Tags:* x, y");
+    expect(out).toContain("first line\nsecond &amp; &lt;third&gt;");
+  });
+
+  it("a shared note also names the file it is saved as", () => {
+    expect(detailsForApproval("vault_write", { title: "Brand voice", body: "text" })).toContain("_inbox/brand-voice.md");
+  });
+
+  it("a calendar change shows the description and the end time", () => {
+    const out = detailsForApproval("calendar_update_event", { eventId: "e1", end: "2026-12-01T12:00:00Z", description: "Bring the contract" })!;
+    expect(out).toContain("*Event:* e1");
+    expect(out).toContain("*Ends:*");
+    expect(out).toContain("Bring the contract");
+  });
+
+  it("a delete shows the whole reason", () => {
+    const reason = "r".repeat(200);
+    expect(detailsForApproval("calendar_delete_event", { eventId: "e1", reason })).toContain(reason);
+  });
+
+  it("a CRM note shows the whole text", () => {
+    const out = detailsForApproval("twenty_note", { target: "person-1", title: "Call", body: "Agreed to a pilot in March." })!;
+    expect(out).toContain("Agreed to a pilot in March.");
+    expect(out).toContain("person-1");
+  });
+
+  it("a track shows every step", () => {
+    const out = detailsForApproval("track_create", { trackId: "t", name: "Hiring", purpose: "Fill roles", steps: ["Screen", "Interview"], closingSteps: ["Hired"] })!;
+    expect(out).toContain("Screen, Interview");
+    expect(out).toContain("Hired");
+  });
+
+  it("a very long note is cut with the cut admitted, and shown whole in the card body", () => {
+    const body = "word ".repeat(1000) + "THE-END";
+    expect(detailsForApproval("agent-kit__vault_write", { title: "T", body })).toContain("— shortened —");
+    const shape = approvalCardShape("agent-kit__vault_write", { area: "private", title: "T", body });
+    expect(shape.body.map((p) => p.text).join("\n")).toContain("THE-END");
   });
 });
