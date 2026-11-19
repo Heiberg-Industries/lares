@@ -487,6 +487,7 @@ describe("an installer re-run keeps agent settings set by hand in keeper.json", 
     it("leaves the slot alone, with a line saying why, when another Notion user exists", () => {
       const cases: [string, (c: any) => void, string][] = [
         ["a service outside the engine reaches Notion", c => { c.lifecycle.egress.legacyConsumers = [{ name: "old-sync", hosts: ["api.notion.com"] }]; }, "outside the engine"],
+        ["a service reaches a Notion sub-domain", c => { c.lifecycle.egress.legacyConsumers = [{ name: "old-sync", hosts: ["www.notion.so"] }]; }, "outside the engine"],
         ["an agent has its own key file", c => { c.lifecycle.defaultBindings["chief-of-staff"].secrets.NOTION_TOKEN_FILE = "/etc/lares/secrets/notion-token"; }, "its own Notion key file"],
         ["an administrator recorded consumers", c => { c.credentials.retainedConsumers = [{ name: "x-svc", category: "external-binding" }]; }, "recorded services"],
         ["an older per-agent-image install", c => { c.mode = "overlay"; }, "not set up by the current installer"],

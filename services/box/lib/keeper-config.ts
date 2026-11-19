@@ -145,7 +145,7 @@ export function decideNotionSlot(previous: PreviousNotionSlot | undefined): Noti
     retainedConsumers: Array.isArray(old?.retainedConsumers) ? old.retainedConsumers as NotionSlotDecision["retainedConsumers"] : [], leftUnpreparedBecause: reason });
   if (previous.mode !== "rendered") return held("this installation was not set up by the current installer");
   if (Array.isArray(old?.retainedConsumers) && old.retainedConsumers.length > 0) return held("an administrator has recorded services that use a Notion key");
-  if (previous.legacyConsumerHosts.some(hosts => hosts.includes("api.notion.com"))) return held("a service outside the engine is allowed to reach Notion");
+  if (previous.legacyConsumerHosts.some(hosts => hosts.some(h => /notion/i.test(h)))) return held("a service outside the engine is allowed to reach Notion");
   if (previous.bindingSecretKeys.includes("NOTION_TOKEN_FILE")) return held("an agent is set up with its own Notion key file");
   return ready;
 }
