@@ -803,8 +803,9 @@ def prove_keeper_default_admission() -> None:
         "s.on('data',x=>b+=x);s.on('end',()=>{clearTimeout(t);let r;"
         "try{r=JSON.parse(b)}catch{process.exit(3)};"
         "if(r.ok!==true||r.result?.slot!=='notion:shared'||"
-        "r.result?.guidance==='configure-administrator'||"
-        "r.result?.guidance==='prepare-managed-slot')process.exit(4);"
+        "r.result?.state!=='not-configured'||r.result?.guidance!==null){"
+        "console.error(JSON.stringify({state:r.result?.state,guidance:r.result?.guidance}));"
+        "process.exit(4)};"
         "console.log(JSON.stringify({ready:true,state:r.result.state}))});"
         "s.on('error',()=>{clearTimeout(t);process.exit(5)})"
     )
@@ -832,8 +833,9 @@ def prove_keeper_default_admission() -> None:
         # trimmed by report_failure), so a socket that answers wrongly is told apart from silence.
         keeper_log = docker("logs", "--tail", "200", name, check=False, timeout=15)
         raise ProbeFailure("keeper-ready-rpc-timeout",
-                           step="readiness request exit status %s; the keeper's log follows" %
-                           (readiness_result.returncode if readiness_result is not None else "none"),
+                           step="readiness request exit status %s, answered %s; the keeper's log follows" %
+                           (readiness_result.returncode if readiness_result is not None else "none",
+                            (readiness_result.stderr or "").strip()[:200] if readiness_result is not None else "nothing"),
                            result=keeper_log)
     proof["claims"]["keeperDefaultServePassedDatabaseReadinessAndBothSockets"] = True
     proof["stages"]["keeperAuthenticatedReadinessRequest"] = True
