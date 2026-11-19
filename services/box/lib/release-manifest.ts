@@ -8,6 +8,13 @@ export interface ReleaseManifest {
   readonly images: Readonly<Record<string, string>>; // service -> full digest reference
   readonly migrations: { readonly box: string; readonly chiefOfStaff?: string }; // last file each
   readonly breaking: readonly string[]; // one sentence per breaking change
+  /**
+   * Optional provenance, written by the publish workflow: for each image built by this
+   * repository, the full commit it was built from. An image carried over unchanged from an
+   * earlier release keeps the commit that release recorded for it, so a digest is never
+   * labelled with a commit it was not built from. Releases written by hand have none.
+   */
+  readonly sources?: Readonly<Record<string, string>>;
 }
 
 export class ReleaseManifestInvalid extends Error {}
@@ -79,6 +86,21 @@ export function parseReleaseManifest(text: string): ReleaseManifest {
     fail("A release file must list its breaking changes as sentences, or as an empty list.");
   }
 
+  let sources: Record<string, string> | undefined;
+  if (obj.sources !== undefined) {
+    if (typeof obj.sources !== "object" || obj.sources === null || Array.isArray(obj.sources)) {
+      fail("The sources of a release file must map an image to the commit it was built from.");
+    }
+    sources = {};
+    for (const [service, commit] of Object.entries(obj.sources as Record<string, unknown>)) {
+      if (!(service in checkedImages)) fail(`The release file gives a source for "${service}", which is not one of its images.`);
+      if (typeof commit !== "string" || !/^[a-f0-9]{40}$/.test(commit)) {
+        fail(`The source of "${service}" must be a full 40-character commit id.`);
+      }
+      sources[service] = commit;
+    }
+  }
+
   return {
     release: obj.release,
     images: checkedImages,
@@ -87,6 +109,7 @@ export function parseReleaseManifest(text: string): ReleaseManifest {
         ? { box: migrations.box }
         : { box: migrations.box, chiefOfStaff },
     breaking: obj.breaking as readonly string[],
+    ...(sources === undefined ? {} : { sources }),
   };
 }
 
