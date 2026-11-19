@@ -207,7 +207,8 @@ def fixture_secret_values() -> set[str]:
     secrets folder and the installed configuration (whole lines of the two secret folders,
     KEY=VALUE values whose key names a secret, JSON strings whose key names a secret)."""
     values = set(generated_secrets) | {operator_password, app_password}
-    for folder, whole_lines in ((private_root, True), (secrets_dir, True), (fixture_prefix / "etc", False)):
+    for folder, whole_lines in ((private_root, True), (secrets_dir, True),
+                                (fixture_prefix / "srv/lares/secrets", True), (fixture_prefix / "etc", False)):
         try:
             paths = [path for path in folder.rglob("*") if path.is_file() and not path.is_symlink()]
         except Exception:
