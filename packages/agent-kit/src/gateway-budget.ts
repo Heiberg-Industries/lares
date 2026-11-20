@@ -490,6 +490,11 @@ export function defaultSessionFailedText(data: FailureEventData, dialect: Failur
   ].join("\n");
 }
 
+/** What a door says when the agent's gateway key hits its spending cap. One sentence for every
+ *  door: it is an operational fact, not a voice, and says only what is true (nothing ran). */
+export const SPENDING_CAP_REFUSED_TEXT =
+  "I have hit my spending cap — nothing was done. It resets with the next budget period, or you can raise the cap.";
+
 /**
  * The door's answer to a `turn.settled` event whose outcome is `failed` (pass the event's `data`).
  *
