@@ -7,6 +7,8 @@ import {
   summarizeApproval,
   coversApproval,
   detailsForApproval,
+  mrkdwnToPlain,
+  plainDetailsForApproval,
   registerApprovalSummary,
   cardTitle,
   withCardTitle,
@@ -498,7 +500,8 @@ describe("detailsForApproval — the draft itself, rendered under a mail card", 
     registerApprovalSummary();
     try {
       expect(globalThis.__eveApprovalDetails).toBeTypeOf("function");
-      expect(globalThis.__eveApprovalDetails).toBe(detailsForApproval);
+      const probe = { to: "a@example.com", subject: "S", bodyText: "B" };
+      expect(globalThis.__eveApprovalDetails!("gmail_send", probe)).toBe(plainDetailsForApproval("gmail_send", probe));
     } finally {
       delete globalThis.__eveApprovalSummary;
       delete globalThis.__eveApprovalCovers;
@@ -843,5 +846,29 @@ describe("details for every gated write — the exact change under the card", ()
     expect(detailsForApproval("agent-kit__vault_write", { title: "T", body })).toContain("— shortened —");
     const shape = approvalCardShape("agent-kit__vault_write", { area: "private", title: "T", body });
     expect(shape.body.map((p) => p.text).join("\n")).toContain("THE-END");
+  });
+});
+
+describe("plain details for a door that sends no formatting (Telegram)", () => {
+  const mail = { to: "a@example.com", subject: "Smith & Sons", bodyText: "Total: 5 < 6 *really*" };
+
+  it("drops the asterisks around a label at the start of a line and reads the entities back", () => {
+    const plain = plainDetailsForApproval("gmail_send", mail)!;
+    expect(plain).toContain("To: a@example.com");
+    expect(plain).toContain("Subject: Smith & Sons");
+    expect(plain).toContain("Total: 5 < 6 *really*");
+    expect(plain).not.toMatch(/^\*[^*\n]+:\*/m);
+  });
+
+  it("leaves Slack's version untouched: labels stay bold, entities stay escaped", () => {
+    const slack = detailsForApproval("gmail_send", mail)!;
+    expect(slack).toContain("*To:* a@example.com");
+    expect(slack).toContain("Smith &amp; Sons");
+    expect(approvalCardShape("gmail_send", mail).body.map((b) => b.text).join("\n")).toContain("*Subject:* Smith &amp; Sons");
+  });
+
+  it("converts a label whose value starts on the next line, and ignores a lone asterisk", () => {
+    expect(mrkdwnToPlain("*Note:*\nbody")).toBe("Note:\nbody");
+    expect(mrkdwnToPlain("5 * 3 = 15")).toBe("5 * 3 = 15");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { slackManifest, slackBotScopes, telegramSteps, telegramConnectLink, doorStateText, doorTouched, slackClaimMessage } from '../lib/doors';
+import { slackExistingAppSteps, slackManifest, slackBotScopes, telegramSteps, telegramConnectLink, doorStateText, doorTouched, slackClaimMessage } from '../lib/doors';
 describe('door setup', () => {
   it('carries only this agent request URLs', () => {
     const { manifest, createUrl } = slackManifest({name:'bookkeeper',display:'Bookkeeper',role:'creative'}, 'https://doors.example.com');
@@ -10,19 +10,27 @@ describe('door setup', () => {
   });
   it('requests exactly the scopes and events for direct messages and mentions, and nothing that reads a channel', () => {
     const {manifest}=slackManifest({name:'b',display:'B',role:'creative'},'https://c.example.com');
-    expect(manifest.oauth_config.scopes.bot).toEqual(['chat:write','im:history','app_mentions:read']);
+    expect(manifest.oauth_config.scopes.bot).toEqual(['chat:write','im:history','app_mentions:read','assistant:write']);
     expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im','app_mention']);
+  });
+  it('makes Slack label the app an agent, with a description, and tells the owner to upload the icon', () => {
+    const {manifest}=slackManifest({name:'b',display:'B',role:'creative'},'https://c.example.com');
+    expect(manifest.features.agent_view.agent_description.length).toBeGreaterThan(0);
+    expect(manifest.features.agent_view.agent_description.length).toBeLessThanOrEqual(300);
+    expect(manifest.display_information.description).toBeTruthy();
+    expect(slackExistingAppSteps.join(' ')).toMatch(/icon/i);
+    expect(slackExistingAppSteps.join(' ')).toMatch(/cannot be undone/);
   });
   it('lets only the chief of staff open the direct-message conversation for its scheduled messages', () => {
     const {manifest}=slackManifest({name:'b',display:'B',role:'chief-of-staff'},'https://c.example.com');
-    expect(manifest.oauth_config.scopes.bot).toEqual(['chat:write','im:history','app_mentions:read','im:write']);
+    expect(manifest.oauth_config.scopes.bot).toEqual(['chat:write','im:history','app_mentions:read','assistant:write','im:write']);
     expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im','app_mention']);
-    expect(slackBotScopes('chief-of-staff')).toEqual(['chat:write','im:history','app_mentions:read','im:write']);
-    expect(slackBotScopes('creative')).toEqual(['chat:write','im:history','app_mentions:read']);
+    expect(slackBotScopes('chief-of-staff')).toEqual(['chat:write','im:history','app_mentions:read','assistant:write','im:write']);
+    expect(slackBotScopes('creative')).toEqual(['chat:write','im:history','app_mentions:read','assistant:write']);
   });
   it.each(['bookkeeper','','Chief-of-staff'])('gives an unknown or future role %j no im:write by default', role => {
     expect(slackBotScopes(role)).not.toContain('im:write');
-    expect(slackManifest({name:'b',display:'B',role},'https://c.example.com').manifest.oauth_config.scopes.bot).toEqual(['chat:write','im:history','app_mentions:read']);
+    expect(slackManifest({name:'b',display:'B',role},'https://c.example.com').manifest.oauth_config.scopes.bot).toEqual(['chat:write','im:history','app_mentions:read','assistant:write']);
   });
   it('gives ordered BotFather instructions naming the agent', () => {
     const steps=telegramSteps('Bookkeeper');

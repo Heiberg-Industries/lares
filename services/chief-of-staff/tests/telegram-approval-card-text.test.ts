@@ -42,6 +42,7 @@ import {
   DETAILS_VALUES_SHORTENED,
   SUMMARY_SHORTENED,
   detailsForApproval,
+  plainDetailsForApproval,
   registerApprovalSummary,
   shortenedNotice,
   summarizeApproval,
@@ -104,13 +105,23 @@ describe("the Telegram approval card", () => {
   it("holds the title, then the draft: subject and body", () => {
     registerApprovalSummary();
     const request = approvalCard("gmail_send", mail("Hello,\nthe price is 4 200."));
-    const details = detailsForApproval("gmail_send", mail("Hello,\nthe price is 4 200."));
+    const details = plainDetailsForApproval("gmail_send", mail("Hello,\nthe price is 4 200."));
     expect(details).toContain("The offer");
     expect(details).toContain("the price is 4 200.");
 
     const { card } = render(request);
     expect(card.text).toBe(`Approve Send email?\n\n${details}`);
     expect(card.freeformRequestId).toBeUndefined();
+  });
+
+  it("shows labels and names as plain text: no asterisks, no entities (Telegram sends no formatting)", () => {
+    registerApprovalSummary();
+    const { card } = render(approvalCard("gmail_send", { to: "a@example.com", subject: "Smith & Sons <draft>", bodyText: "Hi" }));
+    expect(card.text).toContain("To: a@example.com");
+    expect(card.text).toContain("Subject: Smith & Sons <draft>");
+    expect(card.text).not.toMatch(/\*[A-Za-z ]+:\*/);
+    expect(card.text).not.toContain("&amp;");
+    expect(card.text).not.toContain("&lt;");
   });
 
   it("has two buttons, Deny then Approve, answering deny and approve", () => {
@@ -182,7 +193,7 @@ describe("a card that was cut cannot be approved", () => {
     expect(details).not.toContain("THE LAST LINE");
 
     const { card, state } = render(approvalCard("gmail_send", mail(body)));
-    expect(card.text).toBe(`Approve Send email?\n\n${details}`);
+    expect(card.text).toBe(`Approve Send email?\n\n${plainDetailsForApproval("gmail_send", mail(body))}`);
     expect(card.text.length).toBeLessThan(TELEGRAM_LIMIT);
     expect(buttons(card).map((b) => b.text)).toEqual(["Deny"]);
     expect(optionIds(card, state)).toEqual(["deny"]);

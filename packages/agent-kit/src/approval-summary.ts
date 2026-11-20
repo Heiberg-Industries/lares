@@ -590,6 +590,28 @@ function escapeMrkdwn(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * The details as plain text, for a door that sends text with no formatting mode (Telegram, whose
+ * eve channel sets no `parse_mode`). The details are written once, in Slack mrkdwn; this is the one
+ * place they become plain: `*Label:*` loses its asterisks, and the three entities
+ * {@link escapeMrkdwn} wrote are read back, so "Smith & Sons" never shows as "Smith &amp; Sons".
+ * The `*` of a label is only removed when it opens a line, which is the only place a formatter
+ * writes one; a `*` the owner typed inside a value stays.
+ */
+export function mrkdwnToPlain(text: string): string {
+  return text
+    .replace(/^\*([^*\n]+?:)\*/gm, "$1")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+/** {@link detailsForApproval} for a plain-text door. */
+export function plainDetailsForApproval(toolName: unknown, input: unknown, tz?: string): string | undefined {
+  const details = detailsForApproval(toolName, input, tz);
+  return details === undefined ? undefined : mrkdwnToPlain(details);
+}
+
 /** The sentence a shortened card ends with, so "…" is never the only sign that something
  *  was cut. Exported so the test and any future renderer agree on one wording. */
 export function shortenedNotice(hidden: number): string {
@@ -1051,5 +1073,6 @@ export function registerApprovalSummary(opts: ApprovalSummaryOptions = {}): void
   registeredTz = tz;
   globalThis.__eveApprovalSummary = (toolName, input) => summarizeApproval(toolName, input, tz());
   globalThis.__eveApprovalCovers = coversApproval;
-  globalThis.__eveApprovalDetails = detailsForApproval;
+  // The one reader of this global is the Telegram card (and the archive of what was asked): plain text.
+  globalThis.__eveApprovalDetails = (toolName, input) => plainDetailsForApproval(toolName, input);
 }

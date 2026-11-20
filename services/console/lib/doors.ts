@@ -7,20 +7,33 @@ export function publicDoorOrigin(value: string): string {
 }
 /** The Slack app's bot permissions, by role. Every role reads and answers direct messages and hears
  * a mention of the app in a channel (`app_mentions:read`). No permission to read a channel's other
- * messages is asked for. Only a
+ * messages is asked for. `assistant:write` is what lets Slack label the app an agent. Only a
  * role that starts conversations on a schedule (the chief of staff) also gets `im:write`: Slack's
  * `conversations.open`, which looks up the owner's direct-message channel before such a
  * conversation starts, needs it. Any other role, including one added later, does not. */
 export function slackBotScopes(role:string):string[] {
-  const base=['chat:write','im:history','app_mentions:read'];
+  const base=['chat:write','im:history','app_mentions:read','assistant:write'];
   return role==='chief-of-staff'?[...base,'im:write']:base;
 }
+/** Shown on the app's Slack profile. `agent_view` is the manifest setting that makes Slack label the
+ * app an agent (with `assistant:write`) instead of a plain app. */
+export const SLACK_APP_DESCRIPTION='An assistant you talk to in direct messages, or mention in a channel.';
+/** A Slack manifest cannot carry the app's picture; it is uploaded by hand. */
+export const SLACK_ICON_STEP='Slack cannot take the picture from the manifest. Upload one yourself: Basic Information, then Display Information, then App icon.';
+/** For an app made before this setting existed. Slack cannot undo the switch to agent view. */
+export const slackExistingAppSteps:string[]=[
+  'Open your Slack app at api.slack.com/apps and choose App Manifest.',
+  'Replace its contents with the manifest shown here (Copy manifest) and save. Slack lists what changed; confirm it.',
+  'Slack asks you to reinstall the app because it now has the assistant:write permission. Do that; the bot token stays the same.',
+  'Switching an app to agent view cannot be undone. Reload Slack with a full refresh (Cmd/Ctrl+Shift+R in the browser) to see the app labelled as an agent.',
+  SLACK_ICON_STEP,
+];
 export function slackManifest(agent: {name:string;display:string;role:string}, consoleUrl:string) {
   if (!/^[a-z][a-z0-9-]{0,30}$/.test(agent.name)) throw new Error('Invalid agent name');
   const origin=publicDoorOrigin(consoleUrl);
   const manifest={
-    display_information:{name:agent.display},
-    features:{bot_user:{display_name:agent.display,always_online:false},app_home:{home_tab_enabled:false,messages_tab_enabled:true,messages_tab_read_only_enabled:false}},
+    display_information:{name:agent.display,description:SLACK_APP_DESCRIPTION},
+    features:{agent_view:{agent_description:SLACK_APP_DESCRIPTION},bot_user:{display_name:agent.display,always_online:false},app_home:{home_tab_enabled:false,messages_tab_enabled:true,messages_tab_read_only_enabled:false}},
     oauth_config:{scopes:{bot:slackBotScopes(agent.role)}},
     settings:{event_subscriptions:{request_url:`${origin}/api/doors/${agent.name}/slack/events`,bot_events:['message.im','app_mention']},
       interactivity:{is_enabled:true,request_url:`${origin}/api/doors/${agent.name}/slack/events`},org_deploy_enabled:false,socket_mode_enabled:false,token_rotation_enabled:false},
