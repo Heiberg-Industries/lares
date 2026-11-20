@@ -99,6 +99,7 @@
     "./integration-secret-lint": "./src/integration-secret-lint.ts",
     "./definition": "./src/definition.ts",
     "./outside-tools": "./src/outside-tools.ts",
+    "./mcp-oauth": "./src/mcp-oauth.ts",
     "./language": "./src/language.ts",
     "./definition-validate": "./src/definition-validate.ts",
     "./boot-definition": "./src/boot-definition.ts",
