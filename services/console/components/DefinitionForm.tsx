@@ -461,7 +461,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
               />
             </Field>
             <p className="lares-effect-note">
-              Shown in the console, and on the agent's Slack profile if you connect Slack. Do not put anything private here. The agent does not read it.
+              Shown in the console, and on the Slack profile of the agent if you connect Slack. Do not put anything private here. The agent does not read it.
             </p>
             {group(
               <>Instructions and language</>,

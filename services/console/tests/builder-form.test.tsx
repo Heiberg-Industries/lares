@@ -11,7 +11,7 @@ import {startingPoints,modelAliases,takesEffect} from '../lib/builder';
 vi.mock('next/navigation',()=>({useRouter:()=>({refresh:vi.fn(),push:vi.fn()})}));
 vi.mock('../app/actions/definition',()=>({createAgent:vi.fn(),saveDefinition:vi.fn(),retireAgent:vi.fn(),deleteAgent:vi.fn(),applyConnections:vi.fn(),listConversations:vi.fn(),startFreshConversation:vi.fn()}));
 vi.mock('../app/actions/autonomy',()=>({setAutonomy:vi.fn()}));
-const NOTE='Shown in the console, and on the agent's Slack profile if you connect Slack. Do not put anything private here. The agent does not read it.';
+const NOTE="Shown in the console, and on the Slack profile of the agent if you connect Slack. Do not put anything private here. The agent does not read it.";
 const base={startingPoints:startingPoints(),aliases:modelAliases('example'),timing:Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)])),capacity:{ceiling:6,activeCount:3,approved:true,creationAvailable:true,canChange:true}};
 it('keeps new-agent permission writes unavailable and gives every field its timing',()=>{
  render(<DefinitionForm {...base}/>);
