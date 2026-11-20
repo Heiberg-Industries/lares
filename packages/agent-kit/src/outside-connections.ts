@@ -5,8 +5,10 @@ import type { ApprovalContext, ApprovalResponseContext, ApprovalResponseDecision
 
 import type { AgentDefinition, OutsideToolDeclaration } from "./definition.js";
 import { registerOutsideConnections, withCardTitle } from "./approval-summary.js";
-import { outsideToolsInEffect } from "./outside-tools.js";
+import { outsideToolsInEffect, isTrustedRead, trustGrantFor } from "./outside-tools.js";
+import { toolPinHash } from "./outside-pins.js";
 import { asksAfterUntrustedText } from "./tainted-approval.js";
+import { isApprovalRecheck } from "./approval-execution.js";
 import type { Taint } from "./origin-taint.js";
 
 /** The slice of a definition this file reads. */
@@ -46,26 +48,28 @@ export function bareToolName(connection: string, toolName: string): string {
 /**
  * The request-time approval policy.
  *
- * - untrusted (the default): every call asks, reads included. A read's arguments go to a server the
- *   agent has no reason to believe, and its answer is outside text.
- * - trusted: a tool listed in `tools.read` asks only after the turn has read somebody else's words
- *   (`asksAfterUntrustedText`); every other tool asks. In a role with no taint hook
- *   (`taintAware: false`) that check could never see outside text, so every call asks.
+ * - every tool asks, reads included, UNLESS the owner switched that one tool on ("run without asking")
+ *   and it is also marked as only looking things up (`isTrustedRead`). A tool that changes
+ *   something always asks.
+ * - a trusted lookup runs without a card only while the turn has not read somebody else's words
+ *   (`asksAfterUntrustedText`). In a role with no taint hook (`taintAware: false`) that check could
+ *   never see outside text, so every call asks.
+ * Keeper re-checks the trust itself at call time; this only decides whether a card is raised.
  *
  * A function that returns eve's status, and never throws: a policy that threw would take the gate down.
  */
 export function outsideRequestPolicy(
   entry: OutsideToolDeclaration,
-  opts: { taintAware?: boolean; telegramApprovals?: boolean } = {},
+  opts: { taintAware?: boolean; telegramApprovals?: boolean; pins?: Readonly<Record<string, string>> } = {},
 ): (ctx: ApprovalContext) => Promise<ApprovalStatus> {
   const afterUntrusted = asksAfterUntrustedText();
   const telegramOk = opts.telegramApprovals ?? OUTSIDE_TELEGRAM_APPROVALS_PROVEN;
   return async (ctx) => {
     let decision: ApprovalStatus = "user-approval";
     try {
-      if (entry.trusted === true && opts.taintAware !== false) {
-        const bare = bareToolName(entry.name, ctx.toolName);
-        decision = entry.tools.read.includes(bare) ? await afterUntrusted(ctx) : "user-approval";
+      const bare = bareToolName(entry.name, ctx.toolName);
+      if (opts.taintAware !== false && isTrustedRead(entry, bare, opts.pins?.[bare])) {
+        decision = await afterUntrusted(ctx);
       }
     } catch {
       decision = "user-approval";
@@ -120,14 +124,16 @@ export const CONNECTION_SEARCH_TOOL = "eve__search";
 
 /**
  * The class a tool result from an outside tool taints the turn at, or undefined for none. Results of
- * `<name>__*` from an UNTRUSTED connection are `third_party`; so is `connection_search` output while
- * any untrusted connection is present. A trusted connection's results are the owner's own call.
+ * an outside tool are `third_party` unless the owner trusts that tool (a lookup the owner let run is the
+ * owner's own call); so is `connection_search` output while any connection has no trusted tool (the descriptions it shows
+ * are pinned, so a connection the owner already trusts for lookups adds nothing new).
  */
 export function outsideResultTaint(toolName: string, definition: OutsideDefinitionView): Taint | undefined {
-  const untrusted = outsideToolsInEffect(definition).filter((e) => e.trusted !== true);
-  if (untrusted.length === 0) return undefined;
-  if (toolName === CONNECTION_SEARCH_TOOL) return "third_party";
-  return untrusted.some((e) => toolName.startsWith(`${e.name}__`)) ? "third_party" : undefined;
+  const entries = outsideToolsInEffect(definition);
+  if (entries.length === 0) return undefined;
+  if (toolName === CONNECTION_SEARCH_TOOL) return entries.some((e) => !e.tools.allow.some((t) => trustGrantFor(e, t) !== undefined)) ? "third_party" : undefined;
+  const hit = entries.find((e) => toolName.startsWith(`${e.name}__`));
+  return hit !== undefined && trustGrantFor(hit, bareToolName(hit.name, toolName)) === undefined ? "third_party" : undefined;
 }
 
 // ─── Something is wrong ────────────────────────────────────────────────────────────────────
@@ -211,7 +217,9 @@ export interface OutsideRuntimeDeps {
   acceptedTools:(connectionName:string)=>Promise<AcceptedOutsideTool[]>;
   approval?:(connectionName:string,toolName:string)=>{request:(ctx:ApprovalContext)=>Promise<ApprovalStatus>;response:(ctx:ApprovalResponseContext)=>Promise<ApprovalResponseDecision>};
   /** Role-owned executor; its authority comes from the admitted-turn hook. */
-  executor:(connectionName:string,toolName:string)=>(input:unknown,ctx:ToolContext)=>Promise<unknown>;
+  /** `runsFree` is true for a call the owner let run without a card (a trusted lookup). The executor
+   *  must then ask Keeper for the trusted run; Keeper re-checks the trust itself. */
+  executor:(connectionName:string,toolName:string,runsFree:boolean)=>(input:unknown,ctx:ToolContext)=>Promise<unknown>;
 }
 
 /** Ordinary Eve tools using the accepted catalog. The Keeper independently requires an exact,
@@ -229,11 +237,19 @@ export async function resolveOutsideTools(definition:OutsideDefinitionView,deps:
     let accepted:AcceptedOutsideTool[];
     try{accepted=await deps.acceptedTools(entry.name);}catch{continue;}
     registerOutsideConnections([entry.name]);
+    const pins:Record<string,string>={};
+    for(const tool of accepted)pins[tool.name]=toolPinHash(tool);
     for(const tool of accepted){
       if(!entry.tools.allow.includes(tool.name))continue;
       const authored=deps.approval?.(entry.name,tool.name)??{request:async()=> 'user-approval' as const};
+      const runsFree=isTrustedRead(entry,tool.name,pins[tool.name]);
+      // A trusted lookup skips the card only on a clean turn. A card already raised (eve asks the policy
+      // again before the approved call runs) keeps its own path.
+      const free=outsideRequestPolicy(entry,{telegramApprovals:true,pins});
+      const gated=runsFree?{...authored,request:async (ctx:ApprovalContext)=>
+        (isApprovalRecheck(ctx)?authored.request(ctx):(await free(ctx))==='not-applicable'?'not-applicable' as const:authored.request(ctx))}:authored;
       tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
-        approval:withCardTitle(authored),execute:deps.executor(entry.name,tool.name)});
+        approval:withCardTitle(gated),execute:deps.executor(entry.name,tool.name,runsFree)});
     }
   }
   return Object.keys(tools).length?tools:null;

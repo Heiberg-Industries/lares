@@ -1,10 +1,11 @@
 import { defineDynamic } from 'eve/tools';
+import { approvalResponderOf } from '@lares/agent-kit/approval-execution';
 import { resolveOutsideTools, type AcceptedOutsideTool } from '@lares/agent-kit/outside-connections';
 import { outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
 import { verifyPrivateConsoleSession } from '@lares/agent-kit/private-console-surface';
 import { hasConsoleTurnAuthorityTag } from '@lares/agent-kit/console-turn-authority';
 import { thisAgent } from '../../lib/definition.js';
-import { acceptedOutsideTools, runOutsideTool, requestOutsideApproval, respondOutsideApproval } from '../../lib/outside-tools.js';
+import { acceptedOutsideTools, runOutsideTool, runTrustedOutsideTool, requestOutsideApproval, respondOutsideApproval } from '../../lib/outside-tools.js';
 
 // Outside tools: ordinary tools whose approval is always the object form (request, response, and the
 // card title). eve 1.0 runs this function before every model call, so what must not repeat is kept
@@ -25,6 +26,8 @@ export default defineDynamic(async (ctx) => {
    request:async approvalCtx=>requestOutsideApproval(connectionName,toolName,approvalCtx) as never,
    response:async responseCtx=>respondOutsideApproval(connectionName,toolName,responseCtx) as never,
   }),
-  executor:(connectionName,toolName)=>async (input,toolCtx)=>runOutsideTool(connectionName,toolName,input,toolCtx as never),
+  executor:(connectionName,toolName,runsFree)=>async (input,toolCtx)=>runsFree&&approvalResponderOf(toolCtx)===undefined
+   ?runTrustedOutsideTool(connectionName,toolName,input,toolCtx as never)
+   :runOutsideTool(connectionName,toolName,input,toolCtx as never),
  });
 });

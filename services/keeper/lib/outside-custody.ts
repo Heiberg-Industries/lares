@@ -145,7 +145,7 @@ const outsideUseCaptureSchema=z.strictObject({version:z.literal(1),actor:z.stric
   ownerPolicy:z.union([z.strictObject({kind:z.literal('unrestricted')}),z.strictObject({kind:z.literal('ceiling'),requiredCapabilities:z.array(z.string().min(1).max(256)).max(256)})]),
   outside:z.strictObject({scope:z.enum(['read','write-with-confirm']),autonomy:z.enum(['gated','autonomous']),connection:z.strictObject({
     name:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),url:z.string().max(2048),auth:z.literal('bearer'),allow:z.array(z.string().min(1).max(256)).max(256),
-    read:z.array(z.string().min(1).max(256)).max(256),trusted:z.boolean(),runsAt:z.string().max(256).optional()})}),
+    read:z.array(z.string().min(1).max(256)).max(256),runsAt:z.string().max(256).optional()})}),
   grant:z.union([z.strictObject({kind:z.literal('owner'),validUntil:z.null()}),z.strictObject({kind:z.literal('grant'),id:z.string().min(1).max(256),
     principal:z.strictObject({kind:z.enum(['member','organisation']),id:memberIdSchema}),permission:z.literal('use'),validUntil:z.string().datetime({offset:true}).nullable()})])});
 const executablePolicySchema=z.strictObject({version:z.literal(1),purpose:z.literal('outside-executable-v1'),ownerMemberId:memberIdSchema,accountId:uuid,
