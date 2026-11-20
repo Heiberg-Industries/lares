@@ -1988,6 +1988,11 @@ run_keeper() {
     outside_key_fingerprint=$(printf '%s' "$prepared" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keyFingerprint"])') || die "outside custody was prepared but its fingerprint could not be read; operator recovery is required." "$EX_REFUSED"
     say "outside custody prepared: outside tools can now be connected from the console"
   fi
+  # A key made by THIS run is taken back if the run stops before keeper.json holds the block that
+  # binds it, so a failed first run can be repeated instead of looking like a half-finished setup.
+  drop_new_outside_key() {
+    [ -z "$outside_key_fingerprint" ] || [ "$DRY" -eq 1 ] || rm -rf -- "$outside_dir"
+  }
   # The renderer checks the key file it is told about, so it needs to see that one folder.
   if [ -d "$outside_dir" ] && [ ! -L "$outside_dir" ]; then keeper_mounts+=(--ro "$outside_dir"); fi
   if ! engine_run "${keeper_mounts[@]}" bin/render-keeper-config.ts \
@@ -1999,10 +2004,12 @@ run_keeper() {
       "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")" "${PREFIX:-/}" \
       "$outside_key_fingerprint"; then
     rm -f "$tmp" "$env_tmp" "$tmp.rendered"
+    drop_new_outside_key
     die "the keeper's configuration could not be rendered from '$RELEASE_FILE' and the keeper.json already on this box (the reason is printed above; $keeper_config itself is untouched). The keeper has not been configured or started, and everything written before this — every secret, $INSTALL_ENV, the stack and its containers, the database, the owner — is left exactly as it is." "$EX_REFUSED"
   fi
   if [ ! -s "$tmp" ]; then
     rm -f "$tmp" "$env_tmp" "$tmp.rendered"
+    drop_new_outside_key
     die "rendering the keeper's configuration from '$RELEASE_FILE' produced nothing, so $keeper_config has not been written. The keeper has not been started, and everything written before this is left exactly as it is." "$EX_REFUSED"
   fi
   # The personal Google and Microsoft files keeper.json names are read from inside the keeper
@@ -2012,6 +2019,7 @@ run_keeper() {
   rm -f "$keeper_personal_compose.partial"
   if ! python3 "$BOX_DIR/ops/keeper-personal-mounts.py" "$tmp" "$keeper_personal_compose.partial" "$SECRETS_DIR" "$PREFIX"; then
     rm -f "$tmp" "$env_tmp" "$tmp.rendered" "$keeper_personal_compose.partial"
+    drop_new_outside_key
     die "a Google or Microsoft file named in $keeper_config cannot be given to the keeper (the reason is printed above). The keeper has not been changed and nothing already written has been changed. Fix the file, then run this again." "$EX_REFUSED"
   fi
   # 0600, set HERE as well as by the program that wrote it: `umask 077` at the top of this file

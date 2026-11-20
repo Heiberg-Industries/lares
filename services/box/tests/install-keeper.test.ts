@@ -548,6 +548,8 @@ describe("the keeper the installer configures and starts", () => {
     // The engine's own sentence (release-manifest.ts's imageFor), not a restatement in shell.
     expect(r.stderr).toMatch(/no image for "lares-firewall-helper"/);
     expect(existsSync(keeperConfigPath())).toBe(false);
+    // The outside custody key this failed run made is taken back, so the re-run is not a half-finished setup.
+    expect(existsSync(join(prefix, "var", "lib", "lares", "outside-custody"))).toBe(false);
     expect(at(/docker compose \S*.*compose\.lares-keeper\.yaml up -d/)).toBe(-1);
     // Everything earlier survives, so a re-run with a complete release resumes.
     expect(existsSync(join(prefix, "opt", "lares", "compose.yaml"))).toBe(true);

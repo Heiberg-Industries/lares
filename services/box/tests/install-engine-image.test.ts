@@ -85,7 +85,7 @@ beforeEach(() => {
   stub("docker", READS_PIPED_PSQL);
   stub("pnpm",
     `case "$3" in render-stack) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; ` +
-    `render-keeper-config) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; esac\nexit 0`);
+    `render-keeper-config) printf '{"outsideCustody":{}}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; esac\nexit 0`);
   stub("id", "echo 0");
   stub("uname", "echo Linux");
   stub("free", 'echo "Mem: 8192 1024 7168"');
