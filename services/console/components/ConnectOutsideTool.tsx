@@ -12,10 +12,10 @@ import { suggestConnectionName, toolNamesOf } from "../lib/outside-connect-words
 
 type Agent = { name: string; displayName: string };
 type Phase = "form" | "working" | "confirm" | "done";
-type Row = { name: string; description?: string; inputSchema?: Record<string, unknown>; use: boolean; kind: "read" | "change" };
+type Row = { name: string; description?: string; inputSchema?: Record<string, unknown>; use: boolean; kind: "read" | "change"; free: boolean; seen: boolean };
 type Item = { label: string; status: "waiting" | "running" | "done" | "failed"; message?: string };
 type Plan = { label: string; run: () => Promise<ConnectStep<unknown>> }[];
-type Settings = { name: string; url: string; description: string; hasToken: boolean; trusted: boolean; agents: string[] };
+type Settings = { name: string; url: string; description: string; hasToken: boolean; agents: string[] };
 
 /**
  * Connect any outside (MCP) tool server in two presses: Connect, then one confirmation of the tools it
@@ -27,7 +27,7 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
   const first = agents.find(a => a.name === initialAgent)?.name ?? agents[0]?.name;
   const [phase, setPhase] = useState<Phase>("form");
   const [url, setUrl] = useState(""), [token, setToken] = useState(""), [name, setName] = useState(""), [description, setDescription] = useState("");
-  const [toolText, setToolText] = useState(""), [consent, setConsent] = useState(false), [trusted, setTrusted] = useState(false);
+  const [toolText, setToolText] = useState(""), [consent, setConsent] = useState(false);
   const [ticked, setTicked] = useState<string[]>(first ? [first] : []);
   const [rows, setRows] = useState<Row[]>([]), [serverName, setServerName] = useState("");
   const [items, setItems] = useState<Item[]>([]), [failure, setFailure] = useState<{ message: string; retryable: boolean } | null>(null);
@@ -76,24 +76,24 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
     if (!/^[a-z][a-z0-9-]{1,30}$/.test(connectionName)) { setError("Give the connection a short name of lowercase letters, numbers and dashes."); return; }
     if (ticked.length === 0) { setError("Tick at least one agent."); return; }
     const chosen: Settings = { name: connectionName, url: address, description: description.trim() || `Tools from ${new URL(address).hostname}`,
-      hasToken: needsToken, trusted, agents: ticked };
+      hasToken: needsToken, agents: ticked };
     settings.current = chosen;
     if (!needsToken) {
       const names = toolNamesOf(toolText);
       if (names.length === 0) { setError("This server needs no token, so Lares cannot ask it what it offers. Type the names of the tools you want the agent to use."); return; }
-      setServerName(""); setRows(names.map(n => ({ name: n, use: true, kind: "change" }))); setPhase("confirm"); return;
+      setServerName(""); setRows(names.map(n => ({ name: n, use: true, kind: "change", free: false, seen: false }))); setPhase("confirm"); return;
     }
     if (!consent) { setError("Tick the box to allow sending the token to this address."); return; }
     const primary = chosen.agents[0]!;
     start([
       { label: `Save the connection on ${primary}`, run: () => connectDeclare({ agent: primary, provisional: true, connection: { name: chosen.name, url: chosen.url, description: chosen.description,
-        token: true, trusted: false, allow: [], read: [] } }) },
+        token: true, trustedTools: [], allow: [], read: [] } }) },
       { label: "Ask the server which tools it offers", run: async () => {
         const result = await connectLookUpTools({ agent: primary, name: chosen.name, credential: token });
         if (result.ok) {
           seen.current = result.value.tools;
           setServerName(result.value.serverName);
-          setRows(result.value.tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, use: true, kind: t.readOnly ? "read" : "change" })));
+          setRows(result.value.tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, use: true, kind: t.readOnly ? "read" : "change", free: t.readOnly === true, seen: true })));
         }
         return result;
       } },
@@ -105,8 +105,9 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
     const use = rows.filter(r => r.use);
     if (use.length === 0) { setError("Choose at least one tool for the agent to use."); return; }
     setError("");
-    const connection = { name: chosen.name, url: chosen.url, description: chosen.description, token: chosen.hasToken, trusted,
-      allow: use.map(r => r.name), read: use.filter(r => r.kind === "read").map(r => r.name) };
+    const connection = { name: chosen.name, url: chosen.url, description: chosen.description, token: chosen.hasToken,
+      allow: use.map(r => r.name), read: use.filter(r => r.kind === "read").map(r => r.name),
+      trustedTools: use.filter(r => r.kind === "read" && r.free && r.seen).map(r => ({ name: r.name, description: r.description, inputSchema: r.inputSchema })) };
     const steps: Plan = [];
     for (const agent of chosen.agents) {
       if (!chosen.hasToken) { steps.push({ label: `Save the connection on ${agent} and apply it`, run: () => connectDeclare({ agent, provisional: false, connection }) }); continue; }
@@ -177,24 +178,25 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
 
     {phase === "confirm" && <div className="lares-stack">
       <h2 className="lares-section-title">{serverName ? `${serverName} offers ${rows.length} tool${rows.length === 1 ? "" : "s"}` : "Tools you chose"}</h2>
-      <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Tools the server itself marks as read-only start as “only looks things up”; the rest start as “changes something”. Until you say otherwise, every call asks you first. If the server later changes a tool's description, that tool stops until you review it again.</p>
+      <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Tools the server itself marks as read-only start as “only looks things up” and with “Run without asking” ticked; the rest start as “changes something” and always ask you first. Switching “Run without asking” on is recorded as your own decision, with the time, and you can change it later on the connection's page. A tool that changes something can never run without asking. If the server later changes a tool's description, that tool stops until you review it again.</p>
       {!serverName && <p>Lares has not seen these tools yet. Their descriptions are recorded the first time the agent connects, and a later change pauses the tool.</p>}
       <ul className="lares-data-list">{rows.map((row, i) => <li key={row.name} className="lares-stack">
         <Choice><Checkbox checked={row.use} onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, use: e.target.checked } : r))} /> <strong>{row.name}</strong></Choice>
         {row.description && <p>{row.description}</p>}
-        <Select aria-label={`What ${row.name} does`} value={row.kind} disabled={!row.use} onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, kind: e.target.value as Row["kind"] } : r))}>
+        <Select aria-label={`What ${row.name} does`} value={row.kind} disabled={!row.use} onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, kind: e.target.value as Row["kind"], free: e.target.value === "read" ? r.free : false } : r))}>
           <option value="change">Changes something</option><option value="read">Only looks things up</option>
         </Select>
+        {row.seen && <Choice><Checkbox checked={row.free && row.kind === "read"} disabled={!row.use || row.kind !== "read"}
+          onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, free: e.target.checked } : r))} /> Run without asking{row.free && row.kind === "read" ? " — the server says this only looks things up" : ""}</Choice>}
         {row.inputSchema && <details><summary>What it asks for</summary><pre>{JSON.stringify(row.inputSchema, null, 2)}</pre></details>}
       </li>)}</ul>
-      <Choice><Checkbox checked={trusted} onChange={e => setTrusted(e.target.checked)} /> Let look-ups run without asking (off is safest; applies to every tool marked “only looks things up”)</Choice>
       {error && <p role="alert">{error}</p>}
       <div className="lares-actions"><Button type="button" onClick={finish}>Connect</Button><Button type="button" variant="outline" onClick={() => void cancelConfirmation()}>Cancel</Button></div>
     </div>}
 
     {phase === "done" && <div className="lares-stack">
       <Progress items={items} />
-      <Notice>Connected. {settings.current?.agents.join(", ")} can now use {rows.filter(r => r.use).length} tool{rows.filter(r => r.use).length === 1 ? "" : "s"} from {serverName || settings.current?.name}. Every call still asks you first. This does not yet prove the server answers: ask the agent to look something up to try it.</Notice>
+      <Notice>Connected. {settings.current?.agents.join(", ")} can now use {rows.filter(r => r.use).length} tool{rows.filter(r => r.use).length === 1 ? "" : "s"} from {serverName || settings.current?.name}. Tools you did not switch on to run without asking still ask you first. This does not yet prove the server answers: ask the agent to look something up to try it.</Notice>
       <div className="lares-actions"><Button type="button" variant="outline" onClick={reset}>Connect another</Button></div>
     </div>}
   </section>;

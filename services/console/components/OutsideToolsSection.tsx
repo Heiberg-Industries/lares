@@ -144,9 +144,9 @@ export function OutsideToolsSection({
               <p className="lares-muted">{t.description}</p>
               <p>Address: <span className="mono">{t.host ?? t.url}</span></p>
               <p>
-                {t.trusted
-                  ? "Trusted: lookups run without asking unless the agent has just read someone else's words. Changes always ask."
-                  : "Not trusted: every call asks you first."}
+                {(t.tools.trusted ?? []).length
+                  ? `Run without asking: ${(t.tools.trusted ?? []).map(g => `${g.tool} (switched on ${g.at.slice(0, 10)})`).join(", ")}. These skip the card unless the agent has just read someone else's words. Every other tool asks first, and a changed description ends this for that tool.`
+                  : "Every call asks you first."}
               </p>
               <p>{keyLine(t.token, evidence?.keys, t.name)}</p>
               <p>
