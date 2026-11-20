@@ -289,6 +289,9 @@ export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = global
             for (const id of ids) {
                 const [mounts, labels] = (await run(['inspect', '--format', '{{json .Mounts}}|{{json .Config.Labels}}', id])).trim().split('|').map(v => JSON.parse(v));
                 if (!Array.isArray(mounts)) throw new Error('Credential mount inventory unavailable');
+                // The keeper's own container mounts the whole keeper root, which contains the key file's path.
+                // It is the custodian that writes the key, not a consumer to restart, so it is never listed.
+                if (labels?.['com.docker.compose.service'] === 'lares-keeper') continue;
                 if (mounts.some((m: any) => m.Type === 'bind' && (m.Source === activePath || activePath.startsWith(String(m.Source).replace(/\/$/, '') + '/'))))
                     result.push({ name: typeof labels?.['com.docker.compose.service'] === 'string' ? labels['com.docker.compose.service'].replace(/^lares-/, '') : null,
                         incarnation: labels?.['lares.incarnation'] ?? null, owned: labels?.['com.docker.compose.project'] === c.project && /^lares-[a-z][a-z0-9-]{1,30}$/.test(labels?.['com.docker.compose.service'] ?? '') });
