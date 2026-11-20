@@ -48,6 +48,8 @@ What a person using this release will notice:
 
 Not proven on a real server yet: the in-place update from rc.15.test.6 to this release, connecting a real outside tool server, and the new Slack manifest on an existing app.
 
+Model prices were last checked on 18 November 2026.
+
 ## Security scan
 
 Scanner: Trivy, no ignore list, run by CI against each final linux/amd64 image immediately before it was published (the number of the version is in the scan step's output). The published digests were not scanned a second time. High and critical findings of the images built in this run:
