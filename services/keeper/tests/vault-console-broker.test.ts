@@ -1,6 +1,6 @@
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac, createHash, randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { execFileSync } from 'node:child_process';
@@ -220,6 +220,8 @@ beforeEach(async () => {
     CREATE TABLE agent_conversations(agent text,incarnation uuid,session_id text,door text,observed_at timestamptz DEFAULT now(),terminal boolean DEFAULT false,PRIMARY KEY(agent,incarnation,session_id));
     CREATE TABLE connected_accounts(id text PRIMARY KEY,owner_member_id text,generation integer,status text);
     CREATE TABLE agent_resources(name text PRIMARY KEY,ownership_token uuid,runtime_control_token uuid,state text,pending boolean,applied_definition jsonb);
+    CREATE TABLE outside_tool_pins(agent text NOT NULL,tool text NOT NULL,config_hash text NOT NULL,pin_hash text NOT NULL,pin_tools jsonb,seen_hash text,seen_tools jsonb,seen_at timestamptz,pinned_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(agent,tool));
+    CREATE TABLE keeper_audit(id bigserial PRIMARY KEY,operation_id uuid,action text NOT NULL,actor text NOT NULL,input jsonb NOT NULL DEFAULT '{}'::jsonb,outcome text NOT NULL,detail text,at timestamptz NOT NULL DEFAULT now(),completed_at timestamptz);
     CREATE TABLE ratchet(agent text,capability text,action text,level text,updated_by text NOT NULL DEFAULT 'fixture',updated_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE ratchet_audit(id bigserial PRIMARY KEY,agent text NOT NULL,capability text NOT NULL,action text NOT NULL,
       old_level text,new_level text,changed_by text NOT NULL,at timestamptz NOT NULL DEFAULT now());
@@ -1557,3 +1559,71 @@ for (const kind of DOOR_KINDS) {
     expect(await doorNoteUses()).toBe(0);
   });
 }
+
+// ─── A lookup the owner let run without a card ─────────────────────────────────────────────
+describe('a lookup under the owner\'s standing trust',()=>{
+ const lookupTool={name:'lookup',description:'Looks up a company.',inputSchema:{type:'object'}};
+ async function trustedFixture(over:{trust?:'none'|'write'|'stale-pin';pinRow?:'ok'|'missing'|'unaccepted'|'moved'}={}){
+  const {toolPinHash,entryConfigHash}=await import('../../../packages/agent-kit/src/outside-pins.js');
+  const grant={tool:over.trust==='write'?'create_note':'lookup',by:ids.member,at:'2026-11-20T10:00:00.000Z',
+   pin:toolPinHash(over.trust==='stale-pin'?{...lookupTool,description:'Older words.'}:lookupTool)};
+  const tools={allow:['lookup','create_note'],read:['lookup'],...(over.trust==='none'?{}:{trusted:[grant]})};
+  roleDefinition=definitionSchema.parse({...defaultRoleDefinition,
+   grants:[...defaultRoleDefinition.grants,{capability:'outside',scope:'write-with-confirm'}],autonomy:{...defaultRoleDefinition.autonomy,outside:'gated'},
+   outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Lookup',token:true,tools}]});
+  definitionHash=hashOf({definition:roleDefinition,dutiesMd,voiceMd});
+  session='trusted_'+randomUUID().replaceAll('-','');admissionNonce=createHash('sha256').update(randomUUID()).digest('base64url');
+  await pool.query("UPDATE agent_definitions SET definition=$1,hash=$2 WHERE name=$3",[roleDefinition,definitionHash,agent]);
+  await pool.query('UPDATE agent_resources SET applied_definition=$1 WHERE name=$2',[roleDefinition,agent]);
+  await pool.query('DELETE FROM outside_tool_pins WHERE agent=$1',[agent]);
+  const entry=roleDefinition.outsideTools![0]!;
+  if(over.pinRow!=='missing')await pool.query(
+   `INSERT INTO outside_tool_pins(agent,tool,config_hash,pin_hash,pin_tools,seen_hash) VALUES($1,'registry',$2,$3,$4::jsonb,$5)`,
+   [agent,entryConfigHash(entry),'e'.repeat(64),JSON.stringify([over.pinRow==='moved'?{...lookupTool,description:'Changed words.'}:lookupTool]),over.pinRow==='unaccepted'?'f'.repeat(64):null]);
+  expect(await new PgGrantStore(pool).captureUse(ids.member,agent)).toBeDefined();
+  await bindConsoleSession({agent,incarnation,sessionId:session,memberId:ids.member,admissionNonce},pool as never,env);
+  ids.outsideApprove.mockResolvedValue(undefined);
+  ids.outsideDispatch.mockResolvedValue({content:[{type:'text',text:'Fixture result'}]});
+  const call={callId:randomUUID(),connectionName:'registry',toolName:over.trust==='write'?'create_note':'lookup',input:{company:'Example'}};
+  return {call,binding:{sessionId:session,memberId:ids.member,admissionNonce}};
+ }
+ const audits=async()=>(await pool.query("SELECT actor,input,outcome FROM keeper_audit WHERE action='outside.run-trusted'")).rows;
+
+ it('runs a trusted lookup with no card, writes who granted the trust, and passes the call through the same custody path',async()=>{
+  const f=await trustedFixture();
+  expect(await runtime('outside.run-trusted',{...f.binding,call:f.call})).toMatchObject({result:{content:[{type:'text',text:'Fixture result'}]}});
+  expect(ids.outsideApprove).toHaveBeenCalledOnce();expect(ids.outsideDispatch).toHaveBeenCalledOnce();
+  const rows=await audits();expect(rows).toHaveLength(1);
+  expect(rows[0]!.input).toMatchObject({agent,connection:'registry',tool:'lookup',sessionId:session,callId:f.call.callId,trustGrantedBy:ids.member,trustGrantedAt:'2026-11-20T10:00:00.000Z'});
+  expect(JSON.stringify(rows[0]!.input)).not.toContain('Example');
+ });
+ it.each([
+  ['the tool was never switched on',{trust:'none' as const}],
+  ['a tool that changes something is listed as trusted',{trust:'write' as const}],
+  ['the description the owner switched on has changed',{trust:'stale-pin' as const}],
+  ['the pinned description has moved on',{pinRow:'moved' as const}],
+  ['a description change is waiting for the owner',{pinRow:'unaccepted' as const}],
+  ['no description has been pinned yet',{pinRow:'missing' as const}],
+ ])('refuses when %s, before any custody call',async(_name,over)=>{
+  const f=await trustedFixture(over);
+  await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
+  expect(ids.outsideApprove).not.toHaveBeenCalled();expect(ids.outsideDispatch).not.toHaveBeenCalled();
+  expect(await audits()).toHaveLength(0);
+ });
+ it('refuses when the session is revoked or the outside level is never',async()=>{
+  let f=await trustedFixture();
+  await pool.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[session]);
+  await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
+  f=await trustedFixture();
+  await pool.query("INSERT INTO ratchet(agent,capability,action,level) VALUES($1,'outside','','never') ON CONFLICT DO NOTHING",[agent]);
+  await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
+  expect(ids.outsideDispatch).not.toHaveBeenCalled();
+ });
+ it('refuses when the definition the agent runs under no longer lists the trust',async()=>{
+  const f=await trustedFixture();
+  const without=definitionSchema.parse({...roleDefinition,outsideTools:[{...roleDefinition.outsideTools![0]!,tools:{allow:['lookup','create_note'],read:['lookup']}}]});
+  await pool.query('UPDATE agent_resources SET applied_definition=$1 WHERE name=$2',[without,agent]);
+  await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
+  expect(ids.outsideDispatch).not.toHaveBeenCalled();
+ });
+});
