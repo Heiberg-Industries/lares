@@ -6,7 +6,7 @@ import { keyLine } from "../lib/outside-tools-words";
  *  `declared` null means the definitions could not be read. Changes happen on each agent's own page. */
 export function OutsideToolsOverview({ declared, evidence }: { declared: DeclaredOutside[] | null; evidence: Record<string, OutsideToolEvidence> }) {
   if (declared === null) return <p className="lares-muted" role="status">Outside tools could not be read. Reload the page to try again.</p>;
-  if (declared.length === 0) return <p className="lares-muted">No agent uses outside tools yet. Open an agent and choose Outside tools to add some.</p>;
+  if (declared.length === 0) return <p className="lares-muted">No agent uses outside tools yet. Use Connect an outside tool to add some.</p>;
   return (
     <ul className="lares-data-list">
       {declared.map((a) => {
