@@ -292,8 +292,8 @@ describe("outside approvals on Telegram", () => {
   });
 
   it("does not turn a call that needs no card into a refusal", async () => {
-    const trusted = def({ outsideTools: [entryDecl({ trusted: true })] }).outsideTools![0]!;
+    const trusted = def({ outsideTools: [entryDecl({ tools: { allow: ["lookup"], read: ["lookup"], trusted: [{ tool: "lookup", by: "m", at: "2026-11-20T10:00:00Z", pin: "a".repeat(64) }] } })] }).outsideTools![0]!;
     const c = { ...ctx("telegram-webhook"), toolName: "registry__lookup" } as unknown as ApprovalContext;
-    expect(await outsideRequestPolicy(trusted)(c)).toBe("not-applicable");
+    expect(await outsideRequestPolicy(trusted, { pins: { lookup: "a".repeat(64) } })(c)).toBe("not-applicable");
   });
 });

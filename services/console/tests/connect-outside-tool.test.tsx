@@ -43,7 +43,7 @@ describe("ConnectOutsideTool", () => {
     render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
     await fillToken();
     // Press one: a placeholder declaration and one look at the server's tools. Nothing is accepted or activated yet.
-    expect(mocks.declare.mock.calls[0]![0]).toMatchObject({ agent: "alpha", provisional: true, connection: { name: "example", token: true, trusted: false } });
+    expect(mocks.declare.mock.calls[0]![0]).toMatchObject({ agent: "alpha", provisional: true, connection: { name: "example", token: true } });
     expect(mocks.lookUp).toHaveBeenCalledWith({ agent: "alpha", name: "example", credential: "tok-SECRET" });
     expect(mocks.review).not.toHaveBeenCalled(); expect(mocks.activate).not.toHaveBeenCalled();
     // The confirmation shows each tool, defaulting to "changes something", used, and nothing trusted.
@@ -54,7 +54,7 @@ describe("ConnectOutsideTool", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await screen.findByText(/Connected\./);
     expect(mocks.declare.mock.calls[1]![0]).toMatchObject({ agent: "alpha", provisional: false, applyNow: false,
-      connection: { name: "example", token: true, trusted: false, allow: ["find_company"], read: ["find_company"] } });
+      connection: { name: "example", token: true, allow: ["find_company"], read: ["find_company"] } });
     expect(mocks.lookUp).toHaveBeenCalledTimes(2);
     expect(mocks.review).toHaveBeenCalledWith({ identity, seen: tools });
     expect(mocks.activate).toHaveBeenCalledTimes(1);

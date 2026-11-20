@@ -22,7 +22,7 @@ import creative from '../../creative/agent/connections/outside-tools.js';
 import chiefConnections from '../agent/connections/outside-tools.js';
 const incarnation='11111111-1111-4111-8111-111111111111',nonce='n'.repeat(43),capability='c'.repeat(43);
 const definition={name:'helper',grants:[{capability:'outside',scope:'read'}],autonomy:{outside:'gated'},
- outsideTools:[{name:'registry',description:'Lookup',url:'https://tools.example.org/mcp',token:true,trusted:false,tools:{allow:['lookup'],read:['lookup']}}]};
+ outsideTools:[{name:'registry',description:'Lookup',url:'https://tools.example.org/mcp',token:true,tools:{allow:['lookup'],read:['lookup']}}]};
 const auth={authenticator:'lares-console',attributes:{lares_member_id:'member-a',lares_admission_nonce:nonce,lares_purpose:'human',lares_vault_pending:'p'.repeat(43)}};
 const context={session:{id:'outside-session',turn:{id:'turn-1',sequence:1},auth:{current:auth,initiator:auth}}};
 const started={data:{turnId:'turn-1',sequence:1}};

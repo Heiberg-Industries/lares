@@ -13,8 +13,8 @@ import { OutsideToolsSection } from "../components/OutsideToolsSection";
 import { getOutsideToolEvidence, type OutsideToolEvidence, type OutsideToolLock } from "../lib/outside-tools";
 
 const base = { description: "Looks up shipping rates", token: false, runsAt: undefined };
-const rates = { ...base, name: "rates", url: "https://tools.example.com/mcp", host: "tools.example.com", token: true, trusted: true, tools: { allow: ["find_rate", "book_rate"], read: ["find_rate"] } };
-const notes = { ...base, name: "notes", url: "https://notes.example.org/mcp", trusted: false, tools: { allow: ["search"], read: ["search"] } };
+const rates = { ...base, name: "rates", url: "https://tools.example.com/mcp", host: "tools.example.com", token: true, tools: { allow: ["find_rate", "book_rate"], read: ["find_rate"], trusted: [{ tool: "find_rate", by: "m", at: "2026-11-20T10:00:00Z", pin: "a".repeat(64) }] } };
+const notes = { ...base, name: "notes", url: "https://notes.example.org/mcp", tools: { allow: ["search"], read: ["search"] } };
 const OLD = "a1b2c3d4e5f6".padEnd(64, "0"), NEW = "0f9e8d7c6b5a".padEnd(64, "1");
 const lock = (over: Partial<OutsideToolLock> = {}): OutsideToolLock => ({
   pinHash: OLD, seenHash: NEW, seenAt: "2026-10-15T08:30:00.000Z",
@@ -46,7 +46,7 @@ describe("OutsideToolsSection", () => {
     expect(html).toContain("Outside tools");
     expect(html).toContain("tools.example.com");
     expect(html).toContain("Trusted: lookups run without asking");
-    expect(html).toContain("Not trusted: every call asks you first.");
+    expect(html).toContain("Every call asks you first.");
     expect(html).toContain("Needs a key: yes");
     expect(html).toContain("Needs a key: no");
     expect(html).toContain("Lookups it may use: find_rate");

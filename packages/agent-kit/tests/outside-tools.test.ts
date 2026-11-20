@@ -46,7 +46,7 @@ describe("outsideTools in the definition", () => {
 
   it("applies the defaults and refuses unknown keys, bad names and an empty allow list", () => {
     const d = base();
-    expect(d.outsideTools?.[0]).toMatchObject({ token: false, trusted: false });
+    expect(d.outsideTools?.[0]).toMatchObject({ token: false });
     expect(() => base({ outsideTools: [entry({ extra: 1 })] })).toThrow();
     expect(() => base({ outsideTools: [entry({ name: "Bad_Name" })] })).toThrow();
     expect(() => base({ outsideTools: [entry({ name: "9x" })] })).toThrow();

@@ -772,7 +772,7 @@ async function exactOutsideFixture(options:{answer?:boolean;receipts?:Pool}={}){
  const receipts=options.receipts??pool;
  roleDefinition=definitionSchema.parse({...defaultRoleDefinition,
   grants:[...defaultRoleDefinition.grants,{capability:'outside',scope:'read'}],autonomy:{...defaultRoleDefinition.autonomy,outside:'gated'},
-  outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Lookup',token:true,trusted:false,tools:{allow:['lookup'],read:['lookup']}}]});
+  outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Lookup',token:true,tools:{allow:['lookup'],read:['lookup']}}]});
  definitionHash=hashOf({definition:roleDefinition,dutiesMd,voiceMd});
  session='outside_'+randomUUID().replaceAll('-','');admissionNonce=createHash('sha256').update(randomUUID()).digest('base64url');
  await pool.query("UPDATE agent_definitions SET definition=$1,hash=$2 WHERE name=$3",[roleDefinition,definitionHash,agent]);

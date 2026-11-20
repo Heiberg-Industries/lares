@@ -15,7 +15,7 @@ afterEach(cleanup);
 describe("OutsideConnectionsEditor", () => {
   it("shows pending state, preserves the last applied declarations after a failed attempt, then reflects Apply", async () => {
     const active = { name: "previous", url: "https://tools.example.org/mcp", description: "Last working", token: false,
-      tools: { allow: ["read"], read: ["read"] }, trusted: false };
+      tools: { allow: ["read"], read: ["read"] } };
     const pending = { ...initial, connections: [{ ...active, name: "replacement" }], appliedConnections: [active] };
     render(<OutsideConnectionsEditor initial={pending} running />);
     expect(screen.getByText(/pending Apply/)).toBeTruthy();
@@ -38,7 +38,7 @@ describe("OutsideConnectionsEditor", () => {
 
   it("does not retain stale application details or offer Apply when a failure cannot be refreshed", async () => {
     const active = { name: "previous", url: "https://tools.example.org/mcp", description: "Last working", token: false,
-      tools: { allow: ["read"], read: ["read"] }, trusted: false };
+      tools: { allow: ["read"], read: ["read"] } };
     const pending = { ...initial, connections: [{ ...active, name: "replacement" }], appliedConnections: [active] };
     mocks.apply.mockResolvedValueOnce({ ok: false, message: "Apply state could not be confirmed." });
     render(<OutsideConnectionsEditor initial={pending} />);
@@ -51,7 +51,7 @@ describe("OutsideConnectionsEditor", () => {
 
   it("invalidates application details if the Apply action itself throws", async () => {
     const active = { name: "previous", url: "https://tools.example.org/mcp", description: "Last working", token: false,
-      tools: { allow: ["read"], read: ["read"] }, trusted: false };
+      tools: { allow: ["read"], read: ["read"] } };
     const pending = { ...initial, connections: [{ ...active, name: "replacement" }], appliedConnections: [active] };
     mocks.apply.mockRejectedValueOnce(new Error("response lost"));
     render(<OutsideConnectionsEditor initial={pending} />);
@@ -95,7 +95,7 @@ describe("OutsideConnectionsEditor", () => {
 
   it("supports editing and removing a declaration through the same saved lifecycle", async () => {
     const connection = { name: "rates", url: "https://tools.example.org/mcp", description: "Rates", token: false,
-      tools: { allow: ["find_rate"], read: ["find_rate"] }, trusted: false };
+      tools: { allow: ["find_rate"], read: ["find_rate"] } };
     render(<OutsideConnectionsEditor initial={{ ...initial, connections: [connection] }} />);
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.change(screen.getByLabelText("What this server is for"), { target: { value: "Latest rates" } });

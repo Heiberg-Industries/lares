@@ -18,6 +18,9 @@ const entry = (over: Record<string, unknown> = {}) => ({
   name: "registry", url: "https://tools.example.org/mcp", description: "Looks up companies by name.",
   token: true, tools: { allow: ["lookup", "create_note"], read: ["lookup"] }, ...over,
 });
+const PIN = "a".repeat(64);
+const trustedLookup = { tools: { allow: ["lookup", "create_note"], read: ["lookup"], trusted: [{ tool: "lookup", by: "member-1", at: "2026-11-20T10:00:00Z", pin: PIN }] } };
+const pins = { pins: { lookup: PIN, create_note: PIN } };
 const def = (over: Record<string, unknown> = {}) =>
   parseDefinition({
     name: "bookkeeper", display: "Bookkeeper", model: "lares-utility", persona: "agent/instructions.md", role: "chief-of-staff",
@@ -34,7 +37,7 @@ afterEach(() => { resetTaintForTests(); resetOutsideConnectionsForTests(); });
 
 describe("the request policy", () => {
   const untrusted = def().outsideTools![0]!;
-  const trusted = def({ outsideTools: [entry({ trusted: true })] }).outsideTools![0]!;
+  const trusted = def({ outsideTools: [entry(trustedLookup)] }).outsideTools![0]!;
 
   it("untrusted (the default): every call asks, reads included, even on a clean turn", async () => {
     const p = outsideRequestPolicy(untrusted);
@@ -43,26 +46,31 @@ describe("the request policy", () => {
   });
 
   it("trusted: a read runs on a clean turn", async () => {
-    expect(await outsideRequestPolicy(trusted)(ctx("registry__lookup"))).toBe("not-applicable");
+    expect(await outsideRequestPolicy(trusted, pins)(ctx("registry__lookup"))).toBe("not-applicable");
+  });
+
+  it("trusted: a read asks when the description is no longer the one the owner switched it on for", async () => {
+    expect(await outsideRequestPolicy(trusted, { pins: { lookup: "b".repeat(64) } })(ctx("registry__lookup"))).toBe("user-approval");
+    expect(await outsideRequestPolicy(trusted)(ctx("registry__lookup"))).toBe("user-approval");
   });
 
   it("trusted: a read asks once the turn has read somebody else's words", async () => {
     taintTurn({ sessionId: "s1", turnId: "t1" }, "third_party");
-    expect(await outsideRequestPolicy(trusted)(ctx("registry__lookup"))).toBe("user-approval");
-    expect(await outsideRequestPolicy(trusted)(ctx("registry__lookup", "t2"))).toBe("not-applicable");
+    expect(await outsideRequestPolicy(trusted, pins)(ctx("registry__lookup"))).toBe("user-approval");
+    expect(await outsideRequestPolicy(trusted, pins)(ctx("registry__lookup", "t2"))).toBe("not-applicable");
   });
 
   it("trusted: every tool that is not a listed read asks, clean turn or not", async () => {
-    expect(await outsideRequestPolicy(trusted)(ctx("registry__create_note"))).toBe("user-approval");
+    expect(await outsideRequestPolicy(trusted, pins)(ctx("registry__create_note"))).toBe("user-approval");
   });
 
   it("trusted in a role that cannot taint (taintAware false): every call asks, even a read on a clean turn", async () => {
-    const p = outsideRequestPolicy(trusted, { taintAware: false });
+    const p = outsideRequestPolicy(trusted, { ...pins, taintAware: false });
     expect(await p(ctx("registry__lookup"))).toBe("user-approval");
   });
 
   it("asks when it cannot tell which turn it is in", async () => {
-    expect(await outsideRequestPolicy(trusted)({ toolName: "registry__lookup" } as unknown as ApprovalContext)).toBe("user-approval");
+    expect(await outsideRequestPolicy(trusted, pins)({ toolName: "registry__lookup" } as unknown as ApprovalContext)).toBe("user-approval");
   });
 });
 
@@ -112,7 +120,7 @@ describe("the taint rule", () => {
   });
 
   it("does not taint a trusted connection, other tools, or look-alike prefixes", () => {
-    const trusted = def({ outsideTools: [entry({ trusted: true })] });
+    const trusted = def({ outsideTools: [entry(trustedLookup)] });
     expect(outsideResultTaint("registry__lookup", trusted)).toBeUndefined();
     expect(outsideResultTaint("gmail_read", def())).toBeUndefined();
     expect(outsideResultTaint("registry2__lookup", def())).toBeUndefined();
@@ -121,7 +129,7 @@ describe("the taint rule", () => {
 
   it("treats eve's search output (eve__search) as outside text only while an untrusted connection is present", () => {
     expect(outsideResultTaint("eve__search", def())).toBe("third_party");
-    expect(outsideResultTaint("eve__search", def({ outsideTools: [entry({ trusted: true })] }))).toBeUndefined();
+    expect(outsideResultTaint("eve__search", def({ outsideTools: [entry(trustedLookup)] }))).toBeUndefined();
     expect(outsideResultTaint("eve__search", def({ outsideTools: undefined }))).toBeUndefined();
     // The model may also reach an entry through eve__tool; the hook sees the entry's own name.
     expect(outsideResultTaint("registry__lookup", def())).toBe("third_party");

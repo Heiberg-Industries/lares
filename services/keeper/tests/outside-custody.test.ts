@@ -138,7 +138,7 @@ function canonicalJson(value:unknown):string{
 const humanCapture={version:1,actor:{memberId:'member-1',organisationId:'org-1',role:'member' as const},
   agent:{name:'worker',ownerMemberId:'member-1',accessRevision:7,definitionHash:'a'.repeat(64)},ownerPolicy:{kind:'unrestricted' as const},
   outside:{scope:'read' as const,autonomy:'gated' as const,connection:{name:'connector',url:humanEndpoint,auth:'bearer' as const,
-    allow:['read'],read:['read'],trusted:false}},grant:{kind:'owner' as const,validUntil:null}};
+    allow:['read'],read:['read']}},grant:{kind:'owner' as const,validUntil:null}};
 const humanRoute={policyHash:'b'.repeat(64),sourceAddress:'198.51.100.10',proxyUrl:'http://lares-egress-proxy:8888/'};
 function humanPolicy():{policy:Record<string,unknown>;hash:string}{
   const policy={version:2,profile:discoveryProfile,purpose:'streamable-http-discovery-v1',ownerMemberId:'member-1',accountId,

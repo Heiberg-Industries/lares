@@ -19,7 +19,7 @@ const binding={agent:'helper',incarnation,sessionId:'session-1',memberId:'member
 const call:OutsideToolCallInput={...binding,callId:'call-1',requestId:'request-1',definitionHash:'a'.repeat(64),connectionName:'registry',accountId,credentialRevision:4,toolName:'lookup',input:{company:'Example'}};
 const capture={version:1,actor:{memberId:'member-a',organisationId:'org-1',role:'member'},
  agent:{name:'helper',ownerMemberId:'member-a',accessRevision:7,definitionHash:call.definitionHash},ownerPolicy:{kind:'unrestricted'},
- outside:{scope:'read',autonomy:'gated',connection:{name:'registry',url:'https://example.test/mcp',auth:'bearer',allow:['lookup'],read:['lookup'],trusted:false}},grant:{kind:'owner',validUntil:null}};
+ outside:{scope:'read',autonomy:'gated',connection:{name:'registry',url:'https://example.test/mcp',auth:'bearer',allow:['lookup'],read:['lookup']}},grant:{kind:'owner',validUntil:null}};
 const route={policyHash:'b'.repeat(64),sourceAddress:'198.51.100.10',proxyUrl:'http://lares-egress-proxy:8888/'};
 function canonical(value:unknown):string{if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>JSON.stringify(k)+':'+canonical(v)).join(',')+'}';return JSON.stringify(value)}
 const hash=(v:unknown)=>createHash('sha256').update(canonical(v)).digest('hex');

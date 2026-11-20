@@ -223,7 +223,7 @@ describe("outside tools", () => {
   });
 
   it("does not taint for a trusted connection or a look-alike name", async () => {
-    const { h } = withDef(def({ outsideTools: [entry({ trusted: true })] }));
+    const { h } = withDef(def({ outsideTools: [entry({ tools: { allow: ["lookup"], read: ["lookup"], trusted: [{ tool: "lookup", by: "m", at: "2026-11-20T10:00:00Z", pin: "a".repeat(64) }] } })] }));
     await feed(h, resultWith("registry__lookup", "x"));
     await feed(h, resultWith("registry2__lookup", "x"));
     expect(currentTaint(key)).toBeUndefined();
