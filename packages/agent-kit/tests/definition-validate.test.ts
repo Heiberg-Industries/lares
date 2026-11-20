@@ -170,6 +170,32 @@ describe("one tool per name", () => {
     expect(validateDefinition(withOutside("notes"))).toEqual([]);
   });
 
+  describe("an outside tool that needs a token", () => {
+    const withToken = (token: boolean, extra: Record<string, unknown> = {}) => ({
+      ...opts({
+        grants: [{ capability: "gmail", scope: "write-with-confirm" }, { capability: "read_url", scope: "read" }, { capability: "outside", scope: "write-with-confirm" }],
+        autonomy: { gmail: "gated", read_url: "gated", outside: "gated" },
+        outsideTools: [{ name: "rates", url: "https://tools.example.org/mcp", description: "Rates.", token, tools: { allow: ["find_rate"], read: ["find_rate"] } }],
+      }),
+      secretExists: () => false,
+      ...extra,
+    });
+    const outside = (f: ReturnType<typeof validateDefinition>) => f.filter((x) => x.check === "outside-tools");
+
+    it("is refused when there is no token file and no credential held or being staged", () => {
+      expect(outside(validateDefinition(withToken(true)))[0]?.message).toMatch(/needs a token but no credential/);
+    });
+    it("is accepted when its credential is held in custody or staged by the same action", () => {
+      expect(outside(validateDefinition(withToken(true, { outsideCredentialHeld: new Set(["rates"]) })))).toEqual([]);
+    });
+    it("is still refused when the held credential belongs to a different connection", () => {
+      expect(outside(validateDefinition(withToken(true, { outsideCredentialHeld: new Set(["other"]) })))).toHaveLength(1);
+    });
+    it("never asks for a credential from a declaration that needs none", () => {
+      expect(outside(validateDefinition(withToken(false)))).toEqual([]);
+    });
+  });
+
   it("is skipped when no tool sources are given", () => {
     expect(validateDefinition(opts())).toEqual([]);
   });

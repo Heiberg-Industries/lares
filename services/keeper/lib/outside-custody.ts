@@ -85,7 +85,9 @@ type OutsideClaimIdentityState = {
   assertExecutionCurrent?:(db:PoolClient)=>Promise<void>;
 };
 type OutsideJson = null | boolean | number | string | OutsideJson[] | { [key: string]: OutsideJson };
-type OutsideListedTool = { name: string; description?: string; inputSchema: { [key: string]: OutsideJson } };
+/** `readOnly`: the server itself marks the tool as only looking things up (its readOnlyHint). Shown to the owner as a starting
+ * suggestion; it is never part of the reviewed descriptor and grants nothing. */
+type OutsideListedTool = { name: string; description?: string; inputSchema: { [key: string]: OutsideJson }; readOnly?: true };
 type OutsideDiscoveryDocument = { protocolVersion: '2025-06-18'; serverInfo: { name: string; version: string }; tools: OutsideListedTool[] };
 export type HumanCredentialStatus={state:'unavailable'|'active'|'pending'|'active-pending'|'revoked';reviewPending:boolean;applyPending:boolean;
   accountId:string|null;generation:number|null;hasCredentialMaterial:boolean;activeRevision:number|null;candidateRevision:number|null;discoveryRevision:number|null};
@@ -409,12 +411,12 @@ function validateStoredDiscoveryDocument(value:unknown):OutsideDiscoveryDocument
   for(const candidate of document.tools){
     if(!candidate||Array.isArray(candidate)||typeof candidate!=='object')return denied();
     const item=candidate as Record<string,OutsideJson>;
-    if(Object.keys(item).some(key=>!['name','description','inputSchema'].includes(key))||
+    if(Object.keys(item).some(key=>!['name','description','inputSchema','readOnly'].includes(key))||item.readOnly!==undefined&&item.readOnly!==true||
         typeof item.name!=='string'||Buffer.byteLength(item.name)<1||Buffer.byteLength(item.name)>DISCOVERY_PROFILE.maxToolNameBytes||
         /[\x00-\x1f\x7f]/.test(item.name)||names.has(item.name)||item.description!==undefined&&
         (typeof item.description!=='string'||Buffer.byteLength(item.description)>2048)||!item.inputSchema||Array.isArray(item.inputSchema)||typeof item.inputSchema!=='object')return denied();
     names.add(item.name);
-    tools.push({name:item.name,...(item.description===undefined?{}:{description:item.description as string}),inputSchema:item.inputSchema as {[key:string]:OutsideJson}});
+    tools.push({name:item.name,...(item.description===undefined?{}:{description:item.description as string}),inputSchema:item.inputSchema as {[key:string]:OutsideJson},...(item.readOnly===true?{readOnly:true as const}:{})});
   }
   const result={protocolVersion:DISCOVERY_PROFILE.protocolVersion,serverInfo,tools} satisfies OutsideDiscoveryDocument;
   if(Buffer.byteLength(canonicalJson(result))>DISCOVERY_PROFILE.resultBytes)return denied();
@@ -1638,6 +1640,7 @@ export class OutsideCustodyStore {
           names.add(item.name);
           const projected:OutsideListedTool={name:item.name,inputSchema:item.inputSchema as {[key:string]:OutsideJson}};
           if(item.description!==undefined)projected.description=item.description;
+          if(item.annotations&&typeof item.annotations==='object'&&!Array.isArray(item.annotations)&&item.annotations.readOnlyHint===true)projected.readOnly=true;
           tools.push(projected);
           if(tools.length>DISCOVERY_PROFILE.maxTools)return requestDenied();
         }

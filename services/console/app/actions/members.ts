@@ -7,12 +7,13 @@ import { MemberStoreError } from "@lares/agent-kit/member-store";
 import { ConsoleAdmissionUnavailableError } from "../../lib/admission-error";
 import { consoleRedirect } from "../../lib/console-oidc";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
+import { keeperReason } from "../../lib/keeper-reason";
 import { InitialMemberBudgetRefused, setInitialMemberBudgetLimit } from "../../lib/initial-member-budget";
 
 async function memberOperation<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); }
   catch (error) {
-    if (error instanceof MemberStoreError) throw new Error("The member change was refused. Refresh membership and try again.");
+    if (error instanceof MemberStoreError) throw new Error(keeperReason(error, "The member change was refused. Refresh membership and try again."));
     throw new ConsoleAdmissionUnavailableError();
   }
 }

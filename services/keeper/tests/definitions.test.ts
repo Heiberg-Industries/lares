@@ -96,7 +96,7 @@ beforeAll(async () => {
     container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
     pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(readFileSync(join(repo, 'services/box/sql', '001_baseline.sql'), 'utf8'));
-    for (const migration of ['007_member_identity_sessions.sql', '013_console_turn_authority.sql', '014_agent_access_grants.sql', '035_agent_provider_keys.sql'])
+    for (const migration of ['007_member_identity_sessions.sql', '013_console_turn_authority.sql', '014_agent_access_grants.sql', '029_outside_custody.sql', '035_agent_provider_keys.sql'])
         await pool.query(readFileSync(join(repo, 'services/box/sql', migration), 'utf8'));
     await pool.query(`INSERT INTO orgs(id,display_name) VALUES('connection-org','Connection test'),('connection-other-org','Other connection test');
         INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES
@@ -119,6 +119,32 @@ beforeEach(async () => {
     backup = { commit: vi.fn(async () => { }) };
     compose = { stop: vi.fn(async () => { }), create: vi.fn(async () => { }),prepareSecretChange:vi.fn(async()=>{}),secretChanged:vi.fn(async()=>{}) };
     register();
+});
+it('accepts a bearer declaration with no token file when its credential is staged by the same action or held in custody, and refuses it otherwise', async () => {
+    const { loaded, access, sessions } = await connectionFixture();
+    const bearer = { ...declaration, token: true };
+    // No file, nothing in custody, nothing being staged: refused, and the keeper says why.
+    await expect(connectionCall(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [bearer]))
+        .rejects.toThrow(/needs a token but no credential is held/);
+    // The same save, announcing that its credential is being staged: accepted, with no file anywhere.
+    const staged: any = await runAction('outside.connections.save', { sessionToken: sessions.owner, name: 'bookkeeper', expectedDefinitionHash: loaded.hash,
+        expectedAccessRevision: access.accessRevision, connections: [bearer], stagingCredentialFor: ['rates'] }, ctx());
+    expect(staged.connections).toEqual([bearer]);
+    expect(existsSync(join(secretsDir, outsideSecretName('bookkeeper', 'rates')))).toBe(false);
+    // Announcing a different connection does not cover this one.
+    await expect(runAction('outside.connections.save', { sessionToken: sessions.owner, name: 'bookkeeper', expectedDefinitionHash: staged.definitionHash,
+        expectedAccessRevision: staged.accessRevision, connections: [bearer, { ...bearer, name: 'other', url: 'https://tools.example.org/other' }],
+        stagingCredentialFor: ['rates'] }, ctx())).rejects.toThrow(/"other" needs a token/);
+    // A credential held in custody covers every later save of the agent, with no announcement.
+    await pool.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,candidate_revision,consent_generation,state)
+        VALUES(gen_random_uuid(),'connection-owner','bookkeeper','other',1,1,1,'active'),(gen_random_uuid(),'connection-owner','bookkeeper','rates',1,1,1,'active')`);
+    const held: any = await runAction('outside.connections.save', { sessionToken: sessions.owner, name: 'bookkeeper', expectedDefinitionHash: staged.definitionHash,
+        expectedAccessRevision: staged.accessRevision, connections: [bearer, { ...bearer, name: 'other', url: 'https://tools.example.org/other' }] }, ctx());
+    expect(held.connections).toHaveLength(2);
+    // A declaration that wants no token is never held to any of this.
+    const plain: any = await runAction('outside.connections.save', { sessionToken: sessions.owner, name: 'bookkeeper', expectedDefinitionHash: held.definitionHash,
+        expectedAccessRevision: held.accessRevision, connections: [declaration] }, ctx());
+    expect(plain.connections).toEqual([declaration]);
 });
 it('lets the owner and a named editor change only outside declarations, while use-only, cross-member, stale and secret-shaped requests refuse', async () => {
     const { loaded, access, sessions } = await connectionFixture();

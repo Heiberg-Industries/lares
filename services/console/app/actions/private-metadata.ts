@@ -2,6 +2,7 @@
 import { cookies } from 'next/headers';
 import { memberAuditAddress,sessionMember } from '../../lib/auth';
 import { keeper,KeeperRefusedError } from '../../lib/keeper-client';
+import { keeperReason } from '../../lib/keeper-reason';
 import { PgAccountStore } from '@lares/agent-kit/account-store';
 import { pool } from '../../lib/db';
 import { randomUUID } from 'node:crypto';
@@ -43,7 +44,7 @@ export async function previewPrivateMetadataTarget(agentName:string):Promise<{ag
   }catch(error){return unavailable(error);}
 }
 function unavailable(error:unknown):never{
-  if(error instanceof KeeperRefusedError)throw new Error('Private metadata access was refused. Refresh membership and review the connection again.');
+  if(error instanceof KeeperRefusedError)throw new Error(keeperReason(error,'Private metadata access was refused. Refresh membership and review the connection again.'));
   throw new Error('Private metadata access is unavailable. Refresh membership before trying again.');
 }
 

@@ -5,6 +5,7 @@ import { SaveEndsConversations } from "./SaveEndsConversations";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { Input } from "@lares/ui/primitives/input";
 import { Textarea } from "@lares/ui/primitives/textarea";
+import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
 import { applyOutsideConnections, saveOutsideConnections, type OutsideConnectionsState } from "../app/actions/outside-connections";
@@ -87,6 +88,7 @@ export function OutsideConnectionsEditor({ initial, running }: { initial: Outsid
   <section className="lares-surface lares-stack" aria-label="Outside connection settings">
     <p>Manage only this agent’s connection declarations. Connection credentials remain under their custodian’s control and are never entered here.</p>
     <p>Removing a declaration does not revoke or delete its separately held credential.</p>
+    <p><Link href={`/integrations/connect-outside-tool?agent=${encodeURIComponent(state.name)}`}>Connect a new outside tool in one step</Link>: paste its address and token, and Lares does the rest.</p>
     <SaveEndsConversations running={running} />
     {state.applicationStatus === "applied" ? <p role="status">The last applied runtime definition matches these saved declarations.</p> : state.applicationStatus === "pending" ? <div className="lares-stack">
       <p role="status">Saved declarations are pending Apply. The last applied declaration set is shown below.</p>
