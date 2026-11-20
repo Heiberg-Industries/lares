@@ -883,7 +883,7 @@ def prove_keeper_default_admission() -> None:
         run_generated_refusal(label, candidate)
 
     missing_source = root / "admission-missing-source"
-    missing_env = {**local_image_env, "LARES_MAINTENANCE_ADMISSION_DIR": str(missing_source),
+    missing_env = {**local_image_env, "LARES_KEEPER_ADDRESS": str(ipaddress.ip_network(subnet).network_address + 246), "LARES_MAINTENANCE_ADMISSION_DIR": str(missing_source),
                    "LARES_KEEPER_CONFIG": str(sentinel_config)}
     missing_name = project + "-guard-deny-missing-source"
     missing_result = run("docker", *compose_args, "run", "--rm", "--no-deps", "--name", missing_name,
@@ -897,7 +897,7 @@ def prove_keeper_default_admission() -> None:
     old_keeper_image = old_release["images"]["lares-keeper"]
     old_image_result = run("docker", *compose_args, "run", "--rm", "--no-deps", "--name",
         project + "-old-keeper-image", "lares-keeper", check=False, timeout=45,
-        env={**local_image_env, "LARES_KEEPER_IMAGE": old_keeper_image,
+        env={**local_image_env, "LARES_KEEPER_ADDRESS": str(ipaddress.ip_network(subnet).network_address + 245), "LARES_KEEPER_IMAGE": old_keeper_image,
              "LARES_KEEPER_CONFIG": str(sentinel_config)})
     if old_image_result.returncode != 1 or \
        not re.search(r"maintenance-admission-v1.*(no such file|not found|executable file)|"
@@ -925,7 +925,8 @@ def prove_keeper_default_admission() -> None:
         restart_project = project + "-restart-" + state
         restart_args = ["compose", "-p", restart_project, "-f", str(compose_file), "-f", str(override),
                         "--env-file", str(keeper_env)]
-        restart_env = {**local_image_env, "LARES_KEEPER_CONFIG": str(sentinel_config)}
+        restart_env = {**local_image_env, "LARES_KEEPER_CONFIG": str(sentinel_config),
+            "LARES_KEEPER_ADDRESS": str(ipaddress.ip_network(subnet).network_address + 247)}
         started = run("docker", *restart_args, "up", "-d", "--no-deps", "lares-keeper",
                       check=False, timeout=30, env=restart_env)
         listed = run("docker", *restart_args, "ps", "--all", "--quiet", "lares-keeper",
@@ -1005,7 +1006,8 @@ def prove_keeper_default_admission() -> None:
     # A harmless command override still passes through the same image entrypoint. Verify the
     # guard restores the image's physical WORKDIR before handing control to that command.
     cwd_probe = run("docker", *compose_args, "run", "--rm", "--no-deps", "lares-keeper",
-        "sh", "-ec", 'test "$(pwd -P)" = /app', check=False, timeout=30, env=local_image_env)
+        "sh", "-ec", 'test "$(pwd -P)" = /app', check=False, timeout=30,
+        env={**local_image_env, "LARES_KEEPER_ADDRESS": str(ipaddress.ip_network(subnet).network_address + 244)})
     if cwd_probe.returncode != 0:
         raise ProbeFailure("keeper-cwd-restore")
     proof["claims"]["keeperCommandOverrideReceivesRestoredWorkingDirectory"] = True
