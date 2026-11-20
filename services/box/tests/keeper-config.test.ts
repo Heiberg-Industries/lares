@@ -58,7 +58,7 @@ const OPTS: KeeperConfigOptions = {
   network: "lares-network",
   subnet: "172.30.0.0/24",
   maintenanceAdmission: { hostDirectory: "/var/lib/lares-maintenance/admission", installationId: "11111111-1111-4111-8111-111111111111", epoch: 7 },
-  proxyAddress: "172.30.0.2",
+  proxyAddress: "172.30.0.250",
   dir: "/srv/lares",
   agentsDir: "/srv/lares/agents",
   retiredDir: "/srv/lares/retired",
@@ -155,7 +155,7 @@ describe("fresh install settings", () => {
     const release = join(f, "release.json");
     writeFileSync(release, JSON.stringify(MANIFEST));
     const out = join(f, "keeper.json.partial"), env = join(f, "keeper.env"), live = join(f, "keeper.json");
-    const args = [release, out, env, live, "lares", "/srv/lares", "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.2", "http://lares-gateway:4000", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", "Europe/Berlin", prefix, ""];
+    const args = [release, out, env, live, "lares", "/srv/lares", "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.250", "http://lares-gateway:4000", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", "Europe/Berlin", prefix, ""];
     expect(renderConfigCommand(args, () => {})).toBe(0);
     const first = JSON.parse(readFileSync(out, "utf8"));
     expect(first.publicDoorOrigin).toBe("https://lares.example.com");
@@ -301,9 +301,9 @@ describe("the generated keeper configuration", () => {
         db: { host: "db", port: 5432, database: "lares_state", user: "lares_outside_custody", passwordFile: "/etc/lares/secrets/outside-custody-database-password" },
         keyFile: "/var/lib/lares/outside-custody/key", keyFingerprint: fingerprint, routeConsumerName: "outside-route",
       });
-      // The proxy is .2 in this fixture; the keeper (and so the route's source) sits just below it.
-      expect(config.lifecycle!.egress.legacyConsumers).toEqual([{ name: "outside-route", address: "172.30.0.1", hosts: [] }]);
-      expect(config.lifecycle!.reservedAddresses).toContain("172.30.0.1");
+      // The proxy is .250 in this fixture; the keeper (and so the route's source) sits just below it.
+      expect(config.lifecycle!.egress.legacyConsumers).toEqual([{ name: "outside-route", address: "172.30.0.249", hosts: [] }]);
+      expect(config.lifecycle!.reservedAddresses).toContain("172.30.0.249");
       expect(loadAsKeeperWould(config).outsideCustody).toEqual(config.outsideCustody);
     });
 
@@ -327,7 +327,7 @@ describe("the generated keeper configuration", () => {
     });
 
     it("refuses partial state: a route with no custody block, a mismatched block, or a bad fingerprint", () => {
-      const consumer = { name: "outside-route", address: "172.30.0.1", hosts: [] };
+      const consumer = { name: "outside-route", address: "172.30.0.249", hosts: [] };
       expect(() => renderKeeperConfig(MANIFEST, { ...prepared, previousOutsideRouteConsumer: consumer })).toThrow(/operator recovery/);
       const good = renderKeeperConfig(MANIFEST, prepared);
       expect(() => renderKeeperConfig(MANIFEST, { ...OPTS, previousOutsideCustody: good.outsideCustody! })).toThrow(/operator recovery/);
@@ -338,14 +338,20 @@ describe("the generated keeper configuration", () => {
       const config = renderKeeperConfig(MANIFEST, OPTS);
       expect(config.outsideCustody).toBeUndefined();
       expect(config.lifecycle!.egress.legacyConsumers).toEqual([]);
-      expect(keeperAddressFor(config, OPTS.proxyAddress)).toBe("172.30.0.1");
+      expect(keeperAddressFor(config, OPTS.proxyAddress)).toBe("172.30.0.249");
     });
 
-    it("derives the keeper address just below the proxy and refuses a subnet with no room", () => {
+    it("derives the keeper address just below the proxy and refuses every address it must not use", () => {
       expect(deriveKeeperAddress("172.30.0.254", "172.30.0.0/24")).toBe("172.30.0.253");
-      expect(() => deriveKeeperAddress("172.30.0.0", "172.30.0.0/24")).toThrow();
-      expect(() => deriveKeeperAddress("172.30.0.1", "172.30.0.0/24")).toThrow();
-      expect(() => deriveKeeperAddress("10.0.0.2", "172.30.0.0/24")).toThrow();
+      // The proxy at network+2 would put the keeper on Docker's gateway: refused, with advice.
+      expect(() => deriveKeeperAddress("172.30.0.2", "172.30.0.0/24")).toThrow(/Put the proxy higher/);
+      expect(() => deriveKeeperAddress("172.30.0.3", "172.30.0.0/24")).not.toThrow();
+      expect(() => deriveKeeperAddress("172.30.0.1", "172.30.0.0/24")).toThrow(/Put the proxy higher/);
+      // The last address (broadcast) and an address outside the subnet are refused.
+      expect(() => deriveKeeperAddress("172.30.0.255", "172.30.0.0/24")).toThrow(/Put the proxy higher/);
+      expect(() => deriveKeeperAddress("10.0.0.250", "172.30.0.0/24")).toThrow(/Put the proxy higher/);
+      // An address already reserved is refused.
+      expect(() => deriveKeeperAddress("172.30.0.254", "172.30.0.0/24", ["172.30.0.253"])).toThrow(/already reserved/);
     });
   });
 
@@ -366,7 +372,7 @@ describe("the generated keeper configuration", () => {
     // renderStackCompose emit the network's own `name:`, so this string is the created network.
     expect(config.lifecycle!.network).toBe("lares-network");
     // The proxy's address and the keeper's own, just below it.
-    expect(config.lifecycle!.reservedAddresses).toEqual(["172.30.0.2", "172.30.0.1"]);
+    expect(config.lifecycle!.reservedAddresses).toEqual(["172.30.0.250", "172.30.0.249"]);
     expect(config.lifecycle!.egress.internalNetworks).toEqual(["172.30.0.0/24"]);
   });
 });
@@ -387,7 +393,7 @@ it("renderer rejects ambiguous or malformed administrator emails before writing 
     const f=mkdtempSync(join(tmpdir(),"keeper-admin-render-"));dirs.push(f);
     const out=join(f,"keeper.json"),env=join(f,"keeper.env");
     const prefix=createPreparedPrefix(f);
-    const args=[join(f,"missing-release.json"),out,env,out,"lares","/srv/lares","/srv/lares/agents","/srv/lares/retired","/srv/lares/backup","/srv/lares/egress","/etc/lares/secrets","/run/lares","/run/lares-host","lares-network","172.30.0.0/24","172.30.0.2","http://lares-gateway:4000","lares_state","fixture-owner",administrator,"lares.example.com","Europe/Berlin",prefix,""];
+    const args=[join(f,"missing-release.json"),out,env,out,"lares","/srv/lares","/srv/lares/agents","/srv/lares/retired","/srv/lares/backup","/srv/lares/egress","/etc/lares/secrets","/run/lares","/run/lares-host","lares-network","172.30.0.0/24","172.30.0.250","http://lares-gateway:4000","lares_state","fixture-owner",administrator,"lares.example.com","Europe/Berlin",prefix,""];
     const messages:string[]=[];
     expect(renderConfigCommand(args,message=>messages.push(message))).toBe(1);
     expect(messages).toEqual(["Configure one credential administrator email; nothing was written"]);
@@ -409,7 +415,7 @@ describe('optional prepared financial custody',()=>{
     const release=join(f,'release.json'),out=join(f,'keeper.partial'),env=join(f,'keeper.env'),live=join(f,'keeper.json');
     const prefix=createPreparedPrefix(f);
     writeFileSync(release,JSON.stringify(MANIFEST));
-    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.2','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com','',prefix,""];
+    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.250','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com','',prefix,""];
     writeFileSync(live,JSON.stringify({...renderKeeperConfig(MANIFEST,OPTS),budgetFinancial:binding}));
     expect(renderConfigCommand(args,()=>{})).toBe(0);expect(JSON.parse(readFileSync(out,'utf8')).budgetFinancial).toEqual(binding);
     const before=readFileSync(out),beforeEnv=readFileSync(env);
@@ -435,7 +441,7 @@ describe('optional prepared financial custody',()=>{
     const release=join(f,'release.json'),out=join(f,'keeper.partial'),env=join(f,'keeper.env'),live=join(f,'keeper.json');
     const prefix=createPreparedPrefix(f);
     writeFileSync(release,JSON.stringify(MANIFEST));
-    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.2','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com','',prefix,""];
+    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.250','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com','',prefix,""];
     const first={...renderKeeperConfig(MANIFEST,OPTS),budgetFinancial:binding,budgetNative:native,gatewayBudget:gateway};
     writeFileSync(live,JSON.stringify(first));
     expect(renderConfigCommand(args,()=>{})).toBe(0);
@@ -471,7 +477,7 @@ describe("an installer re-run keeps agent settings set by hand in keeper.json", 
     const out = join(f, "keeper.json.partial"), env = join(f, "keeper.env"), live = join(f, "keeper.json");
     // A root that exists on this machine so the deadline calendar can be a plain file.
     const root = join(f, "srv"); mkdirSync(join(root, "installation"), { recursive: true });
-    const args = (tz: string) => [release, out, env, live, "lares", root, "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.2", "http://lares-gateway:4000", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", tz, prefix, ""];
+    const args = (tz: string) => [release, out, env, live, "lares", root, "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.250", "http://lares-gateway:4000", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", tz, prefix, ""];
     const render = (tz = "Europe/Berlin") => {
       const lines: string[] = [], said: string[] = [];
       const spy = vi.spyOn(process.stderr, "write").mockImplementation((s: string | Uint8Array) => { lines.push(String(s)); return true; });

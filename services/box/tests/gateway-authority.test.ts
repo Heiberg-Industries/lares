@@ -260,7 +260,7 @@ describe("staged gateway authority transaction", () => {
     "LARES_VAULT_SIGNING_KEY_FILE=/srv/lares/etc/lares/secrets/console-vault-signing-key",
     "LARES_OUTSIDE_CUSTODY_PASSWORD_FILE=/srv/lares/etc/lares/secrets/outside-custody-database-password",
     "LARES_SOCKET_DIR=/srv/lares/run/lares", "LARES_HOST_SOCKET_DIR=/srv/lares/run/lares-host",
-    "LARES_EGRESS_DIR=/srv/lares/srv/lares/egress", "LARES_PROXY_ADDRESS=172.29.0.2", "LARES_NETWORK=lares",
+    "LARES_EGRESS_DIR=/srv/lares/srv/lares/egress", "LARES_PROXY_ADDRESS=172.29.0.250", "LARES_NETWORK=lares",
   ].join("\n") + "\n";
   const boundOutputs = () => ({
     profile: `${JSON.stringify(profile)}\n`,
@@ -276,7 +276,7 @@ describe("staged gateway authority transaction", () => {
   });
   const request = {
     prefix: "/srv/lares", releaseFile: "/srv/lares/release.json", project: "lares", network: "lares",
-    subnet: "172.29.0.0/24", proxyAddress: "172.29.0.2", pgDatabase: "lares",
+    subnet: "172.29.0.0/24", proxyAddress: "172.29.0.250", pgDatabase: "lares",
   };
   const fakeFiles = () => new Map(GATEWAY_AUTHORITY_STAGE_FILES.map(name => [name, {
     contents: Buffer.from(name === "keeper.json" ? "{}\n" : `${name}\n`),
@@ -341,7 +341,7 @@ describe("staged gateway authority transaction", () => {
       root: "/srv/lares/srv/lares", keeperConfig: "/srv/lares/etc/lares/keeper.json",
       socketDir: "/srv/lares/run/lares", hostSocketDir: "/srv/lares/run/lares-host",
       egressDir: "/srv/lares/srv/lares/egress", secretsDir: "/srv/lares/etc/lares/secrets",
-      proxyAddress: "172.29.0.2", network: "lares",
+      proxyAddress: "172.29.0.250", network: "lares",
       maintenanceAdmission: {
         directory: "/srv/lares/var/lib/lares-maintenance/admission",
         installationId: "11111111-1111-4111-8111-111111111111", epoch: 1,

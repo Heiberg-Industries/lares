@@ -46,8 +46,10 @@ function intToIpv4(value: number): string {
 
 /** The keeper's own reserved address: the one just below the proxy's, inside the fleet subnet.
  *  The proxy takes the top of the range and Docker hands ordinary services out from the bottom,
- *  so the pair never meets. Refuses when that address would be the network address. */
-export function deriveKeeperAddress(proxyAddress: string, subnet: string): string {
+ *  so the pair never meets. It is refused, in words that say what to change, when that address
+ *  would be the network address, Docker's gateway (the first usable address, network+1), the
+ *  broadcast address, the proxy itself or any address already reserved. */
+export function deriveKeeperAddress(proxyAddress: string, subnet: string, reserved: readonly string[] = []): string {
   const [base, bits] = subnet.split("/");
   const prefix = Number(bits);
   if (!base || !Number.isInteger(prefix) || prefix < 8 || prefix > 29) throw new Error(`The fleet subnet "${subnet}" is not usable for a keeper address`);
@@ -55,9 +57,15 @@ export function deriveKeeperAddress(proxyAddress: string, subnet: string): strin
   const network = Math.floor(ipv4ToInt(base) / size) * size;
   const proxy = ipv4ToInt(proxyAddress);
   const candidate = proxy - 1;
-  if (proxy < network || proxy >= network + size || candidate <= network)
-    throw new Error("There is no free address below the proxy's for the keeper in the fleet subnet");
-  return intToIpv4(candidate);
+  const advice = "Put the proxy higher in the fleet subnet (its default is the second-to-last address) and run the installer again.";
+  if (proxy < network || proxy >= network + size - 1)
+    throw new Error(`The proxy address ${proxyAddress} is not inside the fleet subnet ${subnet}, or is its last address. ${advice}`);
+  if (candidate <= network + 1)
+    throw new Error(`There is no free address below the proxy's for the keeper: it would be ${intToIpv4(candidate)}, the network or Docker gateway address. ${advice}`);
+  const address = intToIpv4(candidate);
+  if (address === proxyAddress || reserved.includes(address))
+    throw new Error(`The address just below the proxy (${address}) is already reserved. ${advice}`);
+  return address;
 }
 
 /** The address the keeper container is pinned to: the outside route's source when custody is
