@@ -14,7 +14,7 @@ export interface ConnectStep {kind:'slack'|'telegram';code:string;expiresAt:stri
 const SUPPORTED:Record<string,('slack'|'telegram')[]>={creative:['slack'],'chief-of-staff':['slack','telegram']};
 const LABEL:Record<string,string>={slack:'Slack',telegram:'Telegram'};
 const POLL_MS=3000;
-export function DoorSetup(p:{name:string;display:string;role:string;origin:string;hash:string;onDefinitionChanged?:(hash:string)=>void;
+export function DoorSetup(p:{name:string;display:string;description?:string;role:string;origin:string;hash:string;onDefinitionChanged?:(hash:string)=>void;
  /** Whether the agent runs now (the page's runtime state); the save warning shows only then. */
  running?:boolean|null;
  /** Called after every door action, whether it worked or not: a door change can stop or start the agent. */
@@ -88,7 +88,7 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
   await showConnectStep(kind);
  }
  const copy=(text:string,note:string)=>{void (async()=>{try{await navigator.clipboard.writeText(text);setMessage(note);}catch{setError('Could not copy; select the text and copy it by hand.');}})();};
- let createUrl='',manifestText='';try{const m=slackManifest({name:p.name,display:p.display,role:p.role},p.origin);createUrl=m.createUrl;manifestText=JSON.stringify(m.manifest,null,2);}catch{}
+ let createUrl='',manifestText='';try{const m=slackManifest({name:p.name,display:p.display,role:p.role,...(p.description?{description:p.description}:{})},p.origin);createUrl=m.createUrl;manifestText=JSON.stringify(m.manifest,null,2);}catch{}
  const expiredAt=connect?Date.parse(connect.expiresAt):NaN;
  const touchedPending=rows.some(r=>doorTouched(r)&&r.pending);
  return <section aria-label="Door setup" className="lares-door-setup"><h2>Connect doors</h2>

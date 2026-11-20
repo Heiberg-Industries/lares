@@ -898,6 +898,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
         <DoorSetup
           name={p.initial.definition.name}
           display={p.initial.definition.display ?? p.initial.definition.name}
+          description={p.initial.definition.description}
           role={p.initial.definition.role ?? point.id}
           origin={p.publicDoorOrigin ?? ""}
           hash={hash}
