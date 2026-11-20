@@ -239,9 +239,17 @@
       "file": "app/integrations/connect-outside-tool/page.tsx",
       "see": "owner",
       "act": "owner",
-      "guards": ["requireConsolePage"],
+      "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
       "source": "derived",
-      "actions": ["outside-connect.connectDeclare", "outside-connect.connectReviewAndStage"],
+      "actions": [
+        "outside-connect.connectActivateCredential",
+        "outside-connect.connectApplyAgent",
+        "outside-connect.connectDeclare",
+        "outside-connect.connectListAgents",
+        "outside-connect.connectLookUpTools",
+        "outside-connect.connectRemoveDeclaration",
+        "outside-connect.connectReviewAndStage"
+      ],
       "routes": []
     },
     {
@@ -923,21 +931,21 @@
       "id": "outside-connect.connectActivateCredential",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "unknown",
-      "guards": [],
-      "source": "unknown",
-      "usedBy": [],
-      "see": "none"
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/connect-outside-tool"],
+      "see": "owner"
     },
     {
       "id": "outside-connect.connectApplyAgent",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "unknown",
-      "guards": [],
-      "source": "unknown",
-      "usedBy": [],
-      "see": "none"
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/connect-outside-tool"],
+      "see": "owner"
     },
     {
       "id": "outside-connect.connectDeclare",
@@ -953,31 +961,31 @@
       "id": "outside-connect.connectListAgents",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "unknown",
-      "guards": [],
-      "source": "unknown",
-      "usedBy": [],
-      "see": "none"
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/connect-outside-tool"],
+      "see": "owner"
     },
     {
       "id": "outside-connect.connectLookUpTools",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "unknown",
-      "guards": [],
-      "source": "unknown",
-      "usedBy": [],
-      "see": "none"
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/connect-outside-tool"],
+      "see": "owner"
     },
     {
       "id": "outside-connect.connectRemoveDeclaration",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "unknown",
-      "guards": [],
-      "source": "unknown",
-      "usedBy": [],
-      "see": "none"
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/connect-outside-tool"],
+      "see": "owner"
     },
     {
       "id": "outside-connect.connectReviewAndStage",
