@@ -5,6 +5,7 @@ import type { Pool, PoolClient } from 'pg';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import { definitionSchema, outsideToolSchema, OUTSIDE_TOOL_NAME_RE, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
+import { stampTrust } from '@lares/agent-kit/outside-tools';
 import { currentSession } from '@lares/agent-kit/member-store';
 import { PgGrantStore, type GrantDatabase } from '@lares/agent-kit/grant-store';
 import { validateDefinition, doorSecretName, type ToolSources } from '@lares/agent-kit/definition-validate';
@@ -332,8 +333,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
             }
             const initial = await connectionSnapshot(client, input, true);
-            const connections = input.connections;
-            if (!connections) refused('Connection changes are required.');
+            if (!input.connections) refused('Connection changes are required.');
+            // Who switched a tool on, and when, is written here from the signed-in session, never from the browser.
+            const connections = stampTrust(input.connections, initial.loaded.definition.outsideTools ?? [], initial.member.id, new Date().toISOString());
             if (new Set(connections.map(connection => connection.name)).size !== connections.length)
                 refused('Connection names must be unique.');
             const definition = { ...initial.loaded.definition } as AgentDefinition & { outsideTools?: AgentDefinition['outsideTools'] };
