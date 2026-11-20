@@ -151,3 +151,36 @@ describe('outside tools in the reply to an answered request',()=>{
   expect(fake.reserveOrDeny).not.toHaveBeenCalled();expect(contacted()).toBe(0);
  });
 });
+
+describe('a lookup the owner let run without asking',()=>{
+ const catalogTool={name:'lookup',description:'Accepted lookup',inputSchema:{type:'object',properties:{company:{type:'string'}}}};
+ async function trustedTools(pin?:string){
+  const {toolPinHash}=await import('../../../packages/agent-kit/src/outside-pins.js');
+  fake.definition.mockResolvedValue({loaded:{definition:{...definition,
+   outsideTools:[{...definition.outsideTools[0]!,tools:{allow:['lookup'],read:['lookup'],
+    trusted:[{tool:'lookup',by:'member-a',at:'2026-11-20T10:00:00.000Z',pin:pin??toolPinHash(catalogTool)}]}}]},dutiesMd:'',voiceMd:'',hash:'a'.repeat(64)}});
+  return dyn(resolver);
+ }
+ it('raises no card on a clean turn and runs through the keeper\'s own trusted check, not the card path',async()=>{
+  const tools=await trustedTools(),human={...context,callId:'call-t',toolName:'registry__lookup',toolInput:{company:'Acme'}};
+  expect(await tools['registry__lookup'].approval.request(human)).toBe('not-applicable');
+  expect(fake.reserveOrDeny).not.toHaveBeenCalled();
+  fake.broker.mockImplementation(async op=>op==='outside.run-trusted'?{result:{content:[{type:'text',text:'Free result'}]}}:{});
+  await expect(tools['registry__lookup'].execute({company:'Acme'},human)).resolves.toEqual({content:[{type:'text',text:'Free result'}]});
+  expect(fake.broker).toHaveBeenCalledWith('outside.run-trusted',{sessionId:context.session.id,memberId:'member-a',admissionNonce:nonce,
+   call:{callId:'call-t',connectionName:'registry',toolName:'lookup',input:{company:'Acme'}}},10_000);
+  expect(fake.execute).not.toHaveBeenCalled();
+ });
+ it('still raises a card when the description is no longer the one the owner switched on',async()=>{
+  const tools=await trustedTools('b'.repeat(64));
+  fake.reserveOrDeny.mockResolvedValue(null);
+  expect(await tools['registry__lookup'].approval.request({...context,callId:'call-u',toolName:'registry__lookup',toolInput:{company:'Acme'}})).toBe('user-approval');
+  expect(fake.reserveOrDeny).toHaveBeenCalledTimes(1);
+ });
+ it('does not run through the trusted path without a human conversation',async()=>{
+  const tools=await trustedTools();
+  const noHuman={session:{id:'outside-session',turn:{id:'turn-1',sequence:1},auth:{current:null,initiator:null}},callId:'call-n',toolName:'registry__lookup'};
+  await expect(tools['registry__lookup'].execute({company:'Acme'},noHuman)).rejects.toThrow();
+  expect(fake.broker).not.toHaveBeenCalledWith('outside.run-trusted',expect.anything(),expect.anything());
+ });
+});
