@@ -89,6 +89,27 @@ export function isTrustedRead(entry: Pick<OutsideToolDeclaration, "tools">, bare
   return grant !== undefined && currentPin !== undefined && grant.pin === currentPin;
 }
 
+/** Who and when, written by the keeper and never taken from the browser. A switch that was already on
+ *  for the same tool with the same description keeps its original who and when; a new or re-ticked one
+ *  is stamped with `by` and `now`. Anything else the browser sent for `by`/`at` is thrown away. */
+export function stampTrust(
+  next: readonly OutsideToolDeclaration[],
+  previous: readonly OutsideToolDeclaration[],
+  by: string,
+  now: string,
+): OutsideToolDeclaration[] {
+  return next.map((entry) => {
+    const trusted = entry.tools.trusted;
+    if (trusted === undefined) return entry;
+    const before = previous.find((p) => p.name === entry.name)?.tools.trusted ?? [];
+    const stamped = trusted.map((t) => {
+      const kept = before.find((b) => b.tool === t.tool && b.pin === t.pin);
+      return kept ?? { tool: t.tool, pin: t.pin, by, at: now };
+    });
+    return { ...entry, tools: { ...entry.tools, trusted: stamped } };
+  });
+}
+
 /** The https hostnames the keeper must open in the proxy for these entries. Internal http
  *  service names add nothing (the internal networks are already reachable). An entry whose URL
  *  fails the check is skipped here; the definition check refuses it at save. */
