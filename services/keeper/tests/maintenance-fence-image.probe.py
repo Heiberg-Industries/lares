@@ -721,7 +721,9 @@ def prove_keeper_default_admission() -> None:
     def run_generated_refusal(label: str, admission_source: pathlib.Path,
                               command: list[str] | None = None) -> None:
         name = project + "-guard-deny-" + label
+        # The good keeper holds the pinned address, so a refused second one must sit elsewhere.
         attempt_env = {**local_image_env,
+            "LARES_KEEPER_ADDRESS": str(ipaddress.ip_network(subnet).network_address + 248),
             "LARES_MAINTENANCE_ADMISSION_DIR": str(admission_source),
             "LARES_KEEPER_CONFIG": str(sentinel_config)}
         before_sockets = socket_snapshot()
