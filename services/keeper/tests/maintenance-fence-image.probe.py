@@ -804,12 +804,15 @@ def prove_keeper_default_admission() -> None:
         "s.on('data',x=>b+=x);s.on('end',()=>{clearTimeout(t);let r;"
         "try{r=JSON.parse(b)}catch{process.exit(3)};"
         "if(r.ok!==true||r.result?.slot!=='notion:shared'||"
-        "r.result?.state!=='not-configured'||r.result?.guidance!==null){"
+        "r.result?.state!=='host-administration-required'||r.result?.guidance!=='review-consumers'){"
         "console.error(JSON.stringify({state:r.result?.state,guidance:r.result?.guidance}));"
         "process.exit(4)};"
         "console.log(JSON.stringify({ready:true,state:r.result.state}))});"
         "s.on('error',()=>{clearTimeout(t);process.exit(5)})"
     )
+    # The slot is prepared and holds no key. This keeper has no container runtime to inspect, so its
+    # consumer review cannot finish and it says so: the pair below is exactly what that state reports
+    # (a live host, which does have one, reports "not-configured" with no guidance).
     readiness_result: subprocess.CompletedProcess | None = None
     while time.monotonic() < deadline:
         inspected = docker("inspect", name, check=False, timeout=15)
