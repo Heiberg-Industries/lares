@@ -1006,6 +1006,19 @@ async function chosenMailboxView(account?: string): Promise<AgentMailbox> {
   return r;
 }
 
+/** Whether Google is connected for this agent, in three answers. "none" only when nothing is chosen (or
+ *  this is not a managed agent); a mailbox that is open is "connected"; anything else (Google slow, a
+ *  refused refresh, a stale choice, a thrown error) is "unknown": the check did not settle it. */
+export async function googleConnectionStatus(): Promise<"connected" | "none" | "unknown"> {
+  try {
+    const r = await chosenMailbox();
+    if (r.ok) return "connected";
+    return noMailbox(r) ? "none" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /** The mailbox this agent works on, as a list: one address, or none when nothing is chosen (or the
  *  choice no longer holds). Resolving a client for it goes through `googleClients().gmail(account)`. */
 export async function listEnrolledMailboxes(): Promise<string[]> {

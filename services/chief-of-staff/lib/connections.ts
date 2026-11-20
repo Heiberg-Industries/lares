@@ -8,20 +8,22 @@
  * side". The model has no way to tell declared from connected, so it is told, per session.
  *
  * Each probe is cheap and answers "is it connected", never "is it healthy". A probe that cannot
- * decide (database down, timeout) counts as NOT connected: the prompt then says "not connected"
- * rather than inventing a capability, and the next session asks again.
+ * decide (database down, timeout) is UNKNOWN, a third answer: the prompt says the check did not
+ * settle it and the agent verifies with a real tool call. It never says "not connected" for a
+ * service it could not check, because the connection may well be there.
  */
 import { existsSync } from "node:fs";
 
 import { storeRoot } from "@lares/agent-kit/notes-store";
 
-import { listEnrolledMailboxes } from "./google.js";
+import { googleConnectionStatus } from "./google.js";
 import { allowedSlackUserIds } from "@lares/agent-kit/principals";
 import { withTimeout } from "./timeout.js";
 
 export type ConnectionKey = "google" | "crm" | "notion" | "vault" | "atlas" | "slack";
 
-export type ConnectionState = Record<ConnectionKey, boolean>;
+/** "unknown" means the check could not settle it (slow, refused, errored). It is never shown as "not connected". */
+export type ConnectionState = Record<ConnectionKey, boolean | "unknown">;
 
 /** What each connection unlocks, in the owner's words. Order is the order they are listed in. */
 const LABELS: Record<ConnectionKey, string> = {
@@ -38,14 +40,17 @@ const KEYS = Object.keys(LABELS) as ConnectionKey[];
 const PROBE_TIMEOUT_MS = 4_000;
 
 export interface ConnectionProbes {
-  google(): Promise<boolean>;
+  google(): Promise<boolean | "unknown">;
   env: NodeJS.ProcessEnv;
   fileExists(path: string): boolean;
   slackUsers(): readonly string[];
 }
 
 const liveProbes: ConnectionProbes = {
-  google: async () => (await withTimeout(listEnrolledMailboxes(), PROBE_TIMEOUT_MS, "connections: google")).length > 0,
+  google: async () => {
+    const status = await withTimeout(googleConnectionStatus(), PROBE_TIMEOUT_MS, "connections: google").catch(() => "unknown" as const);
+    return status === "unknown" ? "unknown" : status === "connected";
+  },
   env: process.env,
   fileExists: existsSync,
   slackUsers: allowedSlackUserIds,
@@ -68,7 +73,7 @@ function crmConnected(env: NodeJS.ProcessEnv, fileExists: (path: string) => bool
 
 export async function readConnections(probes: ConnectionProbes = liveProbes): Promise<ConnectionState> {
   const { env } = probes;
-  const google = await probes.google().catch(() => false);
+  const google = await probes.google().catch(() => "unknown" as const);
   return {
     google,
     crm: crmConnected(env, probes.fileExists),
@@ -91,13 +96,17 @@ export function sharedRoomContactsLine(probes: Pick<ConnectionProbes, "env" | "f
 
 /** The block the model reads. Names both lists so "not listed" is never ambiguous. */
 export function connectionsMarkdown(state: ConnectionState): string {
-  const on = KEYS.filter((k) => state[k]).map((k) => LABELS[k]);
-  const off = KEYS.filter((k) => !state[k]).map((k) => LABELS[k]);
+  const on = KEYS.filter((k) => state[k] === true).map((k) => LABELS[k]);
+  const off = KEYS.filter((k) => state[k] === false).map((k) => LABELS[k]);
+  const unknown = KEYS.filter((k) => state[k] === "unknown").map((k) => LABELS[k]);
   const lines = [
     "## What is connected right now",
     "Web chat and Telegram are how I talk; the services below are separate connections the owner makes.",
     `Connected: ${on.length ? on.join("; ") : "none of them yet"}.`,
-    `Not connected: ${off.length ? off.join("; ") : "nothing, all are connected"}.`,
+    `Not connected: ${off.length ? off.join("; ") : unknown.length ? "nothing I know of" : "nothing, all are connected"}.`,
+    ...(unknown.length
+      ? [`Not checked yet: ${unknown.join("; ")}. I could not confirm ${unknown.length === 1 ? "this one" : "these"} at the start of the conversation. I never say ${unknown.length === 1 ? "it is" : "they are"} not connected. When asked about ${unknown.length === 1 ? "it" : "them"}, I say I will check, and I use the matching tool to find out.`]
+      : []),
     "Only what is connected is something I can do today. When asked what I can do, I describe that, and I offer to help connect the rest (the owner does it in the console). A tool I carry for something that is not connected cannot work yet. I never call a missing connection a setup fault or an error on my side: it simply is not connected, and I say so plainly and offer to connect it.",
   ];
   return lines.join("\n");

@@ -97,8 +97,31 @@ describe("what is connected", () => {
     expect(state.crm).toBe(false);
   });
 
-  it("a Google lookup that fails counts as not connected, not as an error", async () => {
+  it("a Google lookup that fails is unknown, and the block never calls it not connected", async () => {
     const state = await readConnections({ ...none, google: async () => { throw new Error("db down"); } });
-    expect(state.google).toBe(false);
+    expect(state.google).toBe("unknown");
+    const text = connectionsMarkdown(state);
+    expect(text).not.toMatch(/Not connected:[^\n]*Google/);
+    expect(text).toMatch(/Not checked yet: Google/);
+    expect(text).toMatch(/I will check/);
+  });
+
+  it("a Google lookup that times out is unknown too", async () => {
+    const state = await readConnections({ ...none, google: async () => "unknown" });
+    expect(state.google).toBe("unknown");
+  });
+});
+
+describe("the live Google status", () => {
+  it("separates nothing chosen from a check that could not settle it", async () => {
+    const { googleConnectionStatus } = await import("../lib/google.js");
+    const { __setChosenMailboxForTests } = await import("../lib/chosen-mailbox.js");
+    __setChosenMailboxForTests({ ok: false, reason: "none" });
+    expect(await googleConnectionStatus()).toBe("none");
+    __setChosenMailboxForTests({ ok: false, reason: "unavailable" });
+    expect(await googleConnectionStatus()).toBe("unknown");
+    __setChosenMailboxForTests({ ok: false, reason: "account-not-ok" });
+    expect(await googleConnectionStatus()).toBe("unknown");
+    __setChosenMailboxForTests(null);
   });
 });
