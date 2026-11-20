@@ -836,7 +836,7 @@ def prove_keeper_default_admission() -> None:
         raise ProbeFailure("keeper-ready-rpc-timeout",
                            step="readiness request exit status %s, answered %s; the keeper's log follows" %
                            (readiness_result.returncode if readiness_result is not None else "none",
-                            (readiness_result.stderr or "").strip()[:200] if readiness_result is not None else "nothing"),
+                            (as_text(readiness_result.stdout) + as_text(readiness_result.stderr)).strip()[:200] if readiness_result is not None else "nothing"),
                            result=keeper_log)
     proof["claims"]["keeperDefaultServePassedDatabaseReadinessAndBothSockets"] = True
     proof["stages"]["keeperAuthenticatedReadinessRequest"] = True
