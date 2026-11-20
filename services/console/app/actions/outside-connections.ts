@@ -5,6 +5,10 @@ import { outsideToolSchema } from "@lares/agent-kit/definition";
 import { memberAuditAddress, sessionMember } from "../../lib/auth";
 import { keeper, KeeperRefusedError } from "../../lib/keeper-client";
 import { keeperReason } from "../../lib/keeper-reason";
+import { toolPinHash } from "@lares/agent-kit/outside-pins";
+import { pinnedToolsFor } from "../../lib/outside-tools";
+import { BIND_TO_PINNED } from "../../lib/outside-connect-words";
+
 
 const nameSchema = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -54,9 +58,25 @@ export async function saveOutsideConnections(input: {
     connections: z.array(outsideToolSchema),
   }).safeParse(input);
   if (!parsed.success) throw new Error("Connection details are invalid.");
+  // Resolve "switch this on now" entries against the descriptions the agent has pinned. Nothing is guessed:
+  // a tool nobody has seen yet cannot be switched on.
+  const connections = [];
+  for (const entry of parsed.data.connections) {
+    const wanted = (entry.tools.trusted ?? []).filter(t => t.pin === BIND_TO_PINNED);
+    if (wanted.length === 0) { connections.push(entry); continue; }
+    const pinned = await pinnedToolsFor(parsed.data.name, entry.name);
+    const resolved = [];
+    for (const t of entry.tools.trusted ?? []) {
+      if (t.pin !== BIND_TO_PINNED) { resolved.push(t); continue; }
+      const seen = pinned?.find(p => p.name === t.tool);
+      if (!seen) return { ok: false, message: `"${t.tool}" cannot run without asking yet: the agent has not read its description from the server. Start a conversation with the agent, or connect it from the Connect screen, then try again.` };
+      resolved.push({ ...t, pin: toolPinHash(seen) });
+    }
+    connections.push({ ...entry, tools: { ...entry.tools, trusted: resolved } });
+  }
   try {
     // A definition save like the others (app/actions/definition.ts): it can stop a held agent, so it waits as long as Apply.
-    const result = resultSchema.parse(await keeper<unknown>("outside.connections.save", { ...parsed.data, sessionToken }, actor, { timeoutMs: 90_000 }));
+    const result = resultSchema.parse(await keeper<unknown>("outside.connections.save", { ...parsed.data, connections, sessionToken }, actor, { timeoutMs: 90_000 }));
     return { ok: true, result };
   } catch (error) {
     if (error instanceof KeeperRefusedError) return { ok: false, message: keeperReason(error, "The connection change was refused. Refresh and review the connection again.") };

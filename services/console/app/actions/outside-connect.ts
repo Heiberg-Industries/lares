@@ -11,6 +11,7 @@
 import { cookies } from "next/headers";
 import { z } from "zod";
 import { outsideToolSchema, type OutsideToolDeclaration } from "@lares/agent-kit/definition";
+import { toolPinHash } from "@lares/agent-kit/outside-pins";
 import { memberAuditAddress, requireConsoleMember, sessionMember } from "../../lib/auth";
 import { listAgents } from "../../lib/agents";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
@@ -31,7 +32,9 @@ const nameSchema = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
 const uuid = z.string().uuid();
 const identitySchema = z.strictObject({ accountId: uuid, agentName: nameSchema, connectionName: nameSchema, requestId: uuid, claimOperationId: uuid });
 const connectionSchema = z.strictObject({
-  name: nameSchema, url: z.string().min(1).max(2048), description: z.string().min(1).max(500), token: z.boolean(), trusted: z.boolean(),
+  name: nameSchema, url: z.string().min(1).max(2048), description: z.string().min(1).max(500), token: z.boolean(),
+  /** Tools the owner switched on to run without asking, with the description and schema the owner saw. */
+  trustedTools: z.array(z.strictObject({ name: z.string().min(1), description: z.string().optional(), inputSchema: z.unknown().optional() })).max(200),
   allow: z.array(z.string().min(1)).max(200), read: z.array(z.string().min(1)).max(200),
 });
 const stateSchema = z.object({ definitionHash: z.string().regex(/^[a-f0-9]{64}$/), accessRevision: z.number().int().positive(),
@@ -66,7 +69,10 @@ async function read(who: { sessionToken: string; actor: string }, agent: string)
 }
 
 function declarationOf(c: z.infer<typeof connectionSchema>): OutsideToolDeclaration {
-  return { name: c.name, url: c.url, description: c.description, token: c.token, trusted: c.trusted, tools: { allow: c.allow, read: c.read } };
+  // Only a tool that looks things up can run without asking. The keeper writes who and when; "pending" is a placeholder it replaces.
+  const trusted = c.trustedTools.filter(t => c.read.includes(t.name) && c.allow.includes(t.name))
+    .map(t => ({ tool: t.name, pin: toolPinHash({ name: t.name, description: t.description, inputSchema: t.inputSchema }), by: "pending", at: new Date(0).toISOString() }));
+  return { name: c.name, url: c.url, description: c.description, token: c.token, tools: { allow: c.allow, read: c.read, ...(trusted.length ? { trusted } : {}) } };
 }
 
 /** Agents the owner can tick. The keeper decides, per agent, whether the member may edit it. */

@@ -21,3 +21,6 @@ export function suggestConnectionName(address: string): string {
 export function toolNamesOf(text: string): string[] {
   return [...new Set(text.split(/[\s,]+/).map(t => t.trim()).filter(Boolean))];
 }
+
+/** In a saved list, a trust entry with this pin means "bind to the description the agent has pinned now". */
+export const BIND_TO_PINNED = "0".repeat(64);
