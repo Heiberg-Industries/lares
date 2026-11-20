@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { definitionSchema, outsideToolSchema, OUTSIDE_TOOL_NAME_RE, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
 import { stampTrust } from '@lares/agent-kit/outside-tools';
 import { toolPinHash } from '@lares/agent-kit/outside-pins';
+import { requireConsoleAgentUse } from '@lares/agent-kit/console-turn-authority';
 import { currentSession } from '@lares/agent-kit/member-store';
 import { PgGrantStore, type GrantDatabase } from '@lares/agent-kit/grant-store';
 import { validateDefinition, doorSecretName, type ToolSources } from '@lares/agent-kit/definition-validate';
@@ -310,14 +311,33 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
      *    and is stamped with the acting identity (`ctx.actor`, the audit address of the signed-in member, not a member id) and now;
      *  - a tool with no stored description cannot be switched on yet.
      *  The time of a switch that is saved but not yet applied moves each time it is saved again, until it is applied. */
+    /** The description stored for one tool (what the agent last read and the owner has not yet been asked to review), or undefined. */
+    async function storedTool(name: string, connection: string, tool: string): Promise<{ name: string; description?: string; inputSchema?: unknown } | undefined> {
+        const stored = await o.pool.query<{ pin_tools: unknown }>('SELECT pin_tools FROM outside_tool_pins WHERE agent=$1 AND tool=$2 AND seen_hash IS NULL', [name, connection]);
+        const tools = stored.rows[0]?.pin_tools;
+        const found = Array.isArray(tools) ? (tools as Array<{ name?: unknown; description?: unknown; inputSchema?: unknown }>).find(t => t.name === tool) : undefined;
+        return found && typeof found.name === 'string'
+            ? { name: found.name, ...(typeof found.description === 'string' ? { description: found.description } : {}), inputSchema: found.inputSchema } : undefined;
+    }
+    /** A save that says nothing about the switches (a reconnect, or an edit elsewhere in the definition) keeps the applied ones whose
+     *  stored description still matches and whose tool is still a lookup. An explicit list, even an empty one, replaces them. */
+    async function carryOver(name: string, entry: NonNullable<AgentDefinition['outsideTools']>[number], applied: NonNullable<NonNullable<AgentDefinition['outsideTools']>[number]['tools']['trusted']>) {
+        const kept: typeof applied = [];
+        for (const grant of applied) {
+            if (!entry.tools.read.includes(grant.tool) || !entry.tools.allow.includes(grant.tool)) continue;
+            const tool = await storedTool(name, entry.name, grant.tool);
+            if (tool && toolPinHash(tool) === grant.pin) kept.push(grant);
+        }
+        return kept;
+    }
     async function restampTrust(name: string, declared: AgentDefinition['outsideTools'], actor: string, mayGrant: () => Promise<boolean>): Promise<NonNullable<AgentDefinition['outsideTools']>> {
         const entries = declared ?? [];
         const previous = await appliedOutsideTools(name);
         const out: NonNullable<AgentDefinition['outsideTools']> = [];
         for (const entry of entries) {
-            const sent = entry.tools.trusted;
-            if (sent === undefined) { out.push(entry); continue; }
             const before = previous.find(p => p.name === entry.name)?.tools.trusted ?? [];
+            const sent = entry.tools.trusted ?? (await carryOver(name, entry, before));
+            if (sent.length === 0 && entry.tools.trusted === undefined) { out.push(entry); continue; }
             const fixed: typeof sent = [];
             let allowed: boolean | undefined;
             for (const grant of sent) {
@@ -325,12 +345,10 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 if (prior) { fixed.push(prior); continue; }
                 allowed ??= await mayGrant();
                 if (!allowed) refused("Only a member who can approve this agent's outside calls may switch a tool on to run without asking. Editing access alone is not enough.");
-                const stored = await o.pool.query<{ pin_tools: unknown }>('SELECT pin_tools FROM outside_tool_pins WHERE agent=$1 AND tool=$2 AND seen_hash IS NULL', [name, entry.name]);
-                const tools = stored.rows[0]?.pin_tools;
-                const found = Array.isArray(tools) ? (tools as Array<{ name?: unknown; description?: unknown; inputSchema?: unknown }>).find(t => t.name === grant.tool) : undefined;
-                if (!found || typeof found.name !== 'string')
+                const found = await storedTool(name, entry.name, grant.tool);
+                if (!found)
                     refused(`"${grant.tool}" cannot run without asking yet: the agent has not read its description from the server. Start a conversation with the agent first, then switch it on.`);
-                fixed.push({ ...grant, pin: toolPinHash({ name: found!.name as string, ...(typeof found!.description === 'string' ? { description: found!.description } : {}), inputSchema: found!.inputSchema }) });
+                fixed.push({ ...grant, pin: toolPinHash(found!) });
             }
             out.push(...stampTrust([{ ...entry, tools: { ...entry.tools, trusted: fixed } }], previous, actor, new Date().toISOString()));
         }
@@ -340,7 +358,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         const raw = definition as { outsideTools?: unknown } | null;
         if (!raw || typeof raw !== 'object' || !Array.isArray(raw.outsideTools)) return definition;
         const parsed = z.array(outsideToolSchema).safeParse(raw.outsideTools);
-        if (!parsed.success || !parsed.data.some(t => t.tools.trusted !== undefined)) return definition;
+        if (!parsed.success) return definition;
         // No signed-in member is behind these paths, so only the host or the installation administrator may add a switch here.
         return { ...raw, outsideTools: await restampTrust(name, parsed.data, ctx.actor, async () => mayChange(ctx)) };
     }
@@ -385,7 +403,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             const initial = await connectionSnapshot(client, input, true);
             if (!input.connections) refused('Connection changes are required.');
             // Who switched a tool on, and when, is written here by the keeper, never from the browser.
-            const connections = await restampTrust(input.name, input.connections, ctx.actor, async () => (await new PgGrantStore().captureUse(initial.member.id, input.name, { db: client as GrantDatabase })) !== undefined);
+            const connections = await restampTrust(input.name, input.connections, ctx.actor, async () => { try { await requireConsoleAgentUse(input.name, initial.member.id, o.pool as never); return true; } catch { return false; } });
             if (new Set(connections.map(connection => connection.name)).size !== connections.length)
                 refused('Connection names must be unique.');
             const definition = { ...initial.loaded.definition } as AgentDefinition & { outsideTools?: AgentDefinition['outsideTools'] };

@@ -31,16 +31,18 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
   const [ticked, setTicked] = useState<string[]>(first ? [first] : []);
   const [rows, setRows] = useState<Row[]>([]), [serverName, setServerName] = useState("");
   const [items, setItems] = useState<Item[]>([]), [failure, setFailure] = useState<{ message: string; retryable: boolean } | null>(null);
-  const [error, setError] = useState(""), [cleanup, setCleanup] = useState(""), [switchResult, setSwitchResult] = useState("");
+  const [error, setError] = useState(""), [cleanup, setCleanup] = useState(""), [switchResult, setSwitchResult] = useState(""), [dropped, setDropped] = useState<string[]>([]);
   const plan = useRef<Plan>([]), next = useRef(0), after = useRef<() => void>(() => {});
   const settings = useRef<Settings | null>(null), seen = useRef<ConnectTool[] | undefined>(undefined);
+  // What the agent already had for this connection: a reconnect shows those switches as they are.
+  const prior = useRef<{ trusted: string[]; tools: string[] }>({ trusted: [], tools: [] });
 
   const suggested = suggestConnectionName(url);
   const connectionName = (name.trim() || suggested);
   const needsToken = token.trim().length > 0;
 
   function reset() {
-    setPhase("form"); setItems([]); setFailure(null); setRows([]); setError(""); setToken(""); setConsent(false); plan.current = []; next.current = 0; seen.current = undefined;
+    setPhase("form"); setItems([]); setFailure(null); setRows([]); setError(""); setToken(""); setConsent(false); plan.current = []; next.current = 0; seen.current = undefined; prior.current = { trusted: [], tools: [] }; setDropped([]);
   }
 
   /** Runs the plan from `from`; stops at the first failure and says which step it was and why. */
@@ -86,14 +88,18 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
     if (!consent) { setError("Tick the box to allow sending the token to this address."); return; }
     const primary = chosen.agents[0]!;
     start([
-      { label: `Save the connection on ${primary}`, run: () => connectDeclare({ agent: primary, provisional: true, connection: { name: chosen.name, url: chosen.url, description: chosen.description,
-        token: true, allow: [], read: [] } }) },
+      { label: `Save the connection on ${primary}`, run: async () => {
+        const r = await connectDeclare({ agent: primary, provisional: true, connection: { name: chosen.name, url: chosen.url, description: chosen.description, token: true, allow: [], read: [] } });
+        if (r.ok) prior.current = { trusted: r.value.currentTrusted, tools: r.value.previousTools };
+        return r;
+      } },
       { label: "Ask the server which tools it offers", run: async () => {
         const result = await connectLookUpTools({ agent: primary, name: chosen.name, credential: token });
         if (result.ok) {
           seen.current = result.value.tools;
           setServerName(result.value.serverName);
-          setRows(result.value.tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, use: true, kind: t.readOnly ? "read" : "change", free: t.readOnly === true, seen: true })));
+          setRows(result.value.tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, use: true, kind: t.readOnly ? "read" : "change", seen: true,
+            free: prior.current.tools.includes(t.name) ? prior.current.trusted.includes(t.name) : t.readOnly === true })));
         }
         return result;
       } },
@@ -113,7 +119,11 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
       if (!chosen.hasToken) { steps.push({ label: `Save the connection on ${agent} and apply it`, run: () => connectDeclare({ agent, provisional: false, connection }) }); continue; }
       let identity: ConnectIdentity | undefined, staged: OutsidePendingApplyDto | undefined;
       steps.push(
-        { label: `Save the chosen tools on ${agent}`, run: () => connectDeclare({ agent, provisional: false, connection, applyNow: false }) },
+        { label: `Save the chosen tools on ${agent}`, run: async () => {
+          const r = await connectDeclare({ agent, provisional: false, connection, applyNow: false });
+          if (r.ok && r.value.droppedTrust.length) setDropped(list => [...list, ...r.value.droppedTrust.map(t => `${t} (${agent})`)]);
+          return r;
+        } },
         { label: `Ask the server again, to check ${agent} sees what you saw`, run: async () => {
           const r = await connectLookUpTools({ agent, name: chosen.name, credential: token }); if (r.ok) identity = r.value.identity; return r; } },
         { label: `Record and accept these exact descriptions for ${agent}`, run: async () => {
@@ -128,14 +138,16 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
     start(steps, () => { setToken(""); setPhase("done"); });
   }
 
+  const desiredFree = () => rows.filter(r => r.use && r.kind === "read" && r.free && r.seen).map(r => r.name);
+
   /** After connecting. The keeper takes each tool's fingerprint from the description the agent has stored, so this works once the agent has read the tool list. */
   async function switchOn() {
     const chosen = settings.current; if (!chosen) return;
-    const names = rows.filter(r => r.use && r.kind === "read" && r.free && r.seen).map(r => r.name);
+    const names = desiredFree();
     const lines: string[] = [];
     for (const agent of chosen.agents) {
       const r = await connectSwitchOnTrust({ agent, name: chosen.name, tools: names });
-      lines.push(r.ok ? `${agent}: switched on for ${r.value.switchedOn.length ? r.value.switchedOn.join(", ") : "nothing new (already on)"}` : `${agent}: ${r.message}`);
+      lines.push(r.ok ? `${agent}: switched on ${r.value.switchedOn.length ? r.value.switchedOn.join(", ") : "nothing new"}${r.value.switchedOff.length ? `; switched off ${r.value.switchedOff.join(", ")}` : ""}` : `${agent}: ${r.message}`);
     }
     setSwitchResult(lines.join(". "));
   }
@@ -209,8 +221,9 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
     {phase === "done" && <div className="lares-stack">
       <Progress items={items} />
       <Notice>Connected. {settings.current?.agents.join(", ")} can now use {rows.filter(r => r.use).length} tool{rows.filter(r => r.use).length === 1 ? "" : "s"} from {serverName || settings.current?.name}. Tools you did not switch on to run without asking still ask you first. This does not yet prove the server answers: ask the agent to look something up to try it.</Notice>
-      {rows.some(r => r.use && r.kind === "read" && r.free && r.seen) && <div className="lares-stack">
-        <p>You ticked “Run without asking” for {rows.filter(r => r.use && r.kind === "read" && r.free && r.seen).map(r => r.name).join(", ")}. It can be switched on once the agent has read the server's tool list: ask the agent for a look-up once, then press the button.</p>
+      {dropped.length > 0 && <Notice>Run without asking was switched off for {dropped.join(", ")} because the tool changed since you switched it on. You can switch it on again below.</Notice>}
+      {(desiredFree().length > 0 || prior.current.trusted.length > 0) && <div className="lares-stack">
+        <p>Run without asking: {desiredFree().length ? desiredFree().join(", ") : "none"}{prior.current.trusted.length ? ` (switched on now: ${prior.current.trusted.join(", ")})` : ""}. A new one can be switched on once the agent has read the server's tool list: ask the agent for a look-up once, then press the button.</p>
         <div className="lares-actions"><Button type="button" onClick={() => void switchOn()}>Switch on Run without asking</Button></div>
         {switchResult && <p role="status">{switchResult}</p>}
       </div>}

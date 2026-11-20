@@ -1614,14 +1614,13 @@ describe('a lookup under the owner\'s standing trust',()=>{
   const f=await trustedFixture();
   const logged=vi.spyOn(console,'error').mockImplementation(()=>{});
   ids.outsideDispatch.mockImplementation(async()=>{
-   // The audit table disappears for the closing write only.
+   // The audit table disappears for the closing write only; the broker awaits that write before it answers.
    await pool.query('ALTER TABLE keeper_audit RENAME TO keeper_audit_away');
-   setTimeout(()=>{void pool.query('ALTER TABLE keeper_audit_away RENAME TO keeper_audit').catch(()=>{});},300);
    return {content:[{type:'text',text:'Fixture result'}]};
   });
   try{
    await runtime('outside.run-trusted',{...f.binding,call:f.call});
-   await new Promise(resolve=>setTimeout(resolve,600));
+   await pool.query('ALTER TABLE keeper_audit_away RENAME TO keeper_audit');
    expect(logged.mock.calls.map(c=>String(c[0])).join('\n')).toMatch(/could not close the audit row/);
    const repairs=await pool.query("SELECT kind,severity,what FROM repairs WHERE kind='outside-audit-open'");
    expect(repairs.rows).toHaveLength(1);expect(repairs.rows[0].severity).toBe('error');

@@ -1021,3 +1021,28 @@ it('on definition.save, only the host or the administrator may add a switch, and
     const [grant] = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition.outsideTools![0]!.tools.trusted!;
     expect(grant).toMatchObject({ tool: 'find_rate', pin: toolPinHash(stored), by: 'owner@example.com' });
 });
+it('a save that says nothing about the switches keeps the applied ones whose description still matches, and ends the others', async () => {
+    const { toolPinHash } = await import('@lares/agent-kit/outside-pins');
+    const { loaded, access, sessions } = await connectionFixture();
+    const one = { name: 'find_rate', description: 'Finds a rate.', inputSchema: { type: 'object' } }, two = { name: 'list_rates', description: 'Lists rates.', inputSchema: { type: 'object' } };
+    const entry = (trusted?: unknown[]) => ({ ...declaration, tools: { allow: ['find_rate', 'list_rates'], read: ['find_rate', 'list_rates'], ...(trusted ? { trusted } : {}) } });
+    const stamped = (tool: typeof one) => ({ tool: tool.name, pin: toolPinHash(tool), by: 'first-owner', at: '2026-01-01T00:00:00.000Z' });
+    await pool.query(`INSERT INTO outside_tool_pins(agent,tool,config_hash,pin_hash,pin_tools) VALUES('bookkeeper','rates',$1,$2,$3::jsonb)
+        ON CONFLICT (agent,tool) DO UPDATE SET pin_tools=EXCLUDED.pin_tools, seen_hash=NULL`, ['c'.repeat(64), 'd'.repeat(64), JSON.stringify([one, { ...two, description: 'Lists rates, newly.' }])]);
+    await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,applied_definition,pending)
+        VALUES('bookkeeper','172.18.0.32','lares_carry','legacy',gen_random_uuid(),'ready',$1::jsonb,false)
+        ON CONFLICT (name) DO UPDATE SET applied_definition=EXCLUDED.applied_definition`, [JSON.stringify({ ...loaded.definition, outsideTools: [entry([stamped(one), stamped(two)])] })]);
+    // A reconnect sends no list: find_rate is unchanged and keeps its original stamp; list_rates changed since it was switched on and is ended.
+    const saved: any = await connectionCall(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [entry()]);
+    expect(saved.connections[0].tools.trusted).toEqual([stamped(one)]);
+    // An explicit empty list switches everything off, and needs no approver.
+    const off: any = await connectionCall(sessions.editor, 'bookkeeper', saved.definitionHash, saved.accessRevision, [entry([])]);
+    expect(off.connections[0].tools.trusted).toEqual([]);
+});
+it('definition.create and definition.import refuse a switch from anyone but the host or the administrator', async () => {
+    const base = { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } };
+    const withTrust = { ...base, outsideTools: [{ ...declaration, tools: { ...declaration.tools, trusted: [{ tool: 'find_rate', pin: 'a'.repeat(64), by: 'x', at: '2001-01-01T00:00:00.000Z' }] } }] };
+    await expect(runAction('definition.create', { ...save('bookkeeper', { definition: withTrust }), startingPoint: role }, ctx())).rejects.toThrow(/can approve/);
+    await expect(runAction('definition.import', save('bookkeeper', { definition: withTrust }), ctx())).rejects.toThrow();
+    expect(existsSync(join(agentsDir, 'bookkeeper'))).toBe(false);
+});

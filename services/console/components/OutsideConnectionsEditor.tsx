@@ -61,11 +61,17 @@ export function OutsideConnectionsEditor({ initial, running }: { initial: Outsid
         expectedAccessRevision: state.accessRevision, connections,
       });
       if (!result.ok) { setMessage(result.message); return; }
+      // A switch the keeper ended (its tool changed, or is no longer a lookup) is said out loud, not dropped quietly.
+      const had = state.connections.flatMap(c => (c.tools.trusted ?? []).map(t => `${c.name}/${t.tool}`));
+      const has = new Set(result.result.connections.flatMap(c => (c.tools.trusted ?? []).map(t => `${c.name}/${t.tool}`)));
+      const still = new Set(connections.flatMap(c => (c.tools.trusted ?? []).map(t => `${c.name}/${t.tool}`)));
+      const lost = had.filter(k => still.has(k) && !has.has(k));
       setState(result.result); setDraft(null); setEditing(null);
       // A save with nothing waiting is applied as it is saved; new conversations use it at once.
       setMessage(result.result.applicationStatus === "applied"
         ? "Saved. New conversations with this agent use these connection settings."
         : "Saved. The agent will use the saved connection settings after they are applied.");
+      if (lost.length) setMessage(m => `${m} Run without asking was switched off for ${lost.join(", ")} because the tool changed.`);
     } catch {
       setMessage("The change could not be confirmed. Refresh this page before trying again.");
     } finally { setBusy(false); }
@@ -82,7 +88,8 @@ export function OutsideConnectionsEditor({ initial, running }: { initial: Outsid
       .map(tool => ({ tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() }));
     const connection: OutsideToolDeclaration = {
       name: draft.name.trim(), url: draft.url.trim(), description: draft.description.trim(), token: draft.token,
-      tools: { allow, read, ...(trusted.length ? { trusted } : {}) },
+      // Always an explicit list, even an empty one: an absent list means "keep what is on", so only a list can switch one off.
+      tools: { allow, read, trusted },
       ...(draft.runsAt.trim() ? { runsAt: draft.runsAt.trim() } : {}),
     };
     const next = editing

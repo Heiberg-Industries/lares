@@ -56,6 +56,25 @@ describe("OutsideConnectionsEditor", () => {
     expect(mocks.save.mock.calls[0]![0].connections[0].tools.trusted[0].pin).toBe("0".repeat(64));
   });
 
+  it("sends an explicit empty list when the last switch is unticked, and says when the keeper ended a switch", async () => {
+    const existing = { name: "rates", url: "https://tools.example.org/mcp", description: "Rates", token: false,
+      tools: { allow: ["find_rate"], read: ["find_rate"], trusted: [{ tool: "find_rate", pin: "a".repeat(64), by: "m", at: "2026-11-20T10:00:00.000Z" }] } };
+    render(<OutsideConnectionsEditor initial={{ ...initial, connections: [existing] }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByLabelText("find_rate"));
+    fireEvent.click(screen.getByRole("button", { name: "Save connections" }));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalled());
+    expect(mocks.save.mock.calls[0]![0].connections[0].tools.trusted).toEqual([]);
+    // Keeper keeps the list the owner sent, but drops a switch whose tool changed: the page says so.
+    mocks.save.mockImplementationOnce(async input => ({ ok: true, result: { ...initial, ...input, connections: input.connections.map((c: any) => ({ ...c, tools: { ...c.tools, trusted: [] } })),
+      definitionHash: "c".repeat(64), accessRevision: 4 } }));
+    cleanup();
+    render(<OutsideConnectionsEditor initial={{ ...initial, connections: [existing] }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save connections" }));
+    await screen.findByText(/Run without asking was switched off for rates\/find_rate because the tool changed/);
+  });
+
   it("shows the save warning only for a running agent", () => {
     render(<OutsideConnectionsEditor initial={initial} running={false} />);
     expect(screen.queryByText(SAVE_ENDS_CONVERSATIONS)).toBeNull();
@@ -99,7 +118,7 @@ describe("OutsideConnectionsEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save connections" }));
     await waitFor(() => expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({
       name: "bookkeeper", expectedDefinitionHash: initial.definitionHash, expectedAccessRevision: 2,
-      connections: [expect.objectContaining({ name: "rates", tools: { allow: ["find_rate"], read: [] } })],
+      connections: [expect.objectContaining({ name: "rates", tools: { allow: ["find_rate"], read: [], trusted: [] } })],
     })));
     await waitFor(() => expect(screen.getByText("Saved. The agent will use the saved connection settings after they are applied.")).toBeTruthy());
   });

@@ -103,6 +103,8 @@ Changing a switch after connecting edits the agent's definition, like any other 
   stored (`outside_tool_pins`), never from what a page or a file says. A tool the agent has not yet read from the server
   cannot be switched on: ask the agent for a look-up once, then switch it on. The Connect screen shows your ticks and offers
   a "Switch on Run without asking" button once you are connected.
+- Switching a tool OFF needs no approver rights; anyone who can edit the agent's connections can do it, and an explicit empty list switches everything off.
+- A save that says nothing about the switches (a reconnect, or an edit elsewhere) keeps the ones whose description is unchanged and ends the others; the Connect screen and the connection page say which were ended.
 - The record holds who and when. "Who" is the signed-in member's email address (the keeper's audit address), not a member id.
 - Until a switch is applied, each save of the definition records the time again; once applied, a switch that did not change
   keeps its original who and when. A switch whose tool description changed counts as new and is recorded again.

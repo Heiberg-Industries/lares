@@ -15,7 +15,7 @@ const tokenField = () => document.querySelector('input[type="password"]') as HTM
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.declare.mockResolvedValue(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true }));
+  mocks.declare.mockResolvedValue(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [] }));
   mocks.lookUp.mockResolvedValue(ok({ identity, serverName: "Example 1.0", tools }));
   mocks.review.mockResolvedValue(ok({ candidateRevision: 1 }));
   mocks.activate.mockResolvedValue(ok({ credentialRevision: 1 }));
@@ -76,6 +76,23 @@ describe("ConnectOutsideTool", () => {
     await screen.findByText(/Connected\./);
     fireEvent.click(screen.getByRole("button", { name: "Switch on Run without asking" }));
     await waitFor(() => expect(mocks.switchOn).toHaveBeenCalledWith({ agent: "alpha", name: "example", tools: ["find_company"] }));
+  });
+
+  it("on a reconnect shows the switches as they already are: kept ones ticked, known ones the owner left off stay off", async () => {
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: ["find_company"], droppedTrust: [] }));
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    await fillToken();
+    // find_company is read-only but was already on the agent and left off: it stays off. (A brand-new read-only tool would start on.)
+    const switches = screen.getAllByLabelText(/Run without asking/) as HTMLInputElement[];
+    expect(switches.map(sw => sw.checked)).toEqual([false, false]);
+  });
+
+  it("says out loud which switches the keeper ended", async () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    await fillToken();
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: false, currentTrusted: ["find_company"], previousTools: ["find_company"], droppedTrust: ["find_company"] }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText(/Run without asking was switched off for find_company \(alpha\) because the tool changed/);
   });
 
   it("says which step failed and why, and a retry continues from that step", async () => {
