@@ -5,7 +5,7 @@ import type { ApprovalContext, ApprovalResponseContext, ApprovalResponseDecision
 
 import type { AgentDefinition, OutsideToolDeclaration } from "./definition.js";
 import { registerOutsideConnections, withCardTitle } from "./approval-summary.js";
-import { outsideToolsInEffect, isTrustedRead, trustGrantFor } from "./outside-tools.js";
+import { outsideToolsInEffect, isTrustedRead } from "./outside-tools.js";
 import { toolPinHash } from "./outside-pins.js";
 import { asksAfterUntrustedText } from "./tainted-approval.js";
 import { isApprovalRecheck } from "./approval-execution.js";
@@ -123,17 +123,18 @@ export function outsideResponsePolicy(
 export const CONNECTION_SEARCH_TOOL = "eve__search";
 
 /**
- * The class a tool result from an outside tool taints the turn at, or undefined for none. Results of
- * an outside tool are `third_party` unless the owner trusts that tool (a lookup the owner let run is the
- * owner's own call); so is `connection_search` output while any connection has no trusted tool (the descriptions it shows
- * are pinned, so a connection the owner already trusts for lookups adds nothing new).
+ * The class a tool result from an outside tool taints the turn at, or undefined for none. EVERY result
+ * of a `<name>__*` tool is `third_party`, whether or not the owner let that tool run without asking: its
+ * text still comes from outside and may carry planted instructions. So the first lookup in a clean turn can
+ * run free, and anything after an outside result in the same turn asks. Search output (`eve__search`)
+ * carries the server's own words too. Nothing is exempt, and a definition with no connections in effect
+ * taints nothing.
  */
 export function outsideResultTaint(toolName: string, definition: OutsideDefinitionView): Taint | undefined {
   const entries = outsideToolsInEffect(definition);
   if (entries.length === 0) return undefined;
-  if (toolName === CONNECTION_SEARCH_TOOL) return entries.some((e) => !e.tools.allow.some((t) => trustGrantFor(e, t) !== undefined)) ? "third_party" : undefined;
-  const hit = entries.find((e) => toolName.startsWith(`${e.name}__`));
-  return hit !== undefined && trustGrantFor(hit, bareToolName(hit.name, toolName)) === undefined ? "third_party" : undefined;
+  if (toolName === CONNECTION_SEARCH_TOOL) return "third_party";
+  return entries.some((e) => toolName.startsWith(`${e.name}__`)) ? "third_party" : undefined;
 }
 
 // ─── Something is wrong ────────────────────────────────────────────────────────────────────

@@ -222,11 +222,12 @@ describe("outside tools", () => {
     expect(lookups).toEqual(["s1"]);
   });
 
-  it("does not taint for a trusted connection or a look-alike name", async () => {
+  it("taints for a trusted tool too, but not for a look-alike name", async () => {
     const { h } = withDef(def({ outsideTools: [entry({ tools: { allow: ["lookup"], read: ["lookup"], trusted: [{ tool: "lookup", by: "m", at: "2026-11-20T10:00:00Z", pin: "a".repeat(64) }] } })] }));
-    await feed(h, resultWith("registry__lookup", "x"));
     await feed(h, resultWith("registry2__lookup", "x"));
     expect(currentTaint(key)).toBeUndefined();
+    await feed(h, resultWith("registry__lookup", "x"));
+    expect(currentTaint(key)).toBe("third_party");
   });
 
   it("treats eve__search output as outside text while an untrusted connection is present", async () => {

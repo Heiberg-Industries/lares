@@ -295,7 +295,23 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         }
         return { name: input.name, hash: loaded.hash, backup: backedUp, runtime };
     }
-    async function save(input: z.infer<typeof writeInput>, ctx: ActionContext, create: boolean) {
+    /** The outside declarations the agent runs under now. Trust is stamped against these, not against the saved copy. */
+    async function appliedOutsideTools(name: string): Promise<NonNullable<AgentDefinition['outsideTools']>> {
+        const row = await o.pool.query<{ applied_definition: { outsideTools?: unknown } | null }>('SELECT applied_definition FROM agent_resources WHERE name=$1', [name]);
+        const parsed = z.array(outsideToolSchema).safeParse(row.rows[0]?.applied_definition?.outsideTools ?? []);
+        return parsed.success ? parsed.data : [];
+    }
+    /** Who switched a tool on to run without asking, and when, is the keeper's word on EVERY write path. Whatever the
+     *  client sent for who, when or the fingerprint of a new switch is replaced; an unchanged switch keeps its stamp. */
+    async function restampTrust(name: string, definition: unknown, actor: string): Promise<unknown> {
+        const raw = definition as { outsideTools?: unknown } | null;
+        if (!raw || typeof raw !== 'object' || !Array.isArray(raw.outsideTools)) return definition;
+        const parsed = z.array(outsideToolSchema).safeParse(raw.outsideTools);
+        if (!parsed.success || !parsed.data.some(t => t.tools.trusted !== undefined)) return definition;
+        return { ...raw, outsideTools: stampTrust(parsed.data, await appliedOutsideTools(name), actor, new Date().toISOString()) };
+    }
+    async function save(rawInput: z.infer<typeof writeInput>, ctx: ActionContext, create: boolean) {
+        const input = { ...rawInput, definition: await restampTrust(rawInput.name, rawInput.definition, ctx.actor) };
         const prepared = await prepareSave(input, create);
         const loaded = await publishSave(input, create, prepared);
         return finishSave(input, ctx, create, prepared.d, loaded);
@@ -334,8 +350,8 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             }
             const initial = await connectionSnapshot(client, input, true);
             if (!input.connections) refused('Connection changes are required.');
-            // Who switched a tool on, and when, is written here from the signed-in session, never from the browser.
-            const connections = stampTrust(input.connections, initial.loaded.definition.outsideTools ?? [], initial.member.id, new Date().toISOString());
+            // Who switched a tool on, and when, is written here by the keeper, never from the browser.
+            const connections = stampTrust(input.connections, await appliedOutsideTools(input.name), ctx.actor, new Date().toISOString());
             if (new Set(connections.map(connection => connection.name)).size !== connections.length)
                 refused('Connection names must be unique.');
             const definition = { ...initial.loaded.definition } as AgentDefinition & { outsideTools?: AgentDefinition['outsideTools'] };

@@ -75,11 +75,11 @@ export function OutsideConnectionsEditor({ initial, running }: { initial: Outsid
     event.preventDefault();
     if (!draft) return;
     const allow = listOf(draft.allow), read = listOf(draft.read);
-    const before = state.connections.find(item => item.name === editing)?.tools.trusted ?? [];
-    // Only a tool that looks things up can run without asking. One already switched on keeps its record; a new one is
-    // bound to the description the agent has pinned when the page saves.
+    // Only a tool that looks things up can run without asking. Every ticked tool is bound, when the page saves, to the
+    // description the agent has pinned now: that restores trust after a description change in one save, and the keeper
+    // keeps the original who and when for a switch whose description did not change.
     const trusted = draft.free.filter(tool => read.includes(tool) && allow.includes(tool))
-      .map(tool => before.find(b => b.tool === tool) ?? { tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() });
+      .map(tool => ({ tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() }));
     const connection: OutsideToolDeclaration = {
       name: draft.name.trim(), url: draft.url.trim(), description: draft.description.trim(), token: draft.token,
       tools: { allow, read, ...(trusted.length ? { trusted } : {}) },

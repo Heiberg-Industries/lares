@@ -1587,7 +1587,7 @@ describe('a lookup under the owner\'s standing trust',()=>{
   const call={callId:randomUUID(),connectionName:'registry',toolName:over.trust==='write'?'create_note':'lookup',input:{company:'Example'}};
   return {call,binding:{sessionId:session,memberId:ids.member,admissionNonce}};
  }
- const audits=async()=>(await pool.query("SELECT actor,input,outcome FROM keeper_audit WHERE action='outside.run-trusted'")).rows;
+ const audits=async()=>(await pool.query("SELECT actor,input,outcome,detail FROM keeper_audit WHERE action='outside.run-trusted'")).rows;
 
  it('runs a trusted lookup with no card, writes who granted the trust, and passes the call through the same custody path',async()=>{
   const f=await trustedFixture();
@@ -1595,7 +1595,26 @@ describe('a lookup under the owner\'s standing trust',()=>{
   expect(ids.outsideApprove).toHaveBeenCalledOnce();expect(ids.outsideDispatch).toHaveBeenCalledOnce();
   const rows=await audits();expect(rows).toHaveLength(1);
   expect(rows[0]!.input).toMatchObject({agent,connection:'registry',tool:'lookup',sessionId:session,callId:f.call.callId,trustGrantedBy:ids.member,trustGrantedAt:'2026-11-20T10:00:00.000Z'});
-  expect(JSON.stringify(rows[0]!.input)).not.toContain('Example');
+  expect(rows[0]!.outcome).toBe('ok');
+ });
+ it('never writes the call\'s arguments into the audit, whatever strings they hold',async()=>{
+  const f=await trustedFixture();
+  f.call.input={company:'Example-secret-one',nested:{note:'Example-secret-two',list:['Example-secret-three']},n:42} as never;
+  await runtime('outside.run-trusted',{...f.binding,call:f.call});
+  const text=JSON.stringify(await audits());
+  for(const secret of ['Example-secret-one','Example-secret-two','Example-secret-three'])expect(text).not.toContain(secret);
+ });
+ it('records the real outcome: failed when the custody dispatch fails',async()=>{
+  const f=await trustedFixture();ids.outsideDispatch.mockRejectedValue(new Error('provider down'));
+  await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
+  const rows=await audits();expect(rows).toHaveLength(1);expect(rows[0]!.outcome).toBe('failed');
+ });
+ it.each(['session','member','nonce'])('refuses a call under the wrong %s, before any custody call',async(kind)=>{
+  const f=await trustedFixture();
+  const binding={...f.binding,...(kind==='session'?{sessionId:'another-session'}:kind==='member'?{memberId:'member-backup'}:{admissionNonce:'x'.repeat(43)})};
+  await expect(runtime('outside.run-trusted',{...binding,call:f.call})).rejects.toThrow();
+  expect(ids.outsideApprove).not.toHaveBeenCalled();expect(ids.outsideDispatch).not.toHaveBeenCalled();
+  expect(await audits()).toHaveLength(0);
  });
  it.each([
   ['the tool was never switched on',{trust:'none' as const}],

@@ -1,5 +1,5 @@
 import { createConnection, createServer, type Socket } from 'node:net';
-import { randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import { chmod, chown, lstat, mkdir, unlink, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -243,7 +243,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
       typeof requested.callId!=='string'||typeof requested.connectionName!=='string'||typeof requested.toolName!=='string'||
       typeof input.sessionId!=='string'||typeof input.memberId!=='string'||typeof input.admissionNonce!=='string'||
       !socketOptions.outsideCustody)throw new Error('outside');
-   const call=requested as unknown as OutsideToolCallRequest;
+   const call=requested as unknown as OutsideToolCallRequest,auditId=randomUUID();
    outsidePayloadHash(call.toolName,call.input);
    const tuple={agent,incarnation,sessionId:input.sessionId,memberId:input.memberId,admissionNonce:input.admissionNonce};
    const checked=await authorityTransaction(pool,async db=>{
@@ -265,9 +265,9 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     const pinned=Array.isArray(pin.rows[0].pin_tools)?(pin.rows[0].pin_tools as Array<{name:string;description?:string;inputSchema?:unknown}>).find(t=>t.name===call.toolName):undefined;
     if(!pinned||toolPinHash(pinned)!==grantor.pin)throw new Error('trust');
     const binding=await requireConsoleSessionBinding(tuple,db);
-    await db.query("INSERT INTO keeper_audit (operation_id,action,actor,input,outcome,detail,completed_at) VALUES ($1,'outside.run-trusted',$2,$3::jsonb,'ok',$4,now())",
-     [null,tuple.memberId,JSON.stringify({agent,connection:call.connectionName,tool:call.toolName,sessionId:tuple.sessionId,callId:call.callId,
-      trustGrantedBy:grantor.by,trustGrantedAt:grantor.at}),'allowed to run under the standing trust of the owner, no card']);
+    await db.query("INSERT INTO keeper_audit (operation_id,action,actor,input,outcome,detail,completed_at) VALUES ($1,'outside.run-trusted',$2,$3::jsonb,'pending',$4,NULL)",
+     [auditId,tuple.memberId,JSON.stringify({agent,connection:call.connectionName,tool:call.toolName,sessionId:tuple.sessionId,callId:call.callId,
+      trustGrantedBy:grantor.by,trustGrantedAt:grantor.at}),'started under the standing trust of the owner, no card']);
     return {hash:String(rows.rows[0].hash),policyRevision:binding.policyRevision};
    },transactionDeadline);
    assertNotAborted();
@@ -276,11 +276,15 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    const expiresAt=Math.min(Date.now()+60_000,requestDeadline);
    const assertCurrent=()=>{assertNotAborted();if(expiresAt<=Date.now())throw new Error('expired')};assertCurrent();
    // The same custody path as an approved call: a one-use receipt, then dispatch. No new way for the token to move.
-   await socketOptions.outsideCustody.approveExecution(binding,call,{requestId:`standing-trust-${call.callId}`.slice(0,128),
-    definitionHash:checked.hash,expiresAt},{deadlineAtMs:requestDeadline,assertCurrent});
-   assertCurrent();
-   const result=await socketOptions.outsideCustody.dispatchApproved(binding,call,{deadlineAtMs:requestDeadline,assertCurrent});
-   assertCurrent();return {result};
+   // The audit row was written as 'pending' before any custody call; it ends as what really happened.
+   const finish=(outcome:'ok'|'failed',detail:string)=>pool.query("UPDATE keeper_audit SET outcome=$2,detail=$3,completed_at=now() WHERE operation_id=$1 AND outcome='pending'",[auditId,outcome,detail]).catch(()=>undefined);
+   try{
+    await socketOptions.outsideCustody.approveExecution(binding,call,{requestId:`standing-trust-${call.callId}`.slice(0,128),
+     definitionHash:checked.hash,expiresAt},{deadlineAtMs:requestDeadline,assertCurrent});
+    assertCurrent();
+    const result=await socketOptions.outsideCustody.dispatchApproved(binding,call,{deadlineAtMs:requestDeadline,assertCurrent});
+    assertCurrent();await finish('ok','ran under the standing trust of the owner, no card');return {result};
+   }catch(error){await finish('failed','did not complete under the standing trust of the owner');throw error;}
   }
   if(op==='outside.approve'||op==='outside.execute'){
    const requested=object(input.call);

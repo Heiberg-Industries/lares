@@ -119,9 +119,9 @@ describe("connect: review and stage", () => {
   const acceptance = { acceptanceId: id(5), publicationHash: h("f"), acceptanceHash: h("9") };
   const receipt = { staged: true, activationReviewId: id(6), activationReviewHash: h("1"), expectedPolicyHash: h("2"), stageOperationId: id(7), candidateRevision: 1 };
   it("records, accepts and stages exactly the descriptions the owner was shown", async () => {
-    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(publication).mockResolvedValueOnce(review).mockResolvedValueOnce(acceptance).mockResolvedValueOnce(receipt);
+    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(state()).mockResolvedValueOnce(publication).mockResolvedValueOnce(review).mockResolvedValueOnce(acceptance).mockResolvedValueOnce(receipt);
     const result = await connectReviewAndStage({ identity, seen: document.tools });
-    expect(calls()).toEqual(["outside.discovery-review-preview", "outside.discovery-review-publish", "outside.discovery-review-preview", "outside.discovery-review-accept", "outside.candidate-stage"]);
+    expect(calls()).toEqual(["outside.discovery-review-preview", "outside.connections.get", "outside.discovery-review-publish", "outside.discovery-review-preview", "outside.discovery-review-accept", "outside.candidate-stage"]);
     expect(result).toMatchObject({ ok: true, value: { candidateRevision: 1, activationReviewId: id(6), publicationId: id(4), acceptanceId: id(5), expectedDefinitionHash: h("e") } });
   });
   it("accepts nothing when the server now describes a tool differently from what the owner read", async () => {
@@ -136,8 +136,15 @@ describe("connect: review and stage", () => {
     expect(await connectReviewAndStage({ identity, seen: [] })).toMatchObject({ ok: false, retryable: false });
     expect(calls()).toEqual(["outside.discovery-review-preview"]);
   });
+  it("accepts nothing, and says why, when a run-without-asking switch was made for a different description than the keeper recorded", async () => {
+    const staleSwitch = { ...declared(["find_rate"], ["find_rate"]), tools: { allow: ["find_rate"], read: ["find_rate"], trusted: [{ tool: "find_rate", pin: h("0"), by: "m", at: "2026-11-20T10:00:00.000Z" }] } };
+    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(state({ connections: [staleSwitch] }));
+    const result = await connectReviewAndStage({ identity, seen: document.tools });
+    expect(result).toMatchObject({ ok: false, retryable: false, message: expect.stringMatching(/Run without asking for find_rate.*different description/) });
+    expect(calls()).toEqual(["outside.discovery-review-preview", "outside.connections.get"]);
+  });
   it("stops when the descriptions move while they are being recorded", async () => {
-    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(publication).mockResolvedValueOnce({ ...review, descriptorHash: h("0") });
+    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(state()).mockResolvedValueOnce(publication).mockResolvedValueOnce({ ...review, descriptorHash: h("0") });
     expect(await connectReviewAndStage({ identity, seen: document.tools })).toMatchObject({ ok: false, retryable: false });
     expect(calls()).not.toContain("outside.discovery-review-accept");
   });

@@ -171,6 +171,14 @@ export async function connectReviewAndStage(input: { identity: ConnectIdentity; 
       const changed = review.descriptor.tools.filter(t => { const before = seen.get(t.name); return !before || before.description !== t.description || !sameBytes(before.inputSchema, t.inputSchema); });
       if (changed.length) throw new StepFailure(`The server now describes ${changed.map(t => t.name).join(", ")} differently from what you were shown. Nothing was accepted. Start again to read the new descriptions.`, false);
     }
+    // The pin of each "run without asking" switch was made from what the browser was shown. Before anything is accepted it is
+    // checked against what the keeper itself recorded; a difference is said out loud, never left to fail silently later.
+    const saved = (await read(who, identity.agentName)).connections.find(c => c.name === identity.connectionName);
+    const stale = (saved?.tools.trusted ?? []).filter(g => {
+      const reviewed = review.descriptor.tools.find(t => t.name === g.tool);
+      return !reviewed || toolPinHash({ name: reviewed.name, description: reviewed.description, inputSchema: reviewed.inputSchema }) !== g.pin;
+    });
+    if (stale.length) throw new StepFailure(`Run without asking for ${stale.map(g => g.tool).join(", ")} was switched on for a different description than the one the keeper recorded. Nothing was accepted. Start again to read the current descriptions.`, false);
     const publication = parseOutsideDescriptorPublication(await keeper<unknown>("outside.discovery-review-publish", { ...base,
       expectedGeneration: review.expectedGeneration, expectedDescriptorHash: review.descriptorHash }, who.actor));
     if (!publication) throw new StepFailure("The keeper's record of the descriptions was not understood. Press Try again.");

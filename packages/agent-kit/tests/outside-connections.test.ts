@@ -119,9 +119,9 @@ describe("the taint rule", () => {
     expect(outsideResultTaint("registry__create_note", def())).toBe("third_party");
   });
 
-  it("does not taint a trusted connection, other tools, or look-alike prefixes", () => {
+  it("taints even a trusted tool's result, but not other tools or look-alike prefixes", () => {
     const trusted = def({ outsideTools: [entry(trustedLookup)] });
-    expect(outsideResultTaint("registry__lookup", trusted)).toBeUndefined();
+    expect(outsideResultTaint("registry__lookup", trusted)).toBe("third_party");
     expect(outsideResultTaint("gmail_read", def())).toBeUndefined();
     expect(outsideResultTaint("registry2__lookup", def())).toBeUndefined();
     expect(outsideResultTaint("registry_lookup", def())).toBeUndefined();
@@ -129,7 +129,7 @@ describe("the taint rule", () => {
 
   it("treats eve's search output (eve__search) as outside text only while an untrusted connection is present", () => {
     expect(outsideResultTaint("eve__search", def())).toBe("third_party");
-    expect(outsideResultTaint("eve__search", def({ outsideTools: [entry(trustedLookup)] }))).toBeUndefined();
+    expect(outsideResultTaint("eve__search", def({ outsideTools: [entry(trustedLookup)] }))).toBe("third_party");
     expect(outsideResultTaint("eve__search", def({ outsideTools: undefined }))).toBeUndefined();
     // The model may also reach an entry through eve__tool; the hook sees the entry's own name.
     expect(outsideResultTaint("registry__lookup", def())).toBe("third_party");
