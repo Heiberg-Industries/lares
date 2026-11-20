@@ -656,7 +656,7 @@ def prove_keeper_default_admission() -> None:
         str(fixture_prefix / "run/lares-host"), network, subnet,
         str(ipaddress.ip_network(subnet).network_address + 2),
         "http://gateway.invalid", "lares_state", "proof-owner", "owner@example.invalid",
-        "proof.invalid", "UTC", str(fixture_prefix),
+        "proof.invalid", "UTC", str(fixture_prefix), "",
     ]
     render = docker("run", "--rm", "--network", "none",
         "--mount", f"type=bind,src={root},dst={root}",

@@ -2367,7 +2367,7 @@ def main(argv: list[str]) -> int:
         route = [c for c in consumers if custody and c["name"] == custody["routeConsumerName"]]
         if not custody or len(route) != 1 or route[0]["hosts"] != []:
             raise RuntimeError("a fresh install did not switch outside custody on with an empty route")
-        keeper_ip = output("docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", "lares-keeper").split()
+        keeper_ip = output("docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-keeper").split()[0]).split()
         if route[0]["address"] not in keeper_ip:
             raise RuntimeError("the keeper is not running on the outside route's address")
         passed("outside-custody-on-after-a-fresh-install")
