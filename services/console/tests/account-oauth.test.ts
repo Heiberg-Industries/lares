@@ -38,12 +38,14 @@ afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 const callback = () => new URL("http://localhost:3000/api/accounts/google/callback?code=code&state=state");
 describe("Google account consent against local simulated provider", () => {
   it("uses data client, distinct callback, PKCE, state, nonce, offline consent and identity scope", async () => {
-    const result = await startAccountConsent({ memberId: "member-a", session: "session", org: "example", loginHint: "hint@example.test" });
+    const result = await startAccountConsent({ memberId: "member-a", session: "session", org: "example" });
     expect(result.flow).toMatchObject({ memberId: "member-a", sessionHash: accountSessionHash("session"), clientId: "data-client", intent: "new" });
     expect(result.url.searchParams.get("client_id")).toBe("data-client");
     expect(result.url.searchParams.get("redirect_uri")).toBe("http://localhost:3000/api/accounts/google/callback");
     expect(result.url.searchParams.get("scope")).toBe(GOOGLE_PERSONAL_READ_SCOPES.join(" "));
     expect(result.flow.power).toBe("read");
+    expect(result.url.searchParams.get("login_hint")).toBeNull();
+    expect(result.url.searchParams.get("prompt")).toBe("select_account consent");
     expect(result.url.searchParams.get("code_challenge_method")).toBe("S256");
     for (const key of ["nonce", "state", "code_challenge"]) expect(result.url.searchParams.get(key)).toBeTruthy();
   });

@@ -19,7 +19,7 @@ import MembershipPage from "../app/membership/page";
 const google = { id: "stable-account", connectorId: "google", providerAccount: { label: "owner@example.com" }, generation: 7, status: "ok" };
 const microsoft = { id: "ms-account", connectorId: "microsoft", providerAccount: { label: "work@example.com" }, generation: 2, status: "ok" };
 const show = async (params = {}) => render(await AccountsPage({ searchParams: Promise.resolve(params) }));
-const row = (name: string) => screen.getByText(name, { selector: ".lares-service-name" }).closest(".lares-service-row") as HTMLElement;
+const account = (id: string) => document.querySelector(`[data-account="${id}"]`) as HTMLElement;
 beforeEach(() => {
   vi.clearAllMocks();
   m.member.mockResolvedValue({ id: "member-a", role: "member" }); m.owner.mockReturnValue(false);
@@ -27,16 +27,14 @@ beforeEach(() => {
   m.agents.mockResolvedValue([{ name: "writer", displayName: "Writer" }]);
   m.list.mockResolvedValue([]); m.remove.mockResolvedValue(undefined);
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); for (const k of Object.keys(process.env)) if (/^GOOGLE_CLIENT_(ID|SECRET)_(ONLY|ONE|TWO)$/.test(k)) delete process.env[k]; });
 
-it("shows both services with Connect when nothing is connected, and reads only the member's own accounts", async () => {
+it("shows an empty list with one Add account button, and reads only the member's own accounts", async () => {
   await show();
   expect(m.list).toHaveBeenCalledWith("member-a");
   expect(screen.getByRole("heading", { name: "Your accounts" })).toBeTruthy();
-  expect(within(row("Google")).getByText("Gmail, Calendar and Drive")).toBeTruthy();
-  expect(within(row("Microsoft")).getByText("Work mailbox and calendar")).toBeTruthy();
-  expect(screen.getAllByRole("button", { name: /^Connect/ })).toHaveLength(2);
-  expect(screen.queryByText("Connected")).toBeNull();
+  expect(screen.getAllByRole("button", { name: "Add account" })).toHaveLength(1);
+  expect(document.body.textContent).toContain("No accounts yet");
   expect(document.body.textContent).toContain("More services come later.");
   expect(screen.queryByRole("link", { name: "Integrations" })).toBeNull();
 });
@@ -47,41 +45,62 @@ it("links to Integrations only for the owner", async () => {
   expect(screen.getByRole("link", { name: "Integrations" }).getAttribute("href")).toBe("/integrations");
 });
 
-it("opens a form that posts a new Google connection with the email and the permission choice", async () => {
+const openAdd = async () => {
+  await userEvent.click(screen.getByRole("button", { name: "Add account" }));
+  return (await screen.findByRole("dialog")).querySelector("form")!;
+};
+
+it("asks for no email address when one Google app is set up, and posts the permission choice", async () => {
+  process.env.GOOGLE_CLIENT_ID_ONLY = "id"; process.env.GOOGLE_CLIENT_SECRET_ONLY = "secret";
   await show();
-  await userEvent.click(within(row("Google")).getByRole("button", { name: /Connect/ }));
-  const form = (await screen.findByRole("dialog")).querySelector("form")!;
+  const form = await openAdd();
   expect(form.getAttribute("action")).toBe("/api/accounts/google/start");
   expect(form.querySelector('input[name="intent"]')!.getAttribute("value")).toBe("new");
-  expect(form.querySelector('input[name="email"]')).toBeTruthy();
+  expect(form.querySelector('input[name="email"]')).toBeNull();
+  expect(form.querySelector('input[type="email"]')).toBeNull();
+  expect(form.querySelector('select[name="org"]')).toBeNull();
   expect((form.querySelector('select[name="power"]') as HTMLSelectElement).value).toBe("read");
 });
 
-it("posts a new Microsoft connection without asking for an address", async () => {
+it("offers a dropdown, never a typed address, when several Google apps are set up", async () => {
+  process.env.GOOGLE_CLIENT_ID_ONE = "id1"; process.env.GOOGLE_CLIENT_SECRET_ONE = "s1";
+  process.env.GOOGLE_CLIENT_ID_TWO = "id2"; process.env.GOOGLE_CLIENT_SECRET_TWO = "s2";
   await show();
-  await userEvent.click(within(row("Microsoft")).getByRole("button", { name: /Connect/ }));
-  const form = (await screen.findByRole("dialog")).querySelector("form")!;
-  expect(form.getAttribute("action")).toBe("/api/accounts/microsoft/start");
-  expect(form.querySelector('input[name="email"]')).toBeNull();
+  const form = await openAdd();
+  const org = form.querySelector('select[name="org"]') as HTMLSelectElement;
+  expect([...org.options].map(o => o.value)).toEqual(["one", "two"]);
+  expect(form.querySelector('input[type="email"]')).toBeNull();
 });
 
-it("shows Connected with a menu, and who uses the account, for the member's own account only", async () => {
-  m.list.mockResolvedValue([google]);
+it("lists Microsoft in the same Add account choice and posts to its own start route", async () => {
+  await show();
+  const form = await openAdd();
+  const provider = within(form).getByRole("combobox", { name: /Connect with/ });
+  await userEvent.selectOptions(provider, "microsoft");
+  expect(form.getAttribute("action")).toBe("/api/accounts/microsoft/start");
+  expect(form.querySelector('input[name="email"]')).toBeNull();
+  expect(form.querySelector('select[name="org"]')).toBeNull();
+});
+
+it("shows every connected account with one status word, so a second account can sit beside the first", async () => {
+  m.list.mockResolvedValue([{ ...google, lastUsedAt: "2026-11-19T10:00:00.000Z" }, { ...google, id: "second", providerAccount: { label: "second@example.com" } }, microsoft]);
   await show({ added: "x" });
-  expect(document.body.textContent).toContain("Used by: Writer");
-  expect(row("Google").textContent).not.toContain("Drive Used by");
-  expect(document.body.textContent).not.toContain("other");
   expect(screen.getByRole("status").textContent).toBe("Account connected.");
-  await userEvent.click(screen.getByRole("button", { name: /Connected/ }));
-  const menu = await screen.findByRole("menu");
-  expect(within(menu).getByRole("menuitem", { name: "owner@example.com" })).toBeTruthy();
-  for (const name of ["Connect another Google account", "Reconnect", "Disconnect"]) expect(within(menu).getByRole("menuitem", { name })).toBeTruthy();
+  expect(document.querySelectorAll("[data-account]")).toHaveLength(3);
+  expect(account("stable-account").textContent).toContain("Working");
+  expect(account("stable-account").textContent).toContain("Last read 2026-11-19");
+  expect(account("second").textContent).toContain("Working");
+  expect(account("second").textContent).not.toContain("Last read");
+  expect(account("ms-account").textContent).toContain("Microsoft · Working");
+  expect(account("stable-account").textContent).toContain("Used by: Writer");
+  expect(document.body.textContent).not.toContain("other");
+  expect(screen.getAllByRole("button", { name: "Add account" })).toHaveLength(1);
 });
 
 it("reconnects by stable account id and generation", async () => {
   m.list.mockResolvedValue([google]);
   await show();
-  await userEvent.click(screen.getByRole("button", { name: /Connected/ }));
+  await userEvent.click(screen.getByRole("button", { name: /Actions for owner@example.com/ }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Reconnect" }));
   const form = (await screen.findByRole("dialog")).querySelector("form")!;
   expect(form.getAttribute("action")).toBe("/api/accounts/google/start");
@@ -94,36 +113,43 @@ it("reconnects by stable account id and generation", async () => {
 it("disconnects through the existing action with the account id and generation", async () => {
   m.list.mockResolvedValue([google]);
   await show();
-  await userEvent.click(screen.getByRole("button", { name: /Connected/ }));
+  await userEvent.click(screen.getByRole("button", { name: /Actions for owner@example.com/ }));
   await userEvent.click(await screen.findByRole("menuitem", { name: "Disconnect" }));
   await waitFor(() => expect(m.remove).toHaveBeenCalledWith({ accountId: "stable-account", generation: 7 }));
   expect(m.refresh).toHaveBeenCalled();
 });
 
-it("says a problem account needs attention in its own sentence naming the address, never the mailbox wording", async () => {
+it("gives each state one status word and a plain sentence naming the address", async () => {
   m.uses.mockResolvedValue([]);
-  const cases: [string, string][] = [
-    ["needs_reconsent", "owner@example.com needs your permission again. Reconnect it."],
-    ["revoked", "owner@example.com was disconnected at Google. Reconnect it to use it again."],
-    ["error", "owner@example.com could not be checked. Try reconnecting it."],
+  const cases: [string, string, string][] = [
+    ["needs_reconsent", "Needs reconnect", "owner@example.com needs your permission again. Reconnect it."],
+    ["revoked", "Needs reconnect", "owner@example.com was disconnected at Google. Reconnect it to use it again."],
+    ["error", "Failed", "owner@example.com could not be checked. Try reconnecting it."],
   ];
-  for (const [status, sentence] of cases) {
+  for (const [status, word, sentence] of cases) {
     m.list.mockResolvedValue([{ ...google, status }, microsoft]);
     await show();
-    expect(within(row("Google")).getByRole("button", { name: /Needs attention/ })).toBeTruthy();
-    expect(within(row("Google")).queryByText("Connected")).toBeNull();
-    expect(row("Google").textContent).toContain(sentence);
-    expect(row("Google").textContent).not.toContain("paused");
+    expect(account("stable-account").textContent).toContain(word);
+    expect(account("stable-account").textContent).not.toContain("Working");
+    expect(account("stable-account").textContent).toContain(sentence);
+    expect(account("stable-account").textContent).not.toContain("paused");
     expect(document.body.textContent).not.toContain("another mailbox");
-    expect(within(row("Microsoft")).getByRole("button", { name: /Connected/ })).toBeTruthy();
+    expect(account("ms-account").textContent).toContain("Working");
     cleanup();
   }
+});
+
+it("names Microsoft, not Google, when a Microsoft account was disconnected", async () => {
+  m.uses.mockResolvedValue([]);
+  m.list.mockResolvedValue([{ ...microsoft, status: "revoked" }]);
+  await show();
+  expect(account("ms-account").textContent).toContain("was disconnected at Microsoft.");
 });
 
 it("adds that an agent is paused when one works on the problem account", async () => {
   m.list.mockResolvedValue([{ ...google, status: "revoked" }]);
   await show();
-  expect(row("Google").textContent).toContain("Reconnect it to use it again. An agent that works on it is paused until then.");
+  expect(account("stable-account").textContent).toContain("Reconnect it to use it again. An agent that works on it is paused until then.");
 });
 
 it("explains a missing Google client prominently, with the install guide link", async () => {
@@ -150,7 +176,7 @@ it("says so when the accounts cannot be read, instead of an empty list", async (
   await show();
   expect(document.body.textContent).toContain("Your accounts are unavailable");
   expect(document.body.textContent).not.toContain("PRIVATE");
-  expect(screen.queryByRole("button", { name: /Connect/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Add account" })).toBeNull();
 });
 
 it("moves the personal accounts off the membership page, leaving a link", async () => {
