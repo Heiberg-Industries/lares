@@ -2,7 +2,7 @@
 import { FieldGroup } from "@lares/ui/patterns";
 import { Input } from "@lares/ui/primitives/input";
 import {useEffect,useRef,useState} from 'react';
-import {slackClaimMessage,slackManifest,telegramConnectLink,telegramSteps,doorStateText,doorTouched} from '../lib/doors';
+import {slackClaimMessage,slackExistingAppSteps,SLACK_ICON_STEP,slackManifest,telegramConnectLink,telegramSteps,doorStateText,doorTouched} from '../lib/doors';
 import {connectDoor,doorStatus,claimCode,registerTelegram,setDoorEnabled,applyConnections,verifyDoor,type DefinitionActionResult} from '../app/actions/definition';
 import { Button } from '@lares/ui/primitives/button';
 import { SaveEndsConversations } from './SaveEndsConversations';
@@ -100,6 +100,8 @@ export function DoorSetup(p:{name:string;display:string;role:string;origin:strin
  {SUPPORTED[p.role]?.map(kind=>{const row=rows.find(r=>r.kind===kind);const touched=doorTouched(row);const step=connect?.kind===kind?connect:null;return <FieldGroup key={kind} legend={LABEL[kind]} disabled={busy||unknown}>
  <p>{doorStateText(row)}</p>
  {kind==='slack'&&<><ol><li>Create the Slack app from the manifest below: pick your workspace and confirm.</li><li>Install the app into your workspace. Copy its Bot User OAuth Token (OAuth &amp; Permissions) and its Signing Secret (Basic Information).</li><li>Paste both here and press Connect.</li><li>Then send the app one direct message, <code>claim</code> followed by the code shown here. That is the only manual step.</li></ol>
+  <p>{SLACK_ICON_STEP}</p>
+  <details><summary>Already have this Slack app (it shows as an app, not an agent)?</summary><ol>{slackExistingAppSteps.map(t=><li key={t}>{t}</li>)}</ol></details>
   <p>{createUrl&&<a href={createUrl} target="_blank" rel="noreferrer">Create this Slack app from its manifest</a>}{manifestText&&<> <Button variant="outline" type="button" onClick={()=>copy(manifestText,'Manifest copied. In Slack, choose Create new app, From a manifest, and paste it.')}>Copy manifest</Button></>}</p>
   <label>Bot token<Input type="password" autoComplete="off" value={tokens.slack??''} onChange={e=>setTokens({...tokens,slack:e.target.value})}/></label><label>Signing secret<Input type="password" autoComplete="off" value={signing} onChange={e=>setSigning(e.target.value)}/></label>
   </>}

@@ -528,6 +528,14 @@ on Slack, add the bot permission `app_mentions:read` under OAuth & Permissions a
 `app_mention` under Event Subscriptions, then install the app to your workspace again, then invite
 the app to a channel.
 
+Slack shows an app as an agent, not just an app, when its manifest has the `agent_view` setting
+and the bot permission `assistant:write`. The console's manifest has both. A Slack app you made
+earlier shows as an app until you open it at api.slack.com/apps, choose App Manifest, paste the
+console's current manifest (Copy manifest), save, and install the app again. Switching to agent
+view cannot be undone in Slack, and a full refresh of Slack shows the label. Some Slack AI features
+need a paid Slack plan. A manifest cannot carry the picture: upload it under Basic Information,
+Display Information, App icon.
+
 **E-mail** (chief-of-staff agent). The agent works on one of your own Google mailboxes. It sorts
 new mail and writes reply drafts in Gmail; it never sends. With the same permission it reads your
 Drive files when you send it a Docs link, and adds or changes calendar events, each one only after
