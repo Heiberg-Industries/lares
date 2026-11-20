@@ -67,7 +67,7 @@ describe("outside connection console actions", () => {
   });
   it("shows the keeper's own reason when a save is refused, not a generic line", async () => {
     const { KeeperRefusedError } = await import("../lib/keeper-client");
-    const reason = 'outside tool "orakel" needs a token but no credential is held for it';
+    const reason = 'outside tool "registry" needs a token but no credential is held for it';
     mocks.keeper.mockRejectedValueOnce(new KeeperRefusedError(`[outside-tools] ${reason}`, [{ check: "outside-tools", message: reason }]));
     await expect(saveOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2, connections: [connection] }))
       .resolves.toEqual({ ok: false, message: reason });
