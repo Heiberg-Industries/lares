@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Pool, PoolClient } from 'pg';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
-import { definitionSchema, outsideToolSchema, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
+import { definitionSchema, outsideToolSchema, OUTSIDE_TOOL_NAME_RE, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
 import { currentSession } from '@lares/agent-kit/member-store';
 import { PgGrantStore, type GrantDatabase } from '@lares/agent-kit/grant-store';
 import { validateDefinition, doorSecretName, type ToolSources } from '@lares/agent-kit/definition-validate';
@@ -125,9 +125,12 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
     const outsideConnectionsWriteInput = outsideConnectionsReadInput.extend({
         expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/), expectedAccessRevision: z.number().int().positive(),
         connections: z.array(outsideToolSchema),
+        // Names of connections whose credential this same Connect action is about to stage in custody.
+        stagingCredentialFor: z.array(z.string().regex(OUTSIDE_TOOL_NAME_RE)).max(50).optional(),
     });
     const outsideConnectionsApplyInput = outsideConnectionsReadInput.extend({
         expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/), expectedAccessRevision: z.number().int().positive(),
+        stagingCredentialFor: z.array(z.string().regex(OUTSIDE_TOOL_NAME_RE)).max(50).optional(),
     });
     const active = (name: string) => join(o.agentsDir, nameOf(name));
     const roots = () => { for (const d of [o.agentsDir, o.retiredDir, o.secretsDir])
@@ -166,7 +169,19 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             return { ok: false, status: 'failed' as const, message: 'Definition retained on disk; git backup failed. Check backup configuration and retry backup.' };
         }
     }
-    function validate(input: z.infer<typeof writeInput>): AgentDefinition {
+    // Connections of this agent whose credential is already in Keeper custody (active or staged). Custody,
+    // not a token file, is how a credential is held now, so this is what makes a `token: true` declaration valid.
+    async function heldOutsideCredentials(name: string, definition: unknown, staging: readonly string[] = []): Promise<ReadonlySet<string>> {
+        const held = new Set(staging);
+        const parsed = definitionSchema.safeParse(definition);
+        // Only a declaration that asks for a token has anything to look up.
+        if (!parsed.success || !(parsed.data.outsideTools ?? []).some(t => t.token)) return held;
+        const rows = await db().query<{ connection_name: string }>(
+            `SELECT connection_name FROM outside_custody_accounts WHERE resource_id=$1 AND state='active' AND (active_revision IS NOT NULL OR candidate_revision IS NOT NULL)`, [name]);
+        for (const row of rows.rows) held.add(row.connection_name);
+        return held;
+    }
+    function validate(input: z.infer<typeof writeInput>, held: ReadonlySet<string> = new Set()): AgentDefinition {
         nameOf(input.name);
         const parsed = definitionSchema.safeParse(input.definition);
         if (!parsed.success) {
@@ -182,7 +197,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             refused('role must be chief-of-staff or creative');
         const info = o.roleInfo(d.role as DefinitionRole);
         if (!d.doors && d.channels.some(kind => !["slack", "telegram"].includes(kind))) refused("unsupported legacy door kind; the email door was removed");
-        const findings = validateDefinition({ definition: { ...d, doors: d.doors ?? d.channels.map(kind => ({ kind: kind as "slack" | "telegram", enabled: true, settings: {} })) }, ...info, secretExists: (name) => {
+        const findings = validateDefinition({ outsideCredentialHeld: held, definition: { ...d, doors: d.doors ?? d.channels.map(kind => ({ kind: kind as "slack" | "telegram", enabled: true, settings: {} })) }, ...info, secretExists: (name) => {
                 // Never expose filesystem exceptions as trusted validation messages.
                 try {
                     const s = lstatSync(join(o.secretsDir, name));
@@ -196,9 +211,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             throw new KeeperRefusedError(findings.map(f => `[${f.check}] ${f.message}`).join('\n'), findings);
         return d;
     }
-    async function prepareSave(input: z.infer<typeof writeInput>, create: boolean) {
+    async function prepareSave(input: z.infer<typeof writeInput>, create: boolean, staging: readonly string[] = []) {
         const submitted = create ? input : { ...input, definition: migrateTrackRoutingDefinition(input.definition) };
-        const d = validate(submitted), path = active(input.name), previous = await registry(input.name);
+        const d = validate(submitted, create ? new Set() : await heldOutsideCredentials(input.name, submitted.definition, staging)), path = active(input.name), previous = await registry(input.name);
         if (create) {
             if (!o.compose.create)
                 refused('agent creation is unavailable until lifecycle provisioning is configured');
@@ -327,7 +342,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             const saveInput = { name: input.name, definition, duties: initial.loaded.dutiesMd, voice: initial.loaded.voiceMd };
             // Lifecycle preflight uses other pool queries. Run it before opening the authority transaction;
             // the signed session and exact edit grant are rechecked and held through file/DB publication below.
-            const prepared = await prepareSave(saveInput, false);
+            const prepared = await prepareSave(saveInput, false, input.stagingCredentialFor ?? []);
             let loaded: Awaited<ReturnType<typeof publishSave>>;
             let nextRevision: number;
             await client.query('BEGIN');
@@ -445,7 +460,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                     if (snapshot.loaded.hash !== input.expectedDefinitionHash || snapshot.revision !== input.expectedAccessRevision)
                         refused('Definition or access changed; refresh before applying connections.');
                     if (!o.compose.reconcile) refused('Runtime reconciliation is not configured');
-                    validate({ name: input.name, definition: snapshot.loaded.definition, duties: snapshot.loaded.dutiesMd, voice: snapshot.loaded.voiceMd });
+                    validate({ name: input.name, definition: snapshot.loaded.definition, duties: snapshot.loaded.dutiesMd, voice: snapshot.loaded.voiceMd }, await heldOutsideCredentials(input.name, snapshot.loaded.definition, input.stagingCredentialFor ?? []));
                 await applyWithRecovery(input.name, snapshot.loaded.definition, async () => {
                     await client.query('ROLLBACK');
                     transactionOpen = false;
@@ -601,7 +616,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         if(loaded.hash!==hash) refused('Definition changed; refresh before applying connection changes');
         const row=await db().query("SELECT hash,status FROM agent_definitions WHERE name=$1",[name]);
         if(row.rows[0]?.hash!==hash||row.rows[0]?.status!=='valid') refused('Save a valid definition before reconciliation');
-        validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd});
+        validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd}, await heldOutsideCredentials(name, loaded.definition));
         return applyWithRecovery(name, loaded.definition);
     }) });
     // After an update the keeper renders the new release's role image, but a running agent keeps
@@ -617,7 +632,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         const loaded=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:active(name)}});
         const row=await db().query("SELECT hash,status FROM agent_definitions WHERE name=$1",[name]);
         if(row.rows[0]?.hash!==loaded.hash||row.rows[0]?.status!=='valid') return { moved:false, state:'pending', reason:left.pending };
-        validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd});
+        validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd}, await heldOutsideCredentials(name, loaded.definition));
         const result=await applyWithRecovery(name, loaded.definition) as Record<string,unknown>;
         return { moved:true, ...result };
     }) });

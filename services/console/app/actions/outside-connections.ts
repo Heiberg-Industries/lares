@@ -4,6 +4,7 @@ import { z } from "zod";
 import { outsideToolSchema } from "@lares/agent-kit/definition";
 import { memberAuditAddress, sessionMember } from "../../lib/auth";
 import { keeper, KeeperRefusedError } from "../../lib/keeper-client";
+import { keeperReason } from "../../lib/keeper-reason";
 
 const nameSchema = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -34,7 +35,7 @@ export async function getOutsideConnections(name: string): Promise<OutsideConnec
     const result = resultSchema.parse(await keeper<unknown>("outside.connections.get", { sessionToken, name }, actor));
     return { ok: true, result };
   } catch (error) {
-    if (error instanceof KeeperRefusedError) return { ok: false, message: "Current agent edit access is required. Refresh membership and try again." };
+    if (error instanceof KeeperRefusedError) return { ok: false, message: keeperReason(error, "Current agent edit access is required. Refresh membership and try again.") };
     return { ok: false, message: "Connections are unavailable. Refresh and try again." };
   }
 }
@@ -58,7 +59,7 @@ export async function saveOutsideConnections(input: {
     const result = resultSchema.parse(await keeper<unknown>("outside.connections.save", { ...parsed.data, sessionToken }, actor, { timeoutMs: 90_000 }));
     return { ok: true, result };
   } catch (error) {
-    if (error instanceof KeeperRefusedError) return { ok: false, message: "The definition or access changed, or current agent edit access is missing. Refresh and review the connection again." };
+    if (error instanceof KeeperRefusedError) return { ok: false, message: keeperReason(error, "The connection change was refused. Refresh and review the connection again.") };
     return { ok: false, message: "The connection change could not be confirmed. Refresh before trying again." };
   }
 }

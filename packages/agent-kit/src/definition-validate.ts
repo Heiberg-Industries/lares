@@ -36,6 +36,11 @@ export interface ValidateOptions {
    *  Omitted entirely = skip the door check (the session-start path, where the secret's
    *  presence is the container's problem, not the definition's). */
   secretExists?: (name: string) => boolean;
+  /** Outside tools (by declared name) whose bearer credential is held in Keeper custody, or is being
+   *  staged by the same action that saves this definition. Such a declaration needs no token FILE:
+   *  custody never writes one. A declaration with `token: true` and neither a file nor an entry here is
+   *  still refused. */
+  outsideCredentialHeld?: ReadonlySet<string>;
   /** The role's own tool names, from `toolSourcesFor(roleDir)`. When given, a name that two
    *  sources both offer is refused (check 9). Omitted = that check is skipped. */
   toolSources?: ToolSources;
@@ -218,8 +223,8 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
       if (t.token && exists) {
         capture("outside-tools", () => {
           const secret = outsideSecretName(d.name, t.name);
-          if (!exists(secret)) {
-            throw new Error(`outside tool "${t.name}" needs a token but its secret "${secret}" does not exist — add it first, or set token to false`);
+          if (!exists(secret) && !opts.outsideCredentialHeld?.has(t.name)) {
+            throw new Error(`outside tool "${t.name}" needs a token but no credential is held for it (none in Keeper custody, and no file "${secret}") — connect it from Integrations, or set token to false`);
           }
         }, out);
       }

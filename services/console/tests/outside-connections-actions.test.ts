@@ -4,7 +4,9 @@ vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
 vi.mock("../lib/auth", () => ({ sessionMember: mocks.sessionMember, memberAuditAddress: mocks.memberAuditAddress }));
 vi.mock("../lib/keeper-client", () => ({
   keeper: mocks.keeper,
-  KeeperRefusedError: class KeeperRefusedError extends Error {},
+  KeeperRefusedError: class KeeperRefusedError extends Error {
+    constructor(message: string, readonly findings?: { check: string; message: string }[]) { super(message); }
+  },
 }));
 import { applyOutsideConnections, getOutsideConnections, saveOutsideConnections } from "../app/actions/outside-connections";
 
@@ -62,5 +64,19 @@ describe("outside connection console actions", () => {
     mocks.keeper.mockRejectedValueOnce(new KeeperRefusedError(sentence)).mockResolvedValueOnce(applied);
     await expect(applyOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2 }))
       .resolves.toEqual({ ok: false, message: sentence, current: applied });
+  });
+  it("shows the keeper's own reason when a save is refused, not a generic line", async () => {
+    const { KeeperRefusedError } = await import("../lib/keeper-client");
+    const reason = 'outside tool "orakel" needs a token but no credential is held for it';
+    mocks.keeper.mockRejectedValueOnce(new KeeperRefusedError(`[outside-tools] ${reason}`, [{ check: "outside-tools", message: reason }]));
+    await expect(saveOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2, connections: [connection] }))
+      .resolves.toEqual({ ok: false, message: reason });
+    mocks.keeper.mockRejectedValueOnce(new KeeperRefusedError("Current agent edit access is required to manage connections."));
+    await expect(getOutsideConnections("bookkeeper")).resolves.toEqual({ ok: false, message: "Current agent edit access is required to manage connections." });
+  });
+  it("keeps the fallback text for a failure that carries no reason from the keeper", async () => {
+    mocks.keeper.mockRejectedValueOnce(new Error("socket response lost"));
+    await expect(saveOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2, connections: [connection] }))
+      .resolves.toEqual({ ok: false, message: "The connection change could not be confirmed. Refresh before trying again." });
   });
 });
