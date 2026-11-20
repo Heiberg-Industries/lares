@@ -32,9 +32,10 @@ export const SLACK_SUGGESTED_PROMPTS:{title:string;message:string}[]=[
   {title:'This week',message:'What should I prepare this week?'},
 ];
 function fitted(text:string|undefined,max:number):string {
-  const t=(text??'').trim().replace(/\s+/g,' ');
+  const t=(text??'').replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').trim().replace(/\s+/g,' ');
   if(t==='')return SLACK_APP_DESCRIPTION;
-  return t.length<=max?t:`${t.slice(0,max-1).trimEnd()}…`;
+  const chars=[...t];
+  return chars.length<=max?t:`${chars.slice(0,max-1).join('').trimEnd()}…`;
 }
 /** A Slack manifest cannot carry the app's picture; it is uploaded by hand. */
 export const SLACK_ICON_STEP='Slack cannot take the picture from the manifest. Upload one yourself: Basic Information, then Display Information, then App icon.';

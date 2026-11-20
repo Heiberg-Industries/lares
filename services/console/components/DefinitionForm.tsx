@@ -456,11 +456,12 @@ export function DefinitionForm(p: DefinitionFormProps) {
             <Field label="Description">
               <Input
                 value={definition.description ?? ""}
+                maxLength={300}
                 onChange={(e) => patch({ description: e.target.value })}
               />
             </Field>
             <p className="lares-effect-note">
-              A label for your own reference. Only this page shows it; the agent does not read it.
+              Shown in the console, and on the agent's Slack profile if you connect Slack. Do not put anything private here. The agent does not read it.
             </p>
             {group(
               <>Instructions and language</>,
