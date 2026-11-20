@@ -731,6 +731,27 @@ it('refuses an outside destination that is not in the applied route list and cha
  expect(second.policyHash).not.toBe(first.policyHash);
  await expect(l.withAppliedOutsideRoute('https://tools.example.org/mcp',first.policyHash,Date.now()+5000,async()=> 'ran')).rejects.toThrow('Outside route changed');
 });
+it('has the new tool host in the route by the time discovery is previewed, for both the save and the apply the Connect screen presses',async()=>{
+ config.egress.legacyConsumers.push({name:'outside-route',address:'172.18.0.24',hosts:[]});
+ const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async()=>{}};
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ // The placeholder declaration the Connect screen saves first: one pending tool, nothing readable yet, a token to come.
+ const placeholder=(url:string)=>({...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},outsideTools:[{name:'registry',url,description:'Looks up companies.',token:true,tools:{allow:['connect-pending'],read:[]}}]});
+ await l.create('bookkeeper',definition);await l.reconcile('bookkeeper',definition);
+ await expect(l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000)).rejects.toThrow('Outside destination is unavailable');
+ // Save only: the saved definition already opens the route.
+ await l.saved('bookkeeper',placeholder('https://tools.example.org/mcp'));
+ await expect(l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000)).resolves.toMatchObject({sourceAddress:'172.18.0.24'});
+ // Apply (a reconcile with the same definition) re-seals with the host still in the route.
+ await l.reconcile('bookkeeper',placeholder('https://tools.example.org/mcp'));
+ await expect(l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000)).resolves.toMatchObject({sourceAddress:'172.18.0.24'});
+ // A second tool added through apply alone is in the route right after it.
+ const two=placeholder('https://tools.example.org/mcp');
+ two.outsideTools.push({name:'second',url:'https://second.example.org/mcp',description:'Another.',token:false,tools:{allow:['connect-pending'],read:[]}});
+ await l.reconcile('bookkeeper',two);
+ await expect(l.reviewOutsideRoute('https://second.example.org/mcp',Date.now()+5000)).resolves.toMatchObject({sourceAddress:'172.18.0.24'});
+});
 it('does not provision outside token files or restart an agent when only its outside declarations change',async()=>{
  const provisioned:string[]=[];
  const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,(p:string)=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
