@@ -134,7 +134,7 @@ const run = () => {
     ownerHomeTz: "Europe/Oslo", modelAlias: alias, pgDatabase: request.pgDatabase, deadlineCalendarFile: null,
   });
   const profileText = `${JSON.stringify(profile)}\n`;
-  const environmentKeeper = { ...previousKeeper, lifecycle: { maintenanceAdmission: {
+  const environmentKeeper = { ...previousKeeper, lifecycle: { subnet: request.subnet, maintenanceAdmission: {
     hostDirectory: maintenanceAdmission.directory,
     installationId: maintenanceAdmission.installationId,
     epoch: maintenanceAdmission.epoch,
