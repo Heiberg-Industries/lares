@@ -15,11 +15,12 @@ vi.mock("../lib/keeper-client", () => ({
 import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage } from "../app/actions/outside-connect";
 import { KeeperRefusedError, KeeperUnavailableError } from "../lib/keeper-client";
 import { PENDING_TOOL } from "../lib/outside-connect-words";
+import { toolPinHash } from "@lares/agent-kit/outside-pins";
 
 const session = "A".repeat(43), actor = "member@example.test", secret = "tok-SECRET-value";
 const h = (c: string) => c.repeat(64);
 const id = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
-const connection = { name: "rates", url: "https://tools.example.org/mcp", description: "Rates", token: true, allow: ["find_rate"], read: ["find_rate"] };
+const connection = { name: "rates", url: "https://tools.example.org/mcp", description: "Rates", token: true, trustedTools: [], allow: ["find_rate"], read: ["find_rate"] };
 const declared = (allow: string[], read: string[] = []) => ({ name: "rates", url: connection.url, description: "Rates", token: true, tools: { allow, read } });
 const state = (over: Record<string, unknown> = {}) => ({ name: "worker", definitionHash: h("a"), accessRevision: 2, connections: [], applicationStatus: "applied", appliedConnections: [], ...over });
 const tool = { name: "find_rate", description: "Looks up a rate", inputSchema: { type: "object", properties: { id: { type: "string" } } } };
@@ -63,6 +64,14 @@ describe("connect: declare", () => {
     expect(result).toEqual({ ok: true, value: { definitionHash: h("a"), accessRevision: 2, applied: false } });
     expect(calls()).toEqual(["outside.connections.get", "outside.connections.save"]);
     expect(mocks.keeper.mock.calls[1]![1].connections).toEqual([declared(["find_rate"], ["find_rate"])]);
+  });
+  it("records a switched-on lookup bound to the description the owner saw, and never one for a tool that changes something", async () => {
+    mocks.keeper.mockResolvedValueOnce(state()).mockResolvedValueOnce(state({ applicationStatus: "pending" }));
+    await connectDeclare({ agent: "worker", provisional: false, applyNow: false, connection: { ...connection, allow: ["find_rate", "set_rate"], read: ["find_rate"],
+      trustedTools: [{ name: "find_rate", description: tool.description, inputSchema: tool.inputSchema }, { name: "set_rate", description: "Changes a rate" }] } });
+    const sent = mocks.keeper.mock.calls[1]![1].connections[0].tools;
+    expect(sent.trusted).toHaveLength(1);
+    expect(sent.trusted[0]).toMatchObject({ tool: "find_rate", pin: toolPinHash(tool) });
   });
   it("shows the keeper's own reason when it refuses, and offers a retry", async () => {
     mocks.keeper.mockResolvedValueOnce(state()).mockRejectedValueOnce(new KeeperRefusedError("[outside-tools] the grant is read-only but set_rate is allowed and not marked read",

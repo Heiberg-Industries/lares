@@ -46,21 +46,35 @@ describe("ConnectOutsideTool", () => {
     expect(mocks.declare.mock.calls[0]![0]).toMatchObject({ agent: "alpha", provisional: true, connection: { name: "example", token: true } });
     expect(mocks.lookUp).toHaveBeenCalledWith({ agent: "alpha", name: "example", credential: "tok-SECRET" });
     expect(mocks.review).not.toHaveBeenCalled(); expect(mocks.activate).not.toHaveBeenCalled();
-    // The confirmation shows each tool, defaulting to "changes something", used, and nothing trusted.
+    // The confirmation shows each tool, used. Only a tool the server marks as read-only starts with "Run without asking" ticked.
     const kinds = screen.getAllByRole("combobox") as HTMLSelectElement[];
     expect(kinds.map(k => k.value)).toEqual(["read", "change"]);
-    expect((screen.getByLabelText(/Let look-ups run without asking/) as HTMLInputElement).checked).toBe(false);
+    const switches = screen.getAllByLabelText(/Run without asking/) as HTMLInputElement[];
+    expect(switches.map(sw => sw.checked)).toEqual([true, false]);
+    expect(switches[1]!.disabled).toBe(true);
+    expect(screen.getByText(/the server says this only looks things up/)).toBeTruthy();
     fireEvent.click(screen.getByLabelText("push_lead"));
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await screen.findByText(/Connected\./);
     expect(mocks.declare.mock.calls[1]![0]).toMatchObject({ agent: "alpha", provisional: false, applyNow: false,
-      connection: { name: "example", token: true, allow: ["find_company"], read: ["find_company"] } });
+      connection: { name: "example", token: true, allow: ["find_company"], read: ["find_company"],
+        trustedTools: [expect.objectContaining({ name: "find_company" })] } });
     expect(mocks.lookUp).toHaveBeenCalledTimes(2);
     expect(mocks.review).toHaveBeenCalledWith({ identity, seen: tools });
     expect(mocks.activate).toHaveBeenCalledTimes(1);
     expect(mocks.apply).toHaveBeenCalledWith({ agent: "alpha" });
-    expect(screen.getByText(/Every call still asks you first/)).toBeTruthy();
+    expect(screen.getByText(/Tools you did not switch on to run without asking still ask you first/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("tok-SECRET");
+  });
+
+  it("the owner can switch a lookup off before connecting, and a tool that changes something cannot be switched on", async () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    await fillToken();
+    fireEvent.click(screen.getAllByLabelText(/Run without asking/)[0]!);
+    fireEvent.click(screen.getByLabelText("push_lead"));
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText(/Connected\./);
+    expect(mocks.declare.mock.calls[1]![0].connection.trustedTools).toEqual([]);
   });
 
   it("says which step failed and why, and a retry continues from that step", async () => {
