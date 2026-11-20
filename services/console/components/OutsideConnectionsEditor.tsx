@@ -1,5 +1,5 @@
 "use client";
-import { Choice, Field, PageHeader } from "@lares/ui/patterns";
+import { Choice, Field, FieldGroup, PageHeader } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { SaveEndsConversations } from "./SaveEndsConversations";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
@@ -123,12 +123,11 @@ export function OutsideConnectionsEditor({ initial, running }: { initial: Outsid
       <Field label="Tools this agent may use" hint="Enter tool names separated by commas."><Input required value={draft.allow} onChange={e => setDraft({ ...draft, allow: e.target.value })} /></Field>
       <Field label="Read-only tools" hint="Must be chosen from the allowed tools. Leave empty when all allowed tools make changes."><Input value={draft.read} onChange={e => setDraft({ ...draft, read: e.target.value })} /></Field>
       <Choice><Checkbox checked={draft.token} onChange={e => setDraft({ ...draft, token: e.target.checked })} /> This server requires a credential</Choice>
-      {listOf(draft.read).filter(tool => listOf(draft.allow).includes(tool)).length > 0 && <fieldset className="lares-stack">
-        <legend>Run without asking</legend>
+      {listOf(draft.read).filter(tool => listOf(draft.allow).includes(tool)).length > 0 && <FieldGroup legend="Run without asking">
         <p className="lares-muted">Switching a lookup on is recorded as your own decision, with the time. A tool that changes something always asks, and a lookup asks again if the server changes its description.</p>
         {listOf(draft.read).filter(tool => listOf(draft.allow).includes(tool)).map(tool => <Choice key={tool}><Checkbox checked={draft.free.includes(tool)}
           onChange={e => setDraft({ ...draft, free: e.target.checked ? [...draft.free, tool] : draft.free.filter(x => x !== tool) })} /> {tool}</Choice>)}
-      </fieldset>}
+      </FieldGroup>}
       <Field label="Runs at (optional)"><Input maxLength={200} value={draft.runsAt} onChange={e => setDraft({ ...draft, runsAt: e.target.value })} /></Field>
       <div className="lares-actions"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save connections"}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => { setDraft(null); setEditing(null); }}>Cancel</Button></div>
     </form>}
