@@ -810,9 +810,8 @@ def prove_keeper_default_admission() -> None:
         "console.log(JSON.stringify({ready:true,state:r.result.state}))});"
         "s.on('error',()=>{clearTimeout(t);process.exit(5)})"
     )
-    # The slot is prepared and holds no key. This keeper has no container runtime to inspect, so its
-    # consumer review cannot finish and it says so: the pair below is exactly what that state reports
-    # (a live host, which does have one, reports "not-configured" with no guidance).
+    # The slot is prepared and holds no key. In this fixture the keeper answers "review-consumers"
+    # (observed in CI); the pair below pins exactly that, so any other answer fails the probe.
     readiness_result: subprocess.CompletedProcess | None = None
     while time.monotonic() < deadline:
         inspected = docker("inspect", name, check=False, timeout=15)
