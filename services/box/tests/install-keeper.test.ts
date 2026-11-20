@@ -13,6 +13,7 @@
 // `pnpm` hands only the box's own renderers to the real pnpm so the release is read and the
 // files written by the REAL lib/keeper-config.ts, and every write lands in a temp --prefix. No
 // Docker, no network, no server.
+import { createHash } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { keeperConfigDifferences, parseProvenanceRecord } from "../lib/doctor-parity.js";
 import { execFileSync, spawn } from "node:child_process";
@@ -188,7 +189,7 @@ describe("the keeper the installer configures and starts", () => {
     // The same database, network and secrets this installation actually has.
     expect(config.db.database).toBe("lares_state");
     expect(config.lifecycle.network).toBe("lares-network");
-    expect(config.lifecycle.reservedAddresses).toEqual(["172.30.0.254"]);
+    expect(config.lifecycle.reservedAddresses).toEqual(["172.30.0.254", "172.30.0.253"]);
     expect(readFileSync(join(prefix, "srv", "lares", "egress", "squid.conf"), "utf8"))
       .toBe("http_port 8888\nhttp_access deny all\n");
     expect(config.credentials).toEqual({ administrator: "owner@example.invalid", slot: "notion:shared", binding: "NOTION_TOKEN_FILE", prepared: true, inventoryComplete: true, retainedConsumers: [] });
@@ -721,6 +722,63 @@ describe("the keeper the installer configures and starts", () => {
       expect(again.stdout + again.stderr).toContain("found an existing or unfinished installation");
       expect(again.stdout + again.stderr).not.toContain(RESTORED_LINE);
     }, 60_000);
+  });
+
+  describe("outside custody", () => {
+    const keyFile = () => join(prefix, "var", "lib", "lares", "outside-custody", "key");
+
+    it("a fresh install switches outside custody on: a key, a custody block bound to it, a route of its own with no hosts, and a pinned keeper", () => {
+      expect(install().code).toBe(0);
+      const config = readKeeperConfig();
+      const key = readFileSync(keyFile());
+      expect(key.length).toBe(32);
+      expect(statSync(keyFile()).mode & 0o777).toBe(0o400);
+      expect(config.outsideCustody.keyFingerprint).toBe(createHash("sha256").update(key).digest("hex"));
+      expect(config.outsideCustody.routeConsumerName).toBe("outside-route");
+      expect(config.lifecycle.egress.legacyConsumers).toEqual([{ name: "outside-route", address: "172.30.0.253", hosts: [] }]);
+      expect(keeperEnv().LARES_KEEPER_ADDRESS).toBe("172.30.0.253");
+      expect(keeperEnv().LARES_OUTSIDE_CUSTODY_KEY_FILE).toBe(keyFile());
+    });
+
+    it("an update of an install that has none of it switches it on once, and a second run changes nothing", () => {
+      expect(install().code).toBe(0);
+      // Make this look like an install from before: no block, no route, no key.
+      const config = readKeeperConfig();
+      delete config.outsideCustody;
+      config.lifecycle.egress.legacyConsumers = [];
+      writeFileSync(keeperConfigPath(), JSON.stringify(config, null, 2) + "\n");
+      rmSync(join(prefix, "var", "lib", "lares", "outside-custody"), { recursive: true, force: true });
+      expect(install().code).toBe(0);
+      const first = readKeeperConfig(), keyBefore = readFileSync(keyFile());
+      expect(first.outsideCustody.routeConsumerName).toBe("outside-route");
+      expect(install().code).toBe(0);
+      expect(readKeeperConfig().outsideCustody).toEqual(first.outsideCustody);
+      expect(readKeeperConfig().lifecycle.egress.legacyConsumers).toEqual(first.lifecycle.egress.legacyConsumers);
+      expect(readFileSync(keyFile()).equals(keyBefore)).toBe(true);
+    });
+
+    it("a hand-set host on the route survives an update", () => {
+      expect(install().code).toBe(0);
+      const config = readKeeperConfig();
+      config.lifecycle.egress.legacyConsumers[0].hosts = ["static.example.invalid"];
+      writeFileSync(keeperConfigPath(), JSON.stringify(config, null, 2) + "\n");
+      expect(install().code).toBe(0);
+      expect(readKeeperConfig().lifecycle.egress.legacyConsumers[0].hosts).toEqual(["static.example.invalid"]);
+    });
+
+    it("refuses, changing nothing, when a key exists without a custody block (half-finished setup)", () => {
+      expect(install().code).toBe(0);
+      const config = readKeeperConfig();
+      delete config.outsideCustody;
+      config.lifecycle.egress.legacyConsumers = [];
+      writeFileSync(keeperConfigPath(), JSON.stringify(config, null, 2) + "\n");
+      const before = readFileSync(keyFile());
+      const result = install();
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/operator recovery/);
+      expect(readKeeperConfig().outsideCustody).toBeUndefined();
+      expect(readFileSync(keyFile()).equals(before)).toBe(true);
+    });
   });
 
   describe("re-running the installer", () => {

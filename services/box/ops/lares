@@ -295,6 +295,20 @@ for line in sys.stdin:
       read_only_files+=(--ro "$keeper_config.rendered")
       parity_args+=(--keeper-rendered-file "$keeper_config.rendered")
     fi
+    # Outside tools: is the outside route's marker in the proxy's current rules? Looked at here
+    # because the egress folder is the keeper's, not the doctor's.
+    local egress_dir="${PREFIX:-}/srv/lares/egress" outside_stage=""
+    if [ -f "$egress_dir/installed-stage" ] && [ -f "$egress_dir/discovery-route-attempt" ] && [ -f "$egress_dir/squid.conf" ]; then
+      outside_stage=$(cat "$egress_dir/installed-stage" 2>/dev/null || true)
+      if [ -n "$outside_stage" ] && [ "$outside_stage" = "$(cat "$egress_dir/discovery-route-attempt" 2>/dev/null || true)" ] \
+          && grep -qF "X-Lares-Route-Stage $outside_stage" "$egress_dir/squid.conf" 2>/dev/null; then
+        parity_args+=(--outside-route ready)
+      else
+        parity_args+=(--outside-route not-ready)
+      fi
+    else
+      parity_args+=(--outside-route not-ready)
+    fi
     parity_args+=(--lares-project "${LARES_PROJECT:-lares}")
     [ "${ROOT##*/}" = "${LARES_PROJECT:-lares}" ] || parity_args+=(--lares-project "${ROOT##*/}")
   fi

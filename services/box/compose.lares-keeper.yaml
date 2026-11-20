@@ -82,7 +82,10 @@ services:
       - ${LARES_SOCKET_DIR:?absolute app socket directory}:/run/lares
       - ${LARES_HOST_SOCKET_DIR:?absolute host socket directory}:/run/lares-host
     tmpfs: [/tmp]
-    networks: [lares-network]
+    # Pinned: the outside route is the keeper's own address, so it must not change on a restart.
+    networks:
+      lares-network:
+        ipv4_address: ${LARES_KEEPER_ADDRESS:?reserved keeper address}
   lares-egress-proxy:
     image: ${LARES_SQUID_IMAGE:?full digest required}
     container_name: lares-egress-proxy

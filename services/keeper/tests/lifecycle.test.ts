@@ -679,6 +679,58 @@ it('opens the https host of an outside tool without mounting its token; plain-ht
  await l.saved('bookkeeper',outside('http://registry-svc:3000/mcp',false));
  expect(readFileSync(join(config.egressDir,'squid.conf'),'utf8')).not.toContain('registry-svc');
 });
+it('derives the outside route hosts from saved outside tools and nothing else',async()=>{
+ config.egress.legacyConsumers.push({name:'outside-route',address:'172.18.0.24',hosts:['static.example.org']});
+ const acks:string[]=[];
+ const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async(_stage,source)=>{acks.push(source);}};
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const squid=()=>readFileSync(join(config.egressDir,'squid.conf'),'utf8');
+ const routeAcl=()=>squid().split('\n').find(line=>line.startsWith('acl dst_outside-route '));
+ const tool=(url:string)=>({name:'registry',url,description:'Looks up companies.',token:true,tools:{allow:['lookup'],read:['lookup']}});
+ const outside=(url:string)=>({...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},outsideTools:[tool(url)]});
+ await l.create('bookkeeper',definition);
+ await l.saved('bookkeeper',definition);
+ expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org');
+ // A declared tool joins the list as soon as the definition is saved.
+ await l.saved('bookkeeper',outside('https://tools.example.org/mcp'));
+ expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org tools.example.org');
+ expect(squid()).toContain('http_access allow CONNECT src_outside-route dst_outside-route SSL_ports');
+ expect(acks.at(-1)).toBe('172.18.0.24');
+ // The agent's own list and the route list are separate: the agent never gets the static host.
+ expect(squid()).toContain('acl dst_bookkeeper dstdomain');
+ expect(squid().split('\n').find(line=>line.startsWith('acl dst_bookkeeper '))).not.toContain('static.example.org');
+ // An entry that takes no effect (no outside grant) adds no host; neither does an internal http name.
+ await l.saved('bookkeeper',{...definition,outsideTools:[tool('https://ungranted.example.org/mcp')]});
+ expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org');
+ await l.saved('bookkeeper',outside('http://registry-svc:3000/mcp'));
+ expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org');
+ // Removing the tool removes its host again.
+ await l.saved('bookkeeper',outside('https://tools.example.org/mcp'));
+ await l.saved('bookkeeper',definition);
+ expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org');
+ expect(squid()).not.toContain('tools.example.org');
+});
+it('refuses an outside destination that is not in the applied route list and changes the policy hash when the list changes',async()=>{
+ config.egress.legacyConsumers.push({name:'outside-route',address:'172.18.0.24',hosts:[]});
+ const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async()=>{}};
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const outside=(url:string)=>({...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},outsideTools:[{name:'registry',url,description:'Looks up companies.',token:true,tools:{allow:['lookup'],read:['lookup']}}]});
+ await l.create('bookkeeper',definition);
+ await l.saved('bookkeeper',definition);
+ await expect(l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000)).rejects.toThrow('Outside destination is unavailable');
+ await l.saved('bookkeeper',outside('https://tools.example.org/mcp'));
+ const first=await l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000);
+ expect(first.sourceAddress).toBe('172.18.0.24');
+ await expect(l.reviewOutsideRoute('https://other.example.org/mcp',Date.now()+5000)).rejects.toThrow('Outside destination is unavailable');
+ // A second host changes the base policy, so a review taken before it is no longer current.
+ await l.saved('bookkeeper',{...outside('https://tools.example.org/mcp'),outsideTools:[outside('https://tools.example.org/mcp').outsideTools[0]!,
+  {name:'second',url:'https://second.example.org/mcp',description:'Another.',token:false,tools:{allow:['lookup'],read:['lookup']}}]});
+ const second=await l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000);
+ expect(second.policyHash).not.toBe(first.policyHash);
+ await expect(l.withAppliedOutsideRoute('https://tools.example.org/mcp',first.policyHash,Date.now()+5000,async()=> 'ran')).rejects.toThrow('Outside route changed');
+});
 it('does not provision outside token files or restart an agent when only its outside declarations change',async()=>{
  const provisioned:string[]=[];
  const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,(p:string)=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);

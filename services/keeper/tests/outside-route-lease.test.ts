@@ -127,9 +127,9 @@ it('rejects a detached route check whose acknowledgement arrives after its names
     egress:{legacyConsumers:[{name:'outside-bridge',address:'172.18.0.23',hosts:['api.example.com']}]}} as unknown as LifecycleConfig;
   const lifecycle=new AgentLifecycle(pool,pool,config,{mode:'overlay',agentsDir:dir,secretsDir:dir,
     outsideCustody:{routeConsumerName:'outside-bridge'} as never},{acknowledgeOutsideStage} as unknown as DockerBoundary);
-  const internals=lifecycle as unknown as {outsideControllerEpoch:string;outsideRouteReady:{epoch:string;stage:string;sourceAddress:string;squidHash:string;nftHash:string;basePolicyHash:string}|undefined};
+  const internals=lifecycle as unknown as {outsideControllerEpoch:string;outsideRouteReady:{epoch:string;stage:string;sourceAddress:string;squidHash:string;nftHash:string;basePolicyHash:string;hosts:readonly string[]}|undefined};
   internals.outsideRouteReady={epoch:internals.outsideControllerEpoch,stage,sourceAddress:'172.18.0.23',
-    squidHash:createHash('sha256').update(squid).digest('hex'),nftHash:createHash('sha256').update(nft).digest('hex'),basePolicyHash:'base-policy'};
+    squidHash:createHash('sha256').update(squid).digest('hex'),nftHash:createHash('sha256').update(nft).digest('hex'),basePolicyHash:'base-policy',hosts:['api.example.com']};
   const destination='https://api.example.com/';
   const policyHash=createHash('sha256').update(JSON.stringify(['lares-outside-destination-v1','base-policy',destination])).digest('hex');
   let escapedResult!:Promise<Error|undefined>;

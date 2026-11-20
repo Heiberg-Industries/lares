@@ -345,7 +345,8 @@ def _open_safe_chain(path: Path, uid: int) -> tuple[int, os.stat_result]:
             os.close(fd)
 
 
-def _open_child_dir(parent_fd: int, name: str, mode: int, uid: int, *, create: bool = False) -> int:
+def _open_child_dir(parent_fd: int, name: str, mode: int, uid: int, *, create: bool = False,
+                    also_accept: tuple[int, ...] = ()) -> int:
     try:
         fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
     except FileNotFoundError:
@@ -358,7 +359,7 @@ def _open_child_dir(parent_fd: int, name: str, mode: int, uid: int, *, create: b
         os.fsync(fd)
         os.fsync(parent_fd)
     info = os.fstat(fd)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or stat.S_IMODE(info.st_mode) != mode:
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or stat.S_IMODE(info.st_mode) not in (mode, *also_accept):
         os.close(fd)
         raise ValueError("maintenance custody directory ownership or mode is unsafe")
     return fd
@@ -621,13 +622,15 @@ def prepare_outside_custody_key(prefix: str | Path, *, expected_uid: int | None 
     lares_fd = outside_fd = key_fd = -1
     key = bytearray(secrets.token_bytes(32))
     try:
-        var_fd = _open_child_dir(prefix_fd, "var", 0o755, uid, create=True)
+        # The installer creates these folders root-only (its umask is 077), so a root-only folder
+        # is as good as a world-readable one here; anything wider or owned by someone else is not.
+        var_fd = _open_child_dir(prefix_fd, "var", 0o755, uid, create=True, also_accept=(0o700,))
         try:
-            lib_fd = _open_child_dir(var_fd, "lib", 0o755, uid, create=True)
+            lib_fd = _open_child_dir(var_fd, "lib", 0o755, uid, create=True, also_accept=(0o700,))
         finally:
             os.close(var_fd)
         try:
-            lares_fd = _open_child_dir(lib_fd, "lares", 0o755, uid, create=True)
+            lares_fd = _open_child_dir(lib_fd, "lares", 0o755, uid, create=True, also_accept=(0o700,))
         finally:
             os.close(lib_fd)
         outside_fd = _create_child_dir_exclusive(lares_fd, "outside-custody", 0o700, uid)
@@ -1144,7 +1147,8 @@ def main(argv: list[str]) -> int:
             else:
                 prepare_fresh(argv[2], argv[3], restored_settings=restored)
         elif len(argv) == 4 and argv[1] == "prepare-outside-custody-key" and argv[3] == "--confirm-fresh":
-            print(json.dumps({"keyFingerprint": prepare_outside_custody_key(argv[2])}, separators=(",", ":")))
+            owner = os.geteuid() if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1" else None
+            print(json.dumps({"keyFingerprint": prepare_outside_custody_key(argv[2], expected_uid=owner)}, separators=(",", ":")))
         elif (len(argv) == 6 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh" and
               argv[5] == "--test-owner" and os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
             prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid(), restored_settings=restored)

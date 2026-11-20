@@ -346,7 +346,7 @@ describe("staged gateway authority transaction", () => {
         directory: "/srv/lares/var/lib/lares-maintenance/admission",
         installationId: "11111111-1111-4111-8111-111111111111", epoch: 1,
       },
-    }, { lifecycle: { maintenanceAdmission: {
+    }, { lifecycle: { subnet: "172.29.0.0/24", maintenanceAdmission: {
       hostDirectory: "/srv/lares/var/lib/lares-maintenance/admission",
       installationId: "11111111-1111-4111-8111-111111111111", epoch: 1,
     } } } as Parameters<typeof renderKeeperComposeEnvironment>[2]);

@@ -29,6 +29,45 @@ export const AGENTS_COMPOSE_FILE = "compose.lares-agents.yaml";
 /** The keeper-rendered compose file for managed services that are not agents (the Notion sync). */
 export const SERVICES_COMPOSE_FILE = "compose.lares-services.yaml";
 
+/** The one route consumer outside custody uses: the keeper's own address on the fleet network,
+ *  which is where its calls to outside tools leave from. Its host list starts empty and is
+ *  extended by the keeper from saved, owner-consented outside tools (never written here). */
+export const OUTSIDE_ROUTE_CONSUMER_NAME = "outside-route";
+
+function ipv4ToInt(address: string): number {
+  const parts = address.split(".");
+  if (parts.length !== 4 || parts.some(p => !/^(0|[1-9][0-9]{0,2})$/.test(p) || Number(p) > 255))
+    throw new Error(`"${address}" is not an IPv4 address`);
+  return parts.reduce((total, p) => total * 256 + Number(p), 0);
+}
+function intToIpv4(value: number): string {
+  return [24, 16, 8, 0].map(shift => Math.floor(value / 2 ** shift) % 256).join(".");
+}
+
+/** The keeper's own reserved address: the one just below the proxy's, inside the fleet subnet.
+ *  The proxy takes the top of the range and Docker hands ordinary services out from the bottom,
+ *  so the pair never meets. Refuses when that address would be the network address. */
+export function deriveKeeperAddress(proxyAddress: string, subnet: string): string {
+  const [base, bits] = subnet.split("/");
+  const prefix = Number(bits);
+  if (!base || !Number.isInteger(prefix) || prefix < 8 || prefix > 29) throw new Error(`The fleet subnet "${subnet}" is not usable for a keeper address`);
+  const size = 2 ** (32 - prefix);
+  const network = Math.floor(ipv4ToInt(base) / size) * size;
+  const proxy = ipv4ToInt(proxyAddress);
+  const candidate = proxy - 1;
+  if (proxy < network || proxy >= network + size || candidate <= network)
+    throw new Error("There is no free address below the proxy's for the keeper in the fleet subnet");
+  return intToIpv4(candidate);
+}
+
+/** The address the keeper container is pinned to: the outside route's source when custody is
+ *  on (the route and the container must be the same address), otherwise the derived one. */
+export function keeperAddressFor(config: KeeperConfig, proxyAddress: string): string {
+  const selected = config.outsideCustody?.routeConsumerName;
+  const consumer = selected ? config.lifecycle?.egress.legacyConsumers.find(c => c.name === selected) : undefined;
+  return consumer?.address ?? deriveKeeperAddress(proxyAddress, config.lifecycle!.subnet);
+}
+
 /** Where the roles and their templates live INSIDE the keeper image, not on the host: the
  *  keeper reads `join(templatesDir, role, "role.md")` and `deployedToolsFor(join(rolesDir,
  *  role))` from its own filesystem (the keeper lifecycle installation research
@@ -97,6 +136,9 @@ export interface KeeperConfigOptions {
   readonly previousBudgetNative?: KeeperConfig["budgetNative"];
   readonly previousOutsideCustody?: KeeperConfig["outsideCustody"];
   readonly previousOutsideRouteConsumer?: NonNullable<KeeperConfig['lifecycle']>['egress']['legacyConsumers'][number];
+  /** SHA-256 (hex) of the outside custody key the installer has just prepared on a host that had
+   *  none. Ignored when an earlier keeper.json already holds outside custody. */
+  readonly newOutsideKeyFingerprint?: string;
   readonly previousGatewayBudget?: KeeperConfig["gatewayBudget"];
   /** What the keeper.json already on this host said about the Notion key slot, or nothing on a
    *  fresh install. Decides whether the slot is rendered prepared (see `decideNotionSlot`). */
@@ -194,7 +236,19 @@ export function renderKeeperConfig(
       throw new Error("Existing outside custody does not match its prepared Keeper key, database credential, and root-selected route; operator recovery is required.");
   } else if (opts.previousOutsideRouteConsumer) {
     throw new Error("An outside route selection has no prepared custody binding; operator recovery is required.");
+  } else if (opts.newOutsideKeyFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(opts.newOutsideKeyFingerprint)) {
+    throw new Error("The prepared outside custody key fingerprint is not valid; nothing was written.");
   }
+  // First time outside custody is switched on for this installation: a custody block bound to the
+  // freshly prepared key and a route consumer with its own address and NO hosts yet.
+  const newOutside = !opts.previousOutsideCustody && opts.newOutsideKeyFingerprint !== undefined
+    ? { custody: { db: outsideDb, keyFile: "/var/lib/lares/outside-custody/key" as const, keyFingerprint: opts.newOutsideKeyFingerprint,
+          routeConsumerName: OUTSIDE_ROUTE_CONSUMER_NAME },
+        consumer: { name: OUTSIDE_ROUTE_CONSUMER_NAME, address: deriveKeeperAddress(opts.proxyAddress, opts.subnet), hosts: [] as string[] } }
+    : undefined;
+  const outsideCustody = opts.previousOutsideCustody ? { ...opts.previousOutsideCustody, db: outsideDb } : newOutside?.custody;
+  const outsideConsumer = opts.previousOutsideRouteConsumer ?? newOutside?.consumer;
+  const keeperAddress = outsideConsumer?.address ?? deriveKeeperAddress(opts.proxyAddress, opts.subnet);
 
   const tzEnvironment: Record<string, string> = opts.ownerHomeTz ? { OWNER_HOME_TZ: opts.ownerHomeTz } : {};
   const { leftUnpreparedBecause: _why, ...notionSlot } = decideNotionSlot(opts.previousNotionSlot);
@@ -208,7 +262,7 @@ export function renderKeeperConfig(
       },
     } : {}),
     ...(opts.previousBudgetNative ? { budgetNative: opts.previousBudgetNative } : {}),
-    ...(opts.previousOutsideCustody ? { outsideCustody: { ...opts.previousOutsideCustody, db: outsideDb } } : {}),
+    ...(outsideCustody ? { outsideCustody } : {}),
     ...(opts.previousGatewayBudget ? { gatewayBudget: opts.previousGatewayBudget } : {}),
     // The installer owns this signer in its protected secrets directory. Keeper reads the
     // exact file through the existing read-only installer-secrets mount; it is never copied.
@@ -242,7 +296,7 @@ export function renderKeeperConfig(
       network: opts.network,
       subnet: opts.subnet,
       maintenanceAdmission: admission,
-      reservedAddresses: [opts.proxyAddress],
+      reservedAddresses: [...new Set([opts.proxyAddress, keeperAddress])],
       composeFile: join(opts.dir, AGENTS_COMPOSE_FILE),
       egressDir: opts.egressDir,
       imageByRole: {
@@ -280,7 +334,7 @@ export function renderKeeperConfig(
       // silently remove a seal on a later render; an empty one says "none, on purpose".
       egress: {
         endpoints: {},
-        legacyConsumers: opts.previousOutsideRouteConsumer ? [opts.previousOutsideRouteConsumer] : [],
+        legacyConsumers: outsideConsumer ? [outsideConsumer] : [],
         internalNetworks: [opts.subnet],
         directDestinations: [],
         infrastructureHosts: [],

@@ -64,12 +64,13 @@ export interface ParsedDoctorArgs {
   containersFile: string | undefined;
   keeperConfigFile: string | undefined;
   keeperRenderedFile: string | undefined;
+  outsideRoute: "ready" | "not-ready" | undefined;
   laresProjects: string[];
 }
 
 const VALUE_FLAGS = new Set([
   "--gateway", "--alias", "--key-file", "--installed-settings-file", "--ledger-password-file",
-  "--release-file", "--containers-file", "--keeper-config-file", "--keeper-rendered-file", "--lares-project",
+  "--release-file", "--containers-file", "--keeper-config-file", "--keeper-rendered-file", "--outside-route", "--lares-project",
   "--gateway-profile-file", "--provider-key-file",
 ]);
 
@@ -90,6 +91,7 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   let containersFile: string | undefined;
   let keeperConfigFile: string | undefined;
   let keeperRenderedFile: string | undefined;
+  let outsideRoute: "ready" | "not-ready" | undefined;
   const laresProjects: string[] = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -110,6 +112,10 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
       else if (arg === "--containers-file") containersFile = value;
       else if (arg === "--keeper-config-file") keeperConfigFile = value;
       else if (arg === "--keeper-rendered-file") keeperRenderedFile = value;
+      else if (arg === "--outside-route") {
+        if (value !== "ready" && value !== "not-ready") throw new Error('doctor: --outside-route must be "ready" or "not-ready".');
+        outsideRoute = value;
+      }
       else if (arg === "--lares-project") laresProjects.push(value);
       else if (arg === "--gateway-profile-file") gatewayProfileFile = value;
       else if (arg === "--provider-key-file") providerKeyFile = value;
@@ -125,7 +131,7 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   if (modelOnly && !testModel) throw new Error("doctor: --model-only requires --test-model.");
   return {
     help, testModel, modelOnly, installedSettingsFile, ledgerPasswordFile, gatewayUrl, alias, keyFile,
-    gatewayProfileFile, providerKeyFile, releaseFile, containersFile, keeperConfigFile, keeperRenderedFile, laresProjects,
+    gatewayProfileFile, providerKeyFile, releaseFile, containersFile, keeperConfigFile, keeperRenderedFile, outsideRoute, laresProjects,
   };
 }
 
@@ -187,6 +193,7 @@ export function readParityInput(args: ParsedDoctorArgs): ParityInput | undefined
     keeperConfig,
     keeperConfigPresent: keeperConfig !== undefined,
     rendered,
+    ...(args.outsideRoute !== undefined ? { outsideRoute: args.outsideRoute } : {}),
   };
 }
 
