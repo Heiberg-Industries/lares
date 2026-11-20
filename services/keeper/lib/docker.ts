@@ -3,6 +3,8 @@ import { createConnection, type Socket } from 'node:net';
 import { promisify } from "node:util";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import type { KeeperConfig } from "./config.js";
 const execute = promisify(execFile);
 /** Internal helper, never itself registered as a keeper action. */
@@ -257,7 +259,17 @@ function privateIpv4(address: string): boolean {
     const octets = address.split('.').map(Number);
     return octets[0] === 10 || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) || (octets[0] === 192 && octets[1] === 168);
 }
-export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = globalThis.fetch, pause = wait): DockerBoundary {
+/** This container's own id, from inside: the 64-hex id in the mount table, else Docker's default hostname
+ *  (the 12-hex short id). Undefined when neither says, and then nothing is treated as "self". */
+export function ownContainerId(): string | undefined {
+    try {
+        const found = /\/docker\/containers\/([a-f0-9]{64})\//.exec(readFileSync('/proc/self/mountinfo', 'utf8'));
+        if (found) return found[1];
+    } catch { /* fall through */ }
+    const host = hostname();
+    return /^[a-f0-9]{12}$/.test(host) ? host : undefined;
+}
+export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = globalThis.fetch, pause = wait, ownId: () => string | undefined = ownContainerId): DockerBoundary {
     pinnedImage(c.squidImage);
     pinnedImage(c.firewallImage);
     if (!/^lares-[a-z0-9_-]+$/.test(c.proxyContainer))
@@ -287,8 +299,15 @@ export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = global
             if (ids.length > 2000 || ids.some(id => !/^[a-f0-9]{12,64}$/.test(id))) throw new Error('Credential mount inventory unavailable');
             const result: { name: string | null; incarnation: string | null; owned: boolean }[] = [];
             for (const id of ids) {
-                const [mounts, labels] = (await run(['inspect', '--format', '{{json .Mounts}}|{{json .Config.Labels}}', id])).trim().split('|').map(v => JSON.parse(v));
+                const parts = (await run(['inspect', '--format', '{{.Id}}|{{json .Mounts}}|{{json .Config.Labels}}', id])).trim().split('|');
+                const [mounts, labels] = [JSON.parse(parts[1]!), JSON.parse(parts[2]!)];
                 if (!Array.isArray(mounts)) throw new Error('Credential mount inventory unavailable');
+                // The keeper's own container mounts the whole keeper root, which contains the key file's path.
+                // It is the custodian that writes the key, not a consumer to restart, so it is never listed.
+                // Identified by its own container id (a label is something any container can carry); if the
+                // keeper cannot tell which container it is, nothing is skipped.
+                const self = ownId();
+                if (self && /^[a-f0-9]{64}$/.test(parts[0]!) && parts[0]!.startsWith(self)) continue;
                 if (mounts.some((m: any) => m.Type === 'bind' && (m.Source === activePath || activePath.startsWith(String(m.Source).replace(/\/$/, '') + '/'))))
                     result.push({ name: typeof labels?.['com.docker.compose.service'] === 'string' ? labels['com.docker.compose.service'].replace(/^lares-/, '') : null,
                         incarnation: labels?.['lares.incarnation'] ?? null, owned: labels?.['com.docker.compose.project'] === c.project && /^lares-[a-z][a-z0-9-]{1,30}$/.test(labels?.['com.docker.compose.service'] ?? '') });

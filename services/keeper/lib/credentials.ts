@@ -52,7 +52,7 @@ export class Credentials {
         status.consumers = snapshot.consumers;
         status.inventoryRevision = snapshot.revision;
       }
-      catch { return this.dto(r, 'host-administration-required', 'review-consumers', consumers); }
+      catch (error) { console.error(`keeper: the Notion key slot cannot be changed yet: ${error instanceof Error ? error.message : 'consumer review failed'}`); return this.dto(r, 'host-administration-required', 'review-consumers', consumers); }
     }
     return status;
   }

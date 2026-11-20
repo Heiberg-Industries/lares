@@ -2,7 +2,8 @@ import { vi,it,expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { Socket } from 'node:net';
 const calls=vi.hoisted(()=>[] as string[][]);
-vi.mock('node:child_process',()=>({execFile:Object.assign((_bin:string,args:string[],_opts:unknown,cb:any)=>{calls.push(args);cb(null,{stdout:args[0]==='network'?'[{"Containers":{"other":{"IPv4Address":"172.18.0.7/16"}},"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]':'',stderr:''});},{})}));
+const reply=vi.hoisted(()=>({fn:undefined as undefined|((args:string[])=>string)}));
+vi.mock('node:child_process',()=>({execFile:Object.assign((_bin:string,args:string[],_opts:unknown,cb:any)=>{calls.push(args);cb(null,{stdout:reply.fn?reply.fn(args):args[0]==='network'?'[{"Containers":{"other":{"IPv4Address":"172.18.0.7/16"}},"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]':'',stderr:''});},{})}));
 import { AgentNotHealthyError, NoOwnedContainerError, OutsideRouteAcknowledgementError, acknowledgeOutsideSquidStage,
   outsideRouteStageAcknowledged, ownedDocker } from '../lib/docker.js';
 const image='example/image@sha256:'+'a'.repeat(64);
@@ -220,3 +221,32 @@ it('honours a smaller probe count',async()=>{
  await expect(d.start('bookkeeper','172.18.0.24',false,15)).rejects.toBeInstanceOf(AgentNotHealthyError);
  expect(health).toHaveBeenCalledTimes(15);
 });
+
+describe_own_container();
+function describe_own_container(){
+ const key='/owned/secrets/notion-token',selfId='a'.repeat(64),otherId='b'.repeat(64),exampleId='c'.repeat(64),uuid='11111111-1111-4111-8111-111111111111';
+ const mount=(source:string)=>JSON.stringify([{Type:'bind',Source:source}]);
+ const labels=(service:string)=>JSON.stringify({'com.docker.compose.project':'test','com.docker.compose.service':service,'lares.incarnation':uuid});
+ const list=async(ownId:string|undefined)=>{
+  reply.fn=args=>{
+   if(args[0]==='ps')return `${selfId.slice(0,12)}\n${otherId.slice(0,12)}\n${exampleId.slice(0,12)}\n`;
+   if(args[0]!=='inspect')return '';
+   const id=args.at(-1)!;
+   return id===selfId.slice(0,12)?`${selfId}|${mount('/owned')}|${labels('lares-keeper')}`
+     :id===otherId.slice(0,12)?`${otherId}|${mount('/owned')}|${labels('lares-keeper')}`
+     :`${exampleId}|${mount(key)}|${labels('lares-example')}`;
+  };
+  try{
+   const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},vi.fn() as unknown as typeof fetch,async()=>{},()=>ownId);
+   return await d.credentialMounts!(key);
+  }finally{reply.fn=undefined;}
+ };
+ it('skips only the keeper\'s own container id, not another container carrying the keeper label',async()=>{
+  const names=(await list(selfId)).map(m=>m.name);
+  expect(names).toEqual(['keeper','example']);
+  expect((await list(selfId.slice(0,12))).map(m=>m.name)).toEqual(['keeper','example']);
+ });
+ it('skips nothing when the keeper cannot tell which container it is',async()=>{
+  expect((await list(undefined)).map(m=>m.name)).toEqual(['keeper','keeper','example']);
+ });
+}
