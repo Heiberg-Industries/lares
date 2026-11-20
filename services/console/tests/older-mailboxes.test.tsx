@@ -5,7 +5,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 const m = vi.hoisted(() => ({ member: vi.fn(), owner: vi.fn(), list: vi.fn(), older: vi.fn() }));
 vi.mock("../lib/auth", () => ({ requireMember: m.member, isConsoleOwner: m.owner }));
 vi.mock("../lib/db", () => ({ pool: {} }));
-vi.mock("../lib/accounts", () => ({ listGoogleAccounts: m.older }));
+vi.mock("../lib/accounts", () => ({ listGoogleAccounts: m.older, googleOrgs: () => [] }));
 vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { list = m.list; } }));
 vi.mock("../lib/agent-mailbox", () => ({ listAgentUses: async () => [], accountStatusLabel: () => "" }));
 vi.mock("../app/actions/accounts", () => ({ removeAccount: vi.fn() }));

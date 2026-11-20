@@ -4,7 +4,7 @@ import { PgAccountStore } from "@lares/agent-kit/account-store";
 import { withConsoleAdmission } from "../../../../../lib/admission-error";
 import { sessionMember } from "../../../../../lib/auth";
 import { pool } from "../../../../../lib/db";
-import { googleOrgClientConfig, googleOrgs, orgDomains, resolveOrgForEmail } from "../../../../../lib/accounts";
+import { googleOrgClientConfig, googleOrgs } from "../../../../../lib/accounts";
 import { ACCOUNT_FLOW_COOKIE, ACCOUNT_FLOW_MAX_AGE, sealAccountFlow } from "../../../../../lib/account-oauth-state";
 import { startAccountConsent, callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
 import { GOOGLE_CLIENT_MISSING } from "../../../../../lib/account-errors";
@@ -57,17 +57,20 @@ async function handlePOST(req: Request): Promise<Response> {
       org = result.rows[0].org_id;
       if (!googleOrgClientConfig(org)) return clientMissing();
     } else {
-      const mailbox = form.get("email");
-      if (typeof mailbox !== "string") return fail();
+      // No typed address: Google's own account chooser picks the account. The organisation is the only
+      // thing to choose, and only when this installation has several Google sign-in apps.
       const orgs = googleOrgs();
       if (orgs.length === 0) return clientMissing();
-      const resolved = resolveOrgForEmail(mailbox, orgs.map(value => value.id), orgDomains(), process.env.GOOGLE_DEFAULT_ORG);
-      if ("error" in resolved) return fail();
-      org = resolved.org;
+      const chosen = form.get("org");
+      if (chosen !== null && typeof chosen !== "string") return fail();
+      const ids = orgs.map(value => value.id);
+      const defaultOrg = process.env.GOOGLE_DEFAULT_ORG?.trim().toLowerCase();
+      const wanted = chosen ? chosen.trim().toLowerCase() : orgs.length === 1 ? ids[0] : defaultOrg;
+      if (!wanted || !ids.includes(wanted)) return fail();
+      org = wanted;
     }
     if (!googleOrgClientConfig(org)) return clientMissing();
-    const { flow, url } = await startAccountConsent({ memberId: member.id, session, org, power, update,
-      ...(intent === "new" ? { loginHint: String(form.get("email")).trim() } : {}) });
+    const { flow, url } = await startAccountConsent({ memberId: member.id, session, org, power, update });
     const response = NextResponse.redirect(url, { status: 303 });
     response.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow(flow), { httpOnly: true, sameSite: "lax",
       secure: origin.startsWith("https:"), path: "/api/accounts/google", maxAge: ACCOUNT_FLOW_MAX_AGE });

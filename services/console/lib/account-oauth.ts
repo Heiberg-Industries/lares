@@ -23,16 +23,15 @@ async function configuration(org: string, expectedClientId?: string) {
   oidc.enableNonRepudiationChecks(config);
   return { config, settings };
 }
-export async function startAccountConsent(args: { memberId: string; session: string; org: string; loginHint?: string; power?: PersonalConsentPower; update?: AccountUpdate }) {
+export async function startAccountConsent(args: { memberId: string; session: string; org: string; power?: PersonalConsentPower; update?: AccountUpdate }) {
   const power = personalConsentPower(args.power === undefined ? "read" : args.power);
   const { config, settings } = await configuration(args.org);
   const common = { power, provider: "google" as const, memberId: args.memberId, sessionHash: accountSessionHash(args.session), org: args.org,
     clientId: settings.clientId, state: oidc.randomState(), nonce: oidc.randomNonce(), verifier: oidc.randomPKCECodeVerifier() };
   const flow: AccountFlow = args.update ? { ...common, intent: "reconnect", update: { ...args.update } } : { ...common, intent: "new" };
   const url = oidc.buildAuthorizationUrl(config, { redirect_uri: accountRedirect(), response_type: "code",
-    scope: googlePersonalConsentScopes(power).join(" "), access_type: "offline", prompt: "consent", state: flow.state, nonce: flow.nonce,
-    code_challenge: await oidc.calculatePKCECodeChallenge(flow.verifier), code_challenge_method: "S256",
-    ...(args.loginHint ? { login_hint: args.loginHint } : {}) });
+    scope: googlePersonalConsentScopes(power).join(" "), access_type: "offline", prompt: args.update ? "consent" : "select_account consent", state: flow.state, nonce: flow.nonce,
+    code_challenge: await oidc.calculatePKCECodeChallenge(flow.verifier), code_challenge_method: "S256" });
   return { flow, url };
 }
 /** All resources are read through the same verified grant. No provider email links a member. */

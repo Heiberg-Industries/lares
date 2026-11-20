@@ -30,10 +30,25 @@ beforeEach(async () => {
   mock.finish.mockResolvedValue({ adapter: {}, material: { orgId: "example", emailAddress: "own@example.test", scopes: ["openid"], refreshToken: "refresh" } });
 });
 it("starts member-owned flow with overwrite-only HttpOnly cookie and stable identity", async () => {
-  const result = await start({ intent: "new", email: "hint@example.test" });
-  expect(result.status).toBe(303); expect(mock.start).toHaveBeenCalledWith(expect.objectContaining({ memberId: "member-a", session: "session", org: "example" }));
+  const result = await start({ intent: "new" });
+  expect(result.status).toBe(303); expect(mock.start.mock.calls[0][0]).not.toHaveProperty("loginHint"); expect(mock.start).toHaveBeenCalledWith(expect.objectContaining({ memberId: "member-a", session: "session", org: "example" }));
   const cookie = result.headers.get("set-cookie")!; expect(cookie).toContain("HttpOnly"); expect(cookie).toContain("Secure");
   expect(await openAccountFlow(cookie.split(";")[0].split("=")[1])).toEqual(flow);
+});
+it("needs no address: a new account with several Google apps takes the chosen app, and refuses an unknown one", async () => {
+  mock.orgs.mockReturnValue([{ id: "example" }, { id: "second" }]);
+  await start({ intent: "new", org: "Second" });
+  expect(mock.start).toHaveBeenCalledWith(expect.objectContaining({ org: "second" }));
+  mock.start.mockClear();
+  const unknown = await start({ intent: "new", org: "nope" });
+  expect(mock.start).not.toHaveBeenCalled(); expect(unknown.headers.get("location")).toContain("error=");
+  const none = await start({ intent: "new" });
+  expect(mock.start).not.toHaveBeenCalled(); expect(none.headers.get("location")).toContain("error=");
+});
+it("adds a second account the same way as the first", async () => {
+  await start({ intent: "new" }); await start({ intent: "new" });
+  expect(mock.start).toHaveBeenCalledTimes(2);
+  expect(mock.start.mock.calls[1][0]).toMatchObject({ memberId: "member-a", org: "example" }); expect(mock.start.mock.calls[1][0].update).toBeUndefined();
 });
 it("refuses managed agent consent and unknown/missing intent before provider work", async () => {
   expect((await start({ agent: "example", email: "own@example.test" })).status).toBe(409);
