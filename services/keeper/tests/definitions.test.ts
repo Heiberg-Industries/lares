@@ -80,7 +80,7 @@ async function connectionFixture() {
     return { loaded, access, sessions };
 }
 const declaration = { name: 'rates', url: 'https://tools.example.org/mcp', description: 'Look up rates', token: false,
-    tools: { allow: ['find_rate'], read: ['find_rate'] }, trusted: false };
+    tools: { allow: ['find_rate'], read: ['find_rate'] } };
 const connectionCall = (sessionToken: string, name: string, expectedDefinitionHash: string, expectedAccessRevision: number, connections: unknown) =>
     runAction('outside.connections.save', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision, connections }, ctx());
 const connectionApplyCall = (sessionToken: string, name: string, expectedDefinitionHash: string, expectedAccessRevision: number) =>

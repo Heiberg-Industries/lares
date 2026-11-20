@@ -79,7 +79,7 @@ const def = { name: 'helper', model: 'fixture-brain', persona: 'voice.md', role:
 const outsideDef = (url = 'https://mail.example.com/mcp') => ({
   name: 'outside-helper', model: 'fixture-brain', persona: 'voice.md', role: 'chief-of-staff', channels: [],
   grants: [{ capability: 'outside', scope: 'read' }], autonomy: { outside: 'gated' }, skills: [],
-  outsideTools: [{ name: 'mail', url, description: 'Mail tools', token: true, tools: { allow: ['search'], read: ['search'] }, trusted: false }],
+  outsideTools: [{ name: 'mail', url, description: 'Mail tools', token: true, tools: { allow: ['search'], read: ['search'] } }],
 });
 const OPTS = { adapter: deadlineApprovalAdapter };
 const AREA_AUTHORITY = { designatedOwnerMemberId: 'member-a' };

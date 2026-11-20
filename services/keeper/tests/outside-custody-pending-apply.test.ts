@@ -30,7 +30,7 @@ const financialPassword=Buffer.from('pending-apply-financial-role-disposable');
 const capture={version:1 as const,actor:{memberId:owner,organisationId:org,role:'owner' as const},
   agent:{name:'worker',ownerMemberId:owner,accessRevision:7,definitionHash:'a'.repeat(64)},ownerPolicy:{kind:'unrestricted' as const},
   outside:{scope:'read' as const,autonomy:'gated' as const,connection:{name:'connector',url:'https://example.test/mcp',auth:'bearer' as const,
-    allow:['lookup'],read:['lookup'],trusted:false}},grant:{kind:'owner' as const,validUntil:null}};
+    allow:['lookup'],read:['lookup']}},grant:{kind:'owner' as const,validUntil:null}};
 const editorCapture={version:1,actor:{memberId:owner,organisationId:org,role:'owner'},
   agent:{name:'worker',ownerMemberId:owner,accessRevision:7,definitionHash:'a'.repeat(64),connectionName:'connector'},grant:{kind:'owner',validUntil:null}};
 const route={policyHash:'d'.repeat(64),sourceAddress:'198.51.100.10',proxyUrl:'http://lares-egress-proxy:8888/'};
@@ -73,7 +73,7 @@ const activeOperationId='00000000-0000-4000-8000-000000000109',sourceResultId='0
 const reviewRoute={policyHash:'d'.repeat(64),sourceAddress:'198.51.100.10',proxyUrl:'http://lares-egress-proxy:8888/'};
 const useCapture={version:1,actor:{memberId:owner,organisationId:org,role:'owner'},agent:{name:'worker',ownerMemberId:owner,
   accessRevision:7,definitionHash:'a'.repeat(64)},ownerPolicy:{kind:'unrestricted'},outside:{scope:'read',autonomy:'gated',connection:{name:'connector',
-    url:'https://example.test/mcp',auth:'bearer',allow:['lookup'],read:['lookup'],trusted:false}},grant:{kind:'owner',validUntil:null}};
+    url:'https://example.test/mcp',auth:'bearer',allow:['lookup'],read:['lookup']}},grant:{kind:'owner',validUntil:null}};
 const discoveryPolicy={version:profile.version,profile,purpose:'streamable-http-discovery-v1',ownerMemberId:owner,accountId,agentName:'worker',
   connectionName:'connector',endpoint:capture.outside.connection.url,capture,route:reviewRoute};
 const discoveryPolicyHash=createHash('sha256').update(canonical(discoveryPolicy)).digest('hex');

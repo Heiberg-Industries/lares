@@ -31,8 +31,8 @@ async function bind(){await db.query("INSERT INTO console_session_bindings(agent
 const outsideDefinitionHash='a'.repeat(64);
 function outsideDefinition(overrides:Record<string,unknown>={}){return {
   name:agent.id,model:'lares-brain',grants:[{capability:'outside',scope:'read'}],
-  outsideTools:[{name:'mail',url:'https://api.example.com/mcp',description:'Mail tools',token:true,tools:{allow:['search','send'],read:['search','send']},trusted:false},
-    {name:'calendar',url:'https://calendar.example.com/mcp',description:'Calendar tools',token:true,tools:{allow:['events'],read:['events']},trusted:true}],
+  outsideTools:[{name:'mail',url:'https://api.example.com/mcp',description:'Mail tools',token:true,tools:{allow:['search','send'],read:['search','send']}},
+    {name:'calendar',url:'https://calendar.example.com/mcp',description:'Calendar tools',token:true,tools:{allow:['events'],read:['events']}}],
   ...overrides,
 };}
 async function adoptOutside(){
@@ -188,7 +188,7 @@ describe('agent grants on disposable PostgreSQL',()=>{
     const owner=await captureOutside('owner','mail');
     expect(owner).toMatchObject({version:1,actor:{memberId:'owner',organisationId:'org',role:'owner'},
       agent:{name:'assistant',ownerMemberId:'owner',definitionHash:outsideDefinitionHash},
-      ownerPolicy:{kind:'unrestricted'},outside:{scope:'read',autonomy:'gated',connection:{name:'mail',url:'https://api.example.com/mcp',auth:'bearer',allow:['search','send'],read:['search','send'],trusted:false}},
+      ownerPolicy:{kind:'unrestricted'},outside:{scope:'read',autonomy:'gated',connection:{name:'mail',url:'https://api.example.com/mcp',auth:'bearer',allow:['search','send'],read:['search','send']}},
       grant:{kind:'owner',validUntil:null}});
     expect(JSON.stringify(owner)).not.toContain('calendar.example.com');
     expect(await captureOutside('admin','mail')).toBeUndefined();
@@ -207,7 +207,7 @@ describe('agent grants on disposable PostgreSQL',()=>{
   it('bounds private discovery metadata before parsing or evaluating declared connections',async()=>{
     await adoptOutside();
     const connection=(name:string,token:boolean)=>({name,url:`https://${name}.example.com/mcp`,description:'Fixture connection',token,
-      tools:{allow:['read'],read:['read']},trusted:false});
+      tools:{allow:['read'],read:['read']}});
     const declared=Array.from({length:126},(_,i)=>connection(`tool-${String(i).padStart(3,'0')}`,false));
     const names=Array.from({length:49},(_,i)=>`agent-${String(i).padStart(2,'0')}`);
     for(const name of names){
@@ -351,7 +351,7 @@ describe('agent grants on disposable PostgreSQL',()=>{
     await adoptOutside();
     const inside='a'.repeat(31),outside='a'.repeat(32);
     const connection=(name:string)=>({name,url:'https://api.example.com/mcp',description:'Mail tools',token:true,
-      tools:{allow:['search'],read:['search']},trusted:false});
+      tools:{allow:['search'],read:['search']}});
     const definition=outsideDefinition({outsideTools:[connection(inside),connection(outside)]});
     await db.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=$2',[JSON.stringify(definition),agent.id]);
     const client=await db.connect();await client.query('BEGIN');
