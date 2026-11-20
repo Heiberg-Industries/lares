@@ -76,3 +76,19 @@ the agent, prove provider reachability, or revoke the previous key at the provid
 is uncertain, the page checks the current exact custody revision and asks you to refresh before
 trying again; it does not blindly repeat the request. Custody revocation, provider-side key revocation
 and channel-specific approval verification remain separate operations.
+
+## Run without asking, per tool
+
+Every outside tool call asks for approval unless you switched that one tool to **Run without asking**.
+Only a tool that only looks things up can be switched on; a tool that changes something always asks, and
+the console refuses to save it as switched on. On the Connect screen the switch starts ticked only for
+tools the server itself marks as read-only; you can change any switch before connecting, and later on the
+agent's Outside connections page. Switching a tool on records who did it and when.
+
+A switched-on tool still asks when the agent has just read someone else's words in the same
+conversation. The switch is tied to the tool description you saw. If the server changes that
+description, the tool asks again until you switch it on again, and the connection is paused until you
+have reviewed the new description. Each run under the switch is written to the Keeper audit log
+(who switched it on, when, the tool, the conversation) without the tool's arguments.
+
+Changing a switch after connecting edits the agent's definition, like any other definition change.
