@@ -124,14 +124,30 @@ describe("an approval card carries the same facts and decisions on every door", 
     });
   }
 
-  // KNOWN GAP (docs/door-messages.md, "Gaps"). The mail title says "and 1 more (shortened)" for two
-  // recipients, and Telegram takes Approve off any card whose text says "shortened", although the
-  // details under the title name every recipient. Slack offers Approve. When this is fixed this
-  // test starts failing: delete `.fails` and the gap entry.
-  it.fails("a mail to two people can be approved on Telegram, as it can on Slack", () => {
+  it("a mail to two people names both and can be approved on both doors", () => {
     const two = { ...SEND, to: ["sam@example.com", "kim@example.com"] };
+    expect(summarizeApproval("gmail_send", two)).not.toMatch(/more|shortened/);
+    for (const text of [slackCard("gmail_send", two).title, telegramCard("gmail_send", two).text]) {
+      expect(text).toContain("sam@example.com");
+      expect(text).toContain("kim@example.com");
+    }
     expect(slackCard("gmail_send", two).buttons).toEqual(["deny", "approve"]);
     expect(telegramCard("gmail_send", two).buttons).toEqual(["deny", "approve"]);
+  });
+
+  it("a mail to very many people is held back by the length rule, not by the word shortened", () => {
+    const many = { ...SEND, to: Array.from({ length: 150 }, (_, n) => `person-${n}-with-a-long-name@example.com`) };
+    const title = summarizeApproval("gmail_send", many)!;
+    expect(title).not.toMatch(/shortened|more —/);
+    expect(title).toContain("person-149-with-a-long-name@example.com");
+    // Telegram: the card passes its limit, is cut with the cut admitted, and has no Approve.
+    const telegram = telegramCard("gmail_send", many);
+    expect(telegram.text).toContain("…(truncated)");
+    expect(telegram.buttons).toEqual(["deny"]);
+    // Slack shows the long title whole in the body and still offers Approve.
+    const slack = slackCard("gmail_send", many);
+    expect(slack.body).toContain("person-149-with-a-long-name@example.com");
+    expect(slack.buttons).toEqual(["deny", "approve"]);
   });
 
   it("neither door shows markup characters as typed: no label asterisks, no entities", () => {

@@ -77,7 +77,7 @@ written down only as what a later door must be able to show (last column of each
 | | |
 | --- | --- |
 | **Order** | Title line (what will happen, in one sentence). Then the exact change, labelled (To, Subject, then the body). Then the buttons. |
-| **Wording** | Title and labels come from the kit (`approvalCardShape`). |
+| **Wording** | Title and labels come from the kit (`approvalCardShape`). The title names every recipient; it is never abbreviated to "and N more". A title is marked "shortened" only when a value was really cut. |
 | **Buttons** | Deny, Approve. |
 | **Long text** | Rule 3. |
 | **Slack** | One message: a card block with the title and buttons, then the change in sections. |
@@ -146,30 +146,24 @@ the Slack renderer and the Telegram card, and fails when:
 
 - a fact of the change (recipients, subject, body, calendar title, guests) is missing from either door;
 - the buttons are not Deny then Approve on both;
-- a card shown whole loses Approve, or a cut card keeps it;
+- a card shown whole loses Approve (a mail to two people included), or a cut card keeps it;
 - a settled card does not end with the kit's line;
 - the spending-cap refusal differs between doors;
 - a long reply loses text when split.
 
 ## Gaps
 
-These are known and not fixed by this standard. None is hidden: the first has a test that starts
-failing when it is fixed.
+These are known and not fixed by this standard.
 
-1. **A mail to two or more people cannot be approved on Telegram.** The mail title abbreviates
-   recipients ("and 1 more") and marks itself "(shortened)". Telegram takes Approve off any card
-   that says "shortened", although the lines under the title name every recipient. Slack is
-   unaffected. The fix is in the kit's title (name every recipient, as the meeting follow-up
-   already does) and needs a decision, because titles then grow with the list.
-2. **Slack's open card says "I've paused until someone approves or denies."** under the buttons;
+1. **Slack's open card says "I've paused until someone approves or denies."** under the buttons;
    Telegram has no such line. It is eve's own subtext, not the kit's.
-3. **Slack's settled card cannot say "Revised — see the new card".** The Slack renderer is pure
+2. **Slack's settled card cannot say "Revised — see the new card".** The Slack renderer is pure
    and synchronous and the revision is looked up in the database. Telegram says it.
-4. **Slack replies are the framework's markdown rendering**; Telegram's are Lares's own
+3. **Slack replies are the framework's markdown rendering**; Telegram's are Lares's own
    converter. They agree on bold, links and bullets. Tables and nested lists are untested on both.
-5. **The source-linked report (kind 9) has no code yet.** Shared report records and their
+4. **The source-linked report (kind 9) has no code yet.** Shared report records and their
    rendering are the next release's work.
-6. **The "missing or stale data" wording (rule 8) is not checked by a test**, because it lives in
+5. **The "missing or stale data" wording (rule 8) is not checked by a test**, because it lives in
    the agent's instructions and the tools' messages, not in the door layer.
-7. **The app icon cannot be set from a manifest on Slack.** It is a one-time upload by the owner.
-8. **Web chat is not covered here.** It is last in the order and draws the same kit text.
+6. **The app icon cannot be set from a manifest on Slack.** It is a one-time upload by the owner.
+7. **Web chat is not covered here.** It is last in the order and draws the same kit text.

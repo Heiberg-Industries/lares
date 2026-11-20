@@ -214,8 +214,8 @@ describe("a card that was cut cannot be approved", () => {
     }
   });
 
-  it("the summary's real shortened title for a long recipient list removes Approve", () => {
-    const input = { to: Array.from({ length: 30 }, (_, i) => `person-${i}@example.com`), subject: "s", bodyText: "b" };
+  it("the summary's real shortened title for a subject cut to fit removes Approve", () => {
+    const input = { to: ["person@example.com"], subject: "A very long subject line ".repeat(10), bodyText: "b" };
     const title = summarizeApproval("gmail_send", input) ?? "";
     // Only meaningful while the summary shortens this title; if it stops, this case proves nothing.
     expect(title).toContain("(shortened");
