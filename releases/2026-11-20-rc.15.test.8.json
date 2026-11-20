@@ -1,0 +1,32 @@
+{
+  "release": "2026-11-20-rc.15.test.8",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:0098d6f106d754751fc138f9625fc82f8591cd434925b7006075dac90c022bb8",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:6e6ab979ed3079fd29f1fe47af9b6d2584192eac2f8df612542ce5d710a1c319",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:b1bdf0aead19495168d4c621abe99592fa4df9db9a8d00091734557850043bb1",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:c6e0ab36c012d256553b2adc07ad9b7db7ae3be3eab8a87cfc2c460c8fcd1253",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:a3a65c844acf1eb3d4e481d7bb1a2b5bdd96e3bffc3c158b59ed54bf3e1e0a29",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:08ef303a4332f0c5d1b9bf876ed217f44760d0fad88cf8da1c3e43ede1bb53b1",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:3a7a289e76e07ef49675a8d4c5e1ca40940db1086f3dec381c5be49ef0fe6d58"
+  },
+  "sources": {
+    "console": "039df390a6e22393e388baa643dbca579cfea950",
+    "lares-keeper": "039df390a6e22393e388baa643dbca579cfea950",
+    "lares-egress-proxy": "039df390a6e22393e388baa643dbca579cfea950",
+    "lares-firewall-helper": "039df390a6e22393e388baa643dbca579cfea950",
+    "chief-of-staff": "039df390a6e22393e388baa643dbca579cfea950",
+    "creative": "039df390a6e22393e388baa643dbca579cfea950",
+    "sync-jobs": "e8a85fef1b60d392564d98695ae51a9678878810"
+  },
+  "migrations": {
+    "box": "038_approval_card_record.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "This is a test release, not a finished rc.15. Use it only on a test server or on an installation whose owner has agreed to test it.",
+    "Update in place from rc.15.test.7 with lares update. This release adds no new database file, so the update changes no table."
+  ]
+}
