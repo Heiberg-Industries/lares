@@ -20,3 +20,13 @@ describe("outside connect wording helpers", () => {
     expect(toolNamesOf("  ")).toEqual([]);
   });
 });
+
+import { parseOutsideDiscoveryDocument } from "../lib/outside-discovery-dto";
+describe("discovery document read-only hint", () => {
+  const doc = (tool: Record<string, unknown>) => ({ protocolVersion: "2025-06-18", serverInfo: { name: "S", version: "1" }, tools: [{ name: "a", inputSchema: {}, ...tool }] });
+  it("keeps a true read-only hint and refuses any other value", () => {
+    expect(parseOutsideDiscoveryDocument(doc({ readOnly: true }))?.tools[0]?.readOnly).toBe(true);
+    expect(parseOutsideDiscoveryDocument(doc({}))?.tools[0]).not.toHaveProperty("readOnly");
+    expect(parseOutsideDiscoveryDocument(doc({ readOnly: false }))).toBeUndefined();
+  });
+});
