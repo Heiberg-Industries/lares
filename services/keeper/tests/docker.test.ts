@@ -222,14 +222,31 @@ it('honours a smaller probe count',async()=>{
  expect(health).toHaveBeenCalledTimes(15);
 });
 
-it('does not count the keeper\'s own container, which mounts the whole keeper root, as a holder of the Notion key',async()=>{
- const key='/owned/secrets/notion-token';
+describe_own_container();
+function describe_own_container(){
+ const key='/owned/secrets/notion-token',selfId='a'.repeat(64),otherId='b'.repeat(64),exampleId='c'.repeat(64),uuid='11111111-1111-4111-8111-111111111111';
  const mount=(source:string)=>JSON.stringify([{Type:'bind',Source:source}]);
- const labels=(service:string)=>JSON.stringify({'com.docker.compose.project':'test','com.docker.compose.service':service,'lares.incarnation':'11111111-1111-4111-8111-111111111111'});
- reply.fn=args=>args[0]==='ps'?'aaaaaaaaaaaa\nbbbbbbbbbbbb\n':args[0]==='inspect'
-  ?(args.at(-1)==='aaaaaaaaaaaa'?`${mount('/owned')}|${labels('lares-keeper')}`:`${mount(key)}|${labels('lares-example')}`):'';
- try {
-  const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},vi.fn() as unknown as typeof fetch,async()=>{});
-  await expect(d.credentialMounts!(key)).resolves.toEqual([{name:'example',incarnation:'11111111-1111-4111-8111-111111111111',owned:true}]);
- } finally { reply.fn=undefined; }
-});
+ const labels=(service:string)=>JSON.stringify({'com.docker.compose.project':'test','com.docker.compose.service':service,'lares.incarnation':uuid});
+ const list=async(ownId:string|undefined)=>{
+  reply.fn=args=>{
+   if(args[0]==='ps')return `${selfId.slice(0,12)}\n${otherId.slice(0,12)}\n${exampleId.slice(0,12)}\n`;
+   if(args[0]!=='inspect')return '';
+   const id=args.at(-1)!;
+   return id===selfId.slice(0,12)?`${selfId}|${mount('/owned')}|${labels('lares-keeper')}`
+     :id===otherId.slice(0,12)?`${otherId}|${mount('/owned')}|${labels('lares-keeper')}`
+     :`${exampleId}|${mount(key)}|${labels('lares-example')}`;
+  };
+  try{
+   const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},vi.fn() as unknown as typeof fetch,async()=>{},()=>ownId);
+   return await d.credentialMounts!(key);
+  }finally{reply.fn=undefined;}
+ };
+ it('skips only the keeper\'s own container id, not another container carrying the keeper label',async()=>{
+  const names=(await list(selfId)).map(m=>m.name);
+  expect(names).toEqual(['keeper','example']);
+  expect((await list(selfId.slice(0,12))).map(m=>m.name)).toEqual(['keeper','example']);
+ });
+ it('skips nothing when the keeper cannot tell which container it is',async()=>{
+  expect((await list(undefined)).map(m=>m.name)).toEqual(['keeper','keeper','example']);
+ });
+}
