@@ -36,7 +36,11 @@ Commit titles from e8a85fef1b60d392564d98695ae51a9678878810 to 039df390a6e22393e
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- A Notion key pasted in the console now saves. Before, the keeper counted its own container as a second holder of the key and refused every change with a request to review consumers.
+- The Connect screen for an outside tool now asks only for the address, the token and which agents may use it.
+- Nothing breaks: the update adds no database file and changes no setting.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
