@@ -21,7 +21,7 @@ beforeEach(() => {
   mocks.activate.mockResolvedValue(ok({ credentialRevision: 1 }));
   mocks.apply.mockResolvedValue(ok({ applied: true }));
   mocks.remove.mockResolvedValue(ok({ removed: true }));
-  mocks.switchOn.mockResolvedValue(ok({ switchedOn: ["find_company"] }));
+  mocks.switchOn.mockResolvedValue(ok({ switchedOn: ["find_company"], switchedOff: [] }));
 });
 afterEach(cleanup);
 
@@ -76,6 +76,7 @@ describe("ConnectOutsideTool", () => {
     await screen.findByText(/Connected\./);
     fireEvent.click(screen.getByRole("button", { name: "Switch on Run without asking" }));
     await waitFor(() => expect(mocks.switchOn).toHaveBeenCalledWith({ agent: "alpha", name: "example", tools: ["find_company"] }));
+    await screen.findByText(/alpha: switched on find_company/);
   });
 
   it("on a reconnect shows the switches as they already are: kept ones ticked, known ones the owner left off stay off", async () => {
