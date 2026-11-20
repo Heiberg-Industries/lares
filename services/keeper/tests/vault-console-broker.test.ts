@@ -221,6 +221,7 @@ beforeEach(async () => {
     CREATE TABLE connected_accounts(id text PRIMARY KEY,owner_member_id text,generation integer,status text);
     CREATE TABLE agent_resources(name text PRIMARY KEY,ownership_token uuid,runtime_control_token uuid,state text,pending boolean,applied_definition jsonb);
     CREATE TABLE outside_tool_pins(agent text NOT NULL,tool text NOT NULL,config_hash text NOT NULL,pin_hash text NOT NULL,pin_tools jsonb,seen_hash text,seen_tools jsonb,seen_at timestamptz,pinned_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(agent,tool));
+    CREATE TABLE repairs(kind text NOT NULL,ref text NOT NULL,severity text NOT NULL,what text NOT NULL,how_to_fix text,breaks_in text,opened_at timestamptz NOT NULL DEFAULT now(),last_seen_at timestamptz NOT NULL DEFAULT now(),resolved_at timestamptz,PRIMARY KEY(kind,ref));
     CREATE TABLE keeper_audit(id bigserial PRIMARY KEY,operation_id uuid,action text NOT NULL,actor text NOT NULL,input jsonb NOT NULL DEFAULT '{}'::jsonb,outcome text NOT NULL,detail text,at timestamptz NOT NULL DEFAULT now(),completed_at timestamptz);
     CREATE TABLE ratchet(agent text,capability text,action text,level text,updated_by text NOT NULL DEFAULT 'fixture',updated_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE ratchet_audit(id bigserial PRIMARY KEY,agent text NOT NULL,capability text NOT NULL,action text NOT NULL,
@@ -1608,6 +1609,24 @@ describe('a lookup under the owner\'s standing trust',()=>{
   const f=await trustedFixture();ids.outsideDispatch.mockRejectedValue(new Error('provider down'));
   await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
   const rows=await audits();expect(rows).toHaveLength(1);expect(rows[0]!.outcome).toBe('failed');
+ });
+ it('says so loudly and opens a repair when the audit row cannot be closed, instead of leaving a run pending unnoticed',async()=>{
+  const f=await trustedFixture();
+  const logged=vi.spyOn(console,'error').mockImplementation(()=>{});
+  ids.outsideDispatch.mockImplementation(async()=>{
+   // The audit table disappears for the closing write only.
+   await pool.query('ALTER TABLE keeper_audit RENAME TO keeper_audit_away');
+   setTimeout(()=>{void pool.query('ALTER TABLE keeper_audit_away RENAME TO keeper_audit').catch(()=>{});},300);
+   return {content:[{type:'text',text:'Fixture result'}]};
+  });
+  try{
+   await runtime('outside.run-trusted',{...f.binding,call:f.call});
+   await new Promise(resolve=>setTimeout(resolve,600));
+   expect(logged.mock.calls.map(c=>String(c[0])).join('\n')).toMatch(/could not close the audit row/);
+   const repairs=await pool.query("SELECT kind,severity,what FROM repairs WHERE kind='outside-audit-open'");
+   expect(repairs.rows).toHaveLength(1);expect(repairs.rows[0].severity).toBe('error');
+   expect((await audits())[0]!.outcome).toBe('pending');
+  }finally{logged.mockRestore();await pool.query('ALTER TABLE IF EXISTS keeper_audit_away RENAME TO keeper_audit').catch(()=>{});}
  });
  it.each(['session','member','nonce'])('refuses a call under the wrong %s, before any custody call',async(kind)=>{
   const f=await trustedFixture();

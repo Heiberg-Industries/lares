@@ -96,7 +96,7 @@ beforeAll(async () => {
     container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
     pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(readFileSync(join(repo, 'services/box/sql', '001_baseline.sql'), 'utf8'));
-    for (const migration of ['007_member_identity_sessions.sql', '013_console_turn_authority.sql', '014_agent_access_grants.sql', '029_outside_custody.sql', '035_agent_provider_keys.sql'])
+    for (const migration of ['007_member_identity_sessions.sql', '013_console_turn_authority.sql', '014_agent_access_grants.sql', '003_outside_tool_seen.sql', '029_outside_custody.sql', '035_agent_provider_keys.sql'])
         await pool.query(readFileSync(join(repo, 'services/box/sql', migration), 'utf8'));
     await pool.query(`INSERT INTO orgs(id,display_name) VALUES('connection-org','Connection test'),('connection-other-org','Other connection test');
         INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES
@@ -975,28 +975,49 @@ it('lists every console agent setting with its value and where it comes from', a
     expect(await runAction('settings.agent_environment_get', {}, asOwner('member@example.com'))).toMatchObject({ canChange: false });
 });
 
-it('re-stamps who switched a tool on, and when, on definition.save, ignoring what the client sent', async () => {
-    await create('bookkeeper', { definition: { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } } });
+it('takes a switch\'s fingerprint from the stored description, never the client\'s, and only for a member who can approve', async () => {
+    const { toolPinHash } = await import('@lares/agent-kit/outside-pins');
+    const { loaded, access, sessions } = await connectionFixture();
+    const stored = { name: 'find_rate', description: 'Finds a rate.', inputSchema: { type: 'object' } };
+    const storedPin = toolPinHash(stored);
+    const withTrust = (trusted: unknown[]) => ({ ...declaration, tools: { ...declaration.tools, trusted } });
     const forged = { tool: 'find_rate', pin: 'a'.repeat(64), by: 'someone-else', at: '2001-01-01T00:00:00.000Z' };
-    const withTrust = (trusted: unknown[]) => ({ name: 'rates', url: 'https://tools.example.org/mcp', description: 'Rates', token: false, tools: { allow: ['find_rate'], read: ['find_rate'], trusted } });
-    const read = async () => (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition.outsideTools![0]!.tools.trusted!;
-    const base = { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } };
+    const putPin = () => pool.query(`INSERT INTO outside_tool_pins(agent,tool,config_hash,pin_hash,pin_tools) VALUES('bookkeeper','rates',$1,$2,$3::jsonb)
+        ON CONFLICT (agent,tool) DO UPDATE SET pin_tools=EXCLUDED.pin_tools, seen_hash=NULL`, ['c'.repeat(64), 'd'.repeat(64), JSON.stringify([stored])]);
+    // No description stored yet: refused, with a plain reason.
+    await expect(connectionCall(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [withTrust([forged])])).rejects.toThrow(/has not read its description/);
+    await putPin();
+    // Edit access alone is not enough.
+    await expect(connectionCall(sessions.editor, 'bookkeeper', loaded.hash, access.accessRevision, [withTrust([forged])])).rejects.toThrow();
     const before = Date.now();
-    await runAction('definition.save', save('bookkeeper', { definition: { ...base, outsideTools: [withTrust([forged])] } }), ctx());
-    const [first] = await read();
-    expect(first).toMatchObject({ tool: 'find_rate', pin: 'a'.repeat(64), by: 'owner@example.com' });
-    expect(Date.parse(first!.at)).toBeGreaterThanOrEqual(before);
-    // Nothing is applied yet: another save with a different forged stamp is stamped again, never trusted.
-    await runAction('definition.save', save('bookkeeper', { definition: { ...base, outsideTools: [withTrust([{ ...forged, by: 'x', at: '2002-02-02T00:00:00.000Z' }])] } }), ctx());
-    expect((await read())[0]!.by).toBe('owner@example.com');
-    // Once the declaration is applied, a save that leaves the switch unchanged keeps its stored who and when; a forged change does not.
-    const applied = { ...(await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition };
-    const keep = { tool: 'find_rate', pin: 'a'.repeat(64), by: 'first-owner', at: '2026-01-01T00:00:00.000Z' };
+    const saved: any = await connectionCall(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [withTrust([forged])]);
+    const grant = saved.connections[0].tools.trusted[0];
+    expect(grant).toMatchObject({ tool: 'find_rate', pin: storedPin, by: 'owner@example.com' });
+    expect(grant.pin).not.toBe('a'.repeat(64));
+    expect(Date.parse(grant.at)).toBeGreaterThanOrEqual(before);
+    // Once applied, an unchanged switch (even sent as "bind to what is stored", or with forged values) keeps its stored who and when.
+    const keep = { tool: 'find_rate', pin: storedPin, by: 'first-owner', at: '2026-01-01T00:00:00.000Z' };
     await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,applied_definition,pending)
         VALUES('bookkeeper','172.18.0.31','lares_restamp','legacy',gen_random_uuid(),'ready',$1::jsonb,false)
-        ON CONFLICT (name) DO UPDATE SET applied_definition=EXCLUDED.applied_definition`, [JSON.stringify({ ...applied, outsideTools: [withTrust([keep])] })]);
-    await runAction('definition.save', save('bookkeeper', { definition: { ...base, outsideTools: [withTrust([{ ...keep, by: 'forged', at: '2030-01-01T00:00:00.000Z' }])] } }), ctx());
-    expect((await read())[0]).toEqual(keep);
-    await runAction('definition.save', save('bookkeeper', { definition: { ...base, outsideTools: [withTrust([{ ...keep, pin: 'b'.repeat(64), by: 'forged' }])] } }), ctx());
-    expect((await read())[0]).toMatchObject({ pin: 'b'.repeat(64), by: 'owner@example.com' });
+        ON CONFLICT (name) DO UPDATE SET applied_definition=EXCLUDED.applied_definition`, [JSON.stringify({ ...loaded.definition, outsideTools: [withTrust([keep])] })]);
+    const again: any = await connectionCall(sessions.owner, 'bookkeeper', saved.definitionHash, saved.accessRevision, [withTrust([{ ...forged, pin: '0'.repeat(64) }])]);
+    expect(again.connections[0].tools.trusted[0]).toEqual(keep);
+    // A description that has changed since is a new switch: new fingerprint, new stamp.
+    stored.description = 'Finds a rate, and more.';
+    await putPin();
+    const changed: any = await connectionCall(sessions.owner, 'bookkeeper', again.definitionHash, again.accessRevision, [withTrust([{ ...keep, pin: '0'.repeat(64) }])]);
+    expect(changed.connections[0].tools.trusted[0]).toMatchObject({ pin: toolPinHash(stored), by: 'owner@example.com' });
+});
+it('on definition.save, only the host or the administrator may add a switch, and the fingerprint still comes from the stored description', async () => {
+    const { toolPinHash } = await import('@lares/agent-kit/outside-pins');
+    await create('bookkeeper', { definition: { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } } });
+    const stored = { name: 'find_rate', description: 'Finds a rate.', inputSchema: { type: 'object' } };
+    await pool.query(`INSERT INTO outside_tool_pins(agent,tool,config_hash,pin_hash,pin_tools) VALUES('bookkeeper','rates',$1,$2,$3::jsonb) ON CONFLICT (agent,tool) DO UPDATE SET pin_tools=EXCLUDED.pin_tools, seen_hash=NULL`, ['c'.repeat(64), 'd'.repeat(64), JSON.stringify([stored])]);
+    const base = { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } };
+    const forged = { tool: 'find_rate', pin: 'a'.repeat(64), by: 'someone-else', at: '2001-01-01T00:00:00.000Z' };
+    const input = save('bookkeeper', { definition: { ...base, outsideTools: [{ ...declaration, tools: { ...declaration.tools, trusted: [forged] } }] } });
+    await expect(runAction('definition.save', input, ctx())).rejects.toThrow(/can approve/);
+    await runAction('definition.save', input, ctx(), { host: true });
+    const [grant] = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition.outsideTools![0]!.tools.trusted!;
+    expect(grant).toMatchObject({ tool: 'find_rate', pin: toolPinHash(stored), by: 'owner@example.com' });
 });

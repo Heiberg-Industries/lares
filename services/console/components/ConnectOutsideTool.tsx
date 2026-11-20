@@ -5,7 +5,7 @@ import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { Input } from "@lares/ui/primitives/input";
 import { Select } from "@lares/ui/primitives/select";
 import { useRef, useState, type FormEvent } from "react";
-import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage,
+import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSwitchOnTrust,
   type ConnectIdentity, type ConnectStep, type ConnectTool } from "../app/actions/outside-connect";
 import type { OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
 import { suggestConnectionName, toolNamesOf } from "../lib/outside-connect-words";
@@ -31,7 +31,7 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
   const [ticked, setTicked] = useState<string[]>(first ? [first] : []);
   const [rows, setRows] = useState<Row[]>([]), [serverName, setServerName] = useState("");
   const [items, setItems] = useState<Item[]>([]), [failure, setFailure] = useState<{ message: string; retryable: boolean } | null>(null);
-  const [error, setError] = useState(""), [cleanup, setCleanup] = useState("");
+  const [error, setError] = useState(""), [cleanup, setCleanup] = useState(""), [switchResult, setSwitchResult] = useState("");
   const plan = useRef<Plan>([]), next = useRef(0), after = useRef<() => void>(() => {});
   const settings = useRef<Settings | null>(null), seen = useRef<ConnectTool[] | undefined>(undefined);
 
@@ -87,7 +87,7 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
     const primary = chosen.agents[0]!;
     start([
       { label: `Save the connection on ${primary}`, run: () => connectDeclare({ agent: primary, provisional: true, connection: { name: chosen.name, url: chosen.url, description: chosen.description,
-        token: true, trustedTools: [], allow: [], read: [] } }) },
+        token: true, allow: [], read: [] } }) },
       { label: "Ask the server which tools it offers", run: async () => {
         const result = await connectLookUpTools({ agent: primary, name: chosen.name, credential: token });
         if (result.ok) {
@@ -107,7 +107,7 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
     setError("");
     const connection = { name: chosen.name, url: chosen.url, description: chosen.description, token: chosen.hasToken,
       allow: use.map(r => r.name), read: use.filter(r => r.kind === "read").map(r => r.name),
-      trustedTools: use.filter(r => r.kind === "read" && r.free && r.seen).map(r => ({ name: r.name, description: r.description, inputSchema: r.inputSchema })) };
+    };
     const steps: Plan = [];
     for (const agent of chosen.agents) {
       if (!chosen.hasToken) { steps.push({ label: `Save the connection on ${agent} and apply it`, run: () => connectDeclare({ agent, provisional: false, connection }) }); continue; }
@@ -126,6 +126,18 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
       );
     }
     start(steps, () => { setToken(""); setPhase("done"); });
+  }
+
+  /** After connecting. The keeper takes each tool's fingerprint from the description the agent has stored, so this works once the agent has read the tool list. */
+  async function switchOn() {
+    const chosen = settings.current; if (!chosen) return;
+    const names = rows.filter(r => r.use && r.kind === "read" && r.free && r.seen).map(r => r.name);
+    const lines: string[] = [];
+    for (const agent of chosen.agents) {
+      const r = await connectSwitchOnTrust({ agent, name: chosen.name, tools: names });
+      lines.push(r.ok ? `${agent}: switched on for ${r.value.switchedOn.length ? r.value.switchedOn.join(", ") : "nothing new (already on)"}` : `${agent}: ${r.message}`);
+    }
+    setSwitchResult(lines.join(". "));
   }
 
   async function cancelConfirmation() {
@@ -178,7 +190,7 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
 
     {phase === "confirm" && <div className="lares-stack">
       <h2 className="lares-section-title">{serverName ? `${serverName} offers ${rows.length} tool${rows.length === 1 ? "" : "s"}` : "Tools you chose"}</h2>
-      <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Tools the server itself marks as read-only start as “only looks things up” and with “Run without asking” ticked; the rest start as “changes something” and always ask you first. Switching “Run without asking” on is recorded as your own decision, with the time, and you can change it later on the connection's page. A tool that changes something can never run without asking. If the server later changes a tool's description, that tool stops until you review it again.</p>
+      <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Tools the server itself marks as read-only start as “only looks things up” and with “Run without asking” ticked; the rest start as “changes something” and always ask you first. The ticks are your choice now; Lares switches them on after the agent has read the server's tool list for the first time (the button appears when you are connected), records it as your own decision with the time, and you can change it later on the connection's page. A tool that changes something can never run without asking. If the server later changes a tool's description, that tool stops until you review it again.</p>
       {!serverName && <p>Lares has not seen these tools yet. Their descriptions are recorded the first time the agent connects, and a later change pauses the tool.</p>}
       <ul className="lares-data-list">{rows.map((row, i) => <li key={row.name} className="lares-stack">
         <Choice><Checkbox checked={row.use} onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, use: e.target.checked } : r))} /> <strong>{row.name}</strong></Choice>
@@ -197,6 +209,11 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
     {phase === "done" && <div className="lares-stack">
       <Progress items={items} />
       <Notice>Connected. {settings.current?.agents.join(", ")} can now use {rows.filter(r => r.use).length} tool{rows.filter(r => r.use).length === 1 ? "" : "s"} from {serverName || settings.current?.name}. Tools you did not switch on to run without asking still ask you first. This does not yet prove the server answers: ask the agent to look something up to try it.</Notice>
+      {rows.some(r => r.use && r.kind === "read" && r.free && r.seen) && <div className="lares-stack">
+        <p>You ticked “Run without asking” for {rows.filter(r => r.use && r.kind === "read" && r.free && r.seen).map(r => r.name).join(", ")}. It can be switched on once the agent has read the server's tool list: ask the agent for a look-up once, then press the button.</p>
+        <div className="lares-actions"><Button type="button" onClick={() => void switchOn()}>Switch on Run without asking</Button></div>
+        {switchResult && <p role="status">{switchResult}</p>}
+      </div>}
       <div className="lares-actions"><Button type="button" variant="outline" onClick={reset}>Connect another</Button></div>
     </div>}
   </section>;

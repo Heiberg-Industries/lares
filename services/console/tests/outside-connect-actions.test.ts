@@ -12,15 +12,14 @@ vi.mock("../lib/keeper-client", () => ({
     constructor(message: string, readonly outcomeMayBeUnknown = false) { super(message); this.name = "KeeperUnavailableError"; }
   },
 }));
-import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage } from "../app/actions/outside-connect";
+import { connectActivateCredential, connectApplyAgent, connectDeclare, connectSwitchOnTrust, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage } from "../app/actions/outside-connect";
 import { KeeperRefusedError, KeeperUnavailableError } from "../lib/keeper-client";
 import { PENDING_TOOL } from "../lib/outside-connect-words";
-import { toolPinHash } from "@lares/agent-kit/outside-pins";
 
 const session = "A".repeat(43), actor = "member@example.test", secret = "tok-SECRET-value";
 const h = (c: string) => c.repeat(64);
 const id = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
-const connection = { name: "rates", url: "https://tools.example.org/mcp", description: "Rates", token: true, trustedTools: [], allow: ["find_rate"], read: ["find_rate"] };
+const connection = { name: "rates", url: "https://tools.example.org/mcp", description: "Rates", token: true, allow: ["find_rate"], read: ["find_rate"] };
 const declared = (allow: string[], read: string[] = []) => ({ name: "rates", url: connection.url, description: "Rates", token: true, tools: { allow, read } });
 const state = (over: Record<string, unknown> = {}) => ({ name: "worker", definitionHash: h("a"), accessRevision: 2, connections: [], applicationStatus: "applied", appliedConnections: [], ...over });
 const tool = { name: "find_rate", description: "Looks up a rate", inputSchema: { type: "object", properties: { id: { type: "string" } } } };
@@ -64,14 +63,6 @@ describe("connect: declare", () => {
     expect(result).toEqual({ ok: true, value: { definitionHash: h("a"), accessRevision: 2, applied: false } });
     expect(calls()).toEqual(["outside.connections.get", "outside.connections.save"]);
     expect(mocks.keeper.mock.calls[1]![1].connections).toEqual([declared(["find_rate"], ["find_rate"])]);
-  });
-  it("records a switched-on lookup bound to the description the owner saw, and never one for a tool that changes something", async () => {
-    mocks.keeper.mockResolvedValueOnce(state()).mockResolvedValueOnce(state({ applicationStatus: "pending" }));
-    await connectDeclare({ agent: "worker", provisional: false, applyNow: false, connection: { ...connection, allow: ["find_rate", "set_rate"], read: ["find_rate"],
-      trustedTools: [{ name: "find_rate", description: tool.description, inputSchema: tool.inputSchema }, { name: "set_rate", description: "Changes a rate" }] } });
-    const sent = mocks.keeper.mock.calls[1]![1].connections[0].tools;
-    expect(sent.trusted).toHaveLength(1);
-    expect(sent.trusted[0]).toMatchObject({ tool: "find_rate", pin: toolPinHash(tool) });
   });
   it("shows the keeper's own reason when it refuses, and offers a retry", async () => {
     mocks.keeper.mockResolvedValueOnce(state()).mockRejectedValueOnce(new KeeperRefusedError("[outside-tools] the grant is read-only but set_rate is allowed and not marked read",
@@ -119,9 +110,9 @@ describe("connect: review and stage", () => {
   const acceptance = { acceptanceId: id(5), publicationHash: h("f"), acceptanceHash: h("9") };
   const receipt = { staged: true, activationReviewId: id(6), activationReviewHash: h("1"), expectedPolicyHash: h("2"), stageOperationId: id(7), candidateRevision: 1 };
   it("records, accepts and stages exactly the descriptions the owner was shown", async () => {
-    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(state()).mockResolvedValueOnce(publication).mockResolvedValueOnce(review).mockResolvedValueOnce(acceptance).mockResolvedValueOnce(receipt);
+    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(publication).mockResolvedValueOnce(review).mockResolvedValueOnce(acceptance).mockResolvedValueOnce(receipt);
     const result = await connectReviewAndStage({ identity, seen: document.tools });
-    expect(calls()).toEqual(["outside.discovery-review-preview", "outside.connections.get", "outside.discovery-review-publish", "outside.discovery-review-preview", "outside.discovery-review-accept", "outside.candidate-stage"]);
+    expect(calls()).toEqual(["outside.discovery-review-preview", "outside.discovery-review-publish", "outside.discovery-review-preview", "outside.discovery-review-accept", "outside.candidate-stage"]);
     expect(result).toMatchObject({ ok: true, value: { candidateRevision: 1, activationReviewId: id(6), publicationId: id(4), acceptanceId: id(5), expectedDefinitionHash: h("e") } });
   });
   it("accepts nothing when the server now describes a tool differently from what the owner read", async () => {
@@ -136,15 +127,8 @@ describe("connect: review and stage", () => {
     expect(await connectReviewAndStage({ identity, seen: [] })).toMatchObject({ ok: false, retryable: false });
     expect(calls()).toEqual(["outside.discovery-review-preview"]);
   });
-  it("accepts nothing, and says why, when a run-without-asking switch was made for a different description than the keeper recorded", async () => {
-    const staleSwitch = { ...declared(["find_rate"], ["find_rate"]), tools: { allow: ["find_rate"], read: ["find_rate"], trusted: [{ tool: "find_rate", pin: h("0"), by: "m", at: "2026-11-20T10:00:00.000Z" }] } };
-    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(state({ connections: [staleSwitch] }));
-    const result = await connectReviewAndStage({ identity, seen: document.tools });
-    expect(result).toMatchObject({ ok: false, retryable: false, message: expect.stringMatching(/Run without asking for find_rate.*different description/) });
-    expect(calls()).toEqual(["outside.discovery-review-preview", "outside.connections.get"]);
-  });
   it("stops when the descriptions move while they are being recorded", async () => {
-    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(state()).mockResolvedValueOnce(publication).mockResolvedValueOnce({ ...review, descriptorHash: h("0") });
+    mocks.keeper.mockResolvedValueOnce(review).mockResolvedValueOnce(publication).mockResolvedValueOnce({ ...review, descriptorHash: h("0") });
     expect(await connectReviewAndStage({ identity, seen: document.tools })).toMatchObject({ ok: false, retryable: false });
     expect(calls()).not.toContain("outside.discovery-review-accept");
   });
@@ -177,5 +161,22 @@ describe("connect: activate, apply, remove", () => {
     mocks.keeper.mockClear();
     mocks.keeper.mockResolvedValueOnce(state());
     expect(await connectRemoveDeclaration({ agent: "worker", name: "rates" })).toEqual({ ok: true, value: { removed: false } });
+  });
+});
+
+describe("connect: switch on run without asking", () => {
+  it("sends the lookups for the keeper to bind to its stored description, never a fingerprint of its own, then applies", async () => {
+    const current = { ...declared(["find_rate", "set_rate"], ["find_rate"]) };
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [current] })).mockResolvedValueOnce(state({ applicationStatus: "pending", connections: [current] })).mockResolvedValueOnce(state());
+    const result = await connectSwitchOnTrust({ agent: "worker", name: "rates", tools: ["find_rate", "set_rate"] });
+    expect(result).toEqual({ ok: true, value: { switchedOn: ["find_rate"] } });
+    expect(calls()).toEqual(["outside.connections.get", "outside.connections.save", "outside.connections.apply"]);
+    expect(mocks.keeper.mock.calls[1]![1].connections[0].tools.trusted).toEqual([expect.objectContaining({ tool: "find_rate", pin: "0".repeat(64) })]);
+  });
+  it("shows the keeper's own reason when it refuses", async () => {
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [declared(["find_rate"], ["find_rate"])] }))
+      .mockRejectedValueOnce(new KeeperRefusedError('"find_rate" cannot run without asking yet: the agent has not read its description from the server.'));
+    const result = await connectSwitchOnTrust({ agent: "worker", name: "rates", tools: ["find_rate"] });
+    expect(result).toMatchObject({ ok: false, message: expect.stringMatching(/has not read its description/) });
   });
 });

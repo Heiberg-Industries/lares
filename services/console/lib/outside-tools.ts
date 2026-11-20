@@ -123,15 +123,3 @@ export async function anyOutsideToolsInUse(): Promise<boolean | null> {
   }
 }
 
-/** The descriptions the agent has pinned for one connection, or null when none are kept (the agent has not
- *  connected yet, or they were too long to keep). A tool can be switched on to run without asking only
- *  against a description that has been seen. */
-export async function pinnedToolsFor(agent: string, connection: string): Promise<DescribedTool[] | null> {
-  try {
-    const { rows } = await pool.query<{ pin_tools: unknown }>(
-      `SELECT pin_tools FROM outside_tool_pins WHERE agent = $1 AND tool = $2 AND seen_hash IS NULL`, [agent, connection]);
-    return rows.length === 1 ? described(rows[0]!.pin_tools) : null;
-  } catch {
-    return null;
-  }
-}

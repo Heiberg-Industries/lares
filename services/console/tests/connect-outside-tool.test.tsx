@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-const mocks = vi.hoisted(() => ({ declare: vi.fn(), lookUp: vi.fn(), review: vi.fn(), activate: vi.fn(), apply: vi.fn(), remove: vi.fn() }));
+const mocks = vi.hoisted(() => ({ declare: vi.fn(), lookUp: vi.fn(), review: vi.fn(), activate: vi.fn(), apply: vi.fn(), remove: vi.fn(), switchOn: vi.fn() }));
 vi.mock("../app/actions/outside-connect", () => ({ connectDeclare: mocks.declare, connectLookUpTools: mocks.lookUp, connectReviewAndStage: mocks.review,
-  connectActivateCredential: mocks.activate, connectApplyAgent: mocks.apply, connectRemoveDeclaration: mocks.remove, connectListAgents: vi.fn() }));
+  connectActivateCredential: mocks.activate, connectApplyAgent: mocks.apply, connectRemoveDeclaration: mocks.remove, connectListAgents: vi.fn(), connectSwitchOnTrust: mocks.switchOn }));
 import { ConnectOutsideTool } from "../components/ConnectOutsideTool";
 
 const agents = [{ name: "alpha", displayName: "Alpha" }, { name: "worker", displayName: "Worker" }];
@@ -21,6 +21,7 @@ beforeEach(() => {
   mocks.activate.mockResolvedValue(ok({ credentialRevision: 1 }));
   mocks.apply.mockResolvedValue(ok({ applied: true }));
   mocks.remove.mockResolvedValue(ok({ removed: true }));
+  mocks.switchOn.mockResolvedValue(ok({ switchedOn: ["find_company"] }));
 });
 afterEach(cleanup);
 
@@ -57,24 +58,24 @@ describe("ConnectOutsideTool", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await screen.findByText(/Connected\./);
     expect(mocks.declare.mock.calls[1]![0]).toMatchObject({ agent: "alpha", provisional: false, applyNow: false,
-      connection: { name: "example", token: true, allow: ["find_company"], read: ["find_company"],
-        trustedTools: [expect.objectContaining({ name: "find_company" })] } });
+      connection: { name: "example", token: true, allow: ["find_company"], read: ["find_company"] } });
     expect(mocks.lookUp).toHaveBeenCalledTimes(2);
     expect(mocks.review).toHaveBeenCalledWith({ identity, seen: tools });
     expect(mocks.activate).toHaveBeenCalledTimes(1);
     expect(mocks.apply).toHaveBeenCalledWith({ agent: "alpha" });
     expect(screen.getByText(/Tools you did not switch on to run without asking still ask you first/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Switch on Run without asking" })).toBeTruthy();
     expect(document.body.textContent).not.toContain("tok-SECRET");
   });
 
-  it("the owner can switch a lookup off before connecting, and a tool that changes something cannot be switched on", async () => {
+  it("offers the switch-on only for lookups the owner left ticked, and calls the keeper's action for them once connected", async () => {
     render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
     await fillToken();
-    fireEvent.click(screen.getAllByLabelText(/Run without asking/)[0]!);
     fireEvent.click(screen.getByLabelText("push_lead"));
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await screen.findByText(/Connected\./);
-    expect(mocks.declare.mock.calls[1]![0].connection.trustedTools).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Switch on Run without asking" }));
+    await waitFor(() => expect(mocks.switchOn).toHaveBeenCalledWith({ agent: "alpha", name: "example", tools: ["find_company"] }));
   });
 
   it("says which step failed and why, and a retry continues from that step", async () => {

@@ -11,7 +11,6 @@
 import { cookies } from "next/headers";
 import { z } from "zod";
 import { outsideToolSchema, type OutsideToolDeclaration } from "@lares/agent-kit/definition";
-import { toolPinHash } from "@lares/agent-kit/outside-pins";
 import { memberAuditAddress, requireConsoleMember, sessionMember } from "../../lib/auth";
 import { listAgents } from "../../lib/agents";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
@@ -19,7 +18,7 @@ import { keeperReason } from "../../lib/keeper-reason";
 import { parseOutsideDescriptorAcceptance, parseOutsideDescriptorPublication, parseOutsideDescriptorReview, parseOutsideDiscoveryDocument,
   parseOutsideDiscoveryInspection, parseOutsideDiscoveryPreview, type OutsideDescriptorReviewDto, type OutsideDiscoveryDocumentDto,
   type OutsidePendingApplyDto } from "../../lib/outside-discovery-dto";
-import { PENDING_TOOL } from "../../lib/outside-connect-words";
+import { PENDING_TOOL, BIND_TO_PINNED } from "../../lib/outside-connect-words";
 
 /** `retryable: false`: pressing the same step again would be wrong (a token may already have been sent, or what the owner
  *  read is out of date), so the screen offers only "start again". */
@@ -33,8 +32,6 @@ const uuid = z.string().uuid();
 const identitySchema = z.strictObject({ accountId: uuid, agentName: nameSchema, connectionName: nameSchema, requestId: uuid, claimOperationId: uuid });
 const connectionSchema = z.strictObject({
   name: nameSchema, url: z.string().min(1).max(2048), description: z.string().min(1).max(500), token: z.boolean(),
-  /** Tools the owner switched on to run without asking, with the description and schema the owner saw. */
-  trustedTools: z.array(z.strictObject({ name: z.string().min(1), description: z.string().optional(), inputSchema: z.unknown().optional() })).max(200),
   allow: z.array(z.string().min(1)).max(200), read: z.array(z.string().min(1)).max(200),
 });
 const stateSchema = z.object({ definitionHash: z.string().regex(/^[a-f0-9]{64}$/), accessRevision: z.number().int().positive(),
@@ -69,10 +66,7 @@ async function read(who: { sessionToken: string; actor: string }, agent: string)
 }
 
 function declarationOf(c: z.infer<typeof connectionSchema>): OutsideToolDeclaration {
-  // Only a tool that looks things up can run without asking. The keeper writes who and when; "pending" is a placeholder it replaces.
-  const trusted = c.trustedTools.filter(t => c.read.includes(t.name) && c.allow.includes(t.name))
-    .map(t => ({ tool: t.name, pin: toolPinHash({ name: t.name, description: t.description, inputSchema: t.inputSchema }), by: "pending", at: new Date(0).toISOString() }));
-  return { name: c.name, url: c.url, description: c.description, token: c.token, tools: { allow: c.allow, read: c.read, ...(trusted.length ? { trusted } : {}) } };
+  return { name: c.name, url: c.url, description: c.description, token: c.token, tools: { allow: c.allow, read: c.read } };
 }
 
 /** Agents the owner can tick. The keeper decides, per agent, whether the member may edit it. */
@@ -171,14 +165,6 @@ export async function connectReviewAndStage(input: { identity: ConnectIdentity; 
       const changed = review.descriptor.tools.filter(t => { const before = seen.get(t.name); return !before || before.description !== t.description || !sameBytes(before.inputSchema, t.inputSchema); });
       if (changed.length) throw new StepFailure(`The server now describes ${changed.map(t => t.name).join(", ")} differently from what you were shown. Nothing was accepted. Start again to read the new descriptions.`, false);
     }
-    // The pin of each "run without asking" switch was made from what the browser was shown. Before anything is accepted it is
-    // checked against what the keeper itself recorded; a difference is said out loud, never left to fail silently later.
-    const saved = (await read(who, identity.agentName)).connections.find(c => c.name === identity.connectionName);
-    const stale = (saved?.tools.trusted ?? []).filter(g => {
-      const reviewed = review.descriptor.tools.find(t => t.name === g.tool);
-      return !reviewed || toolPinHash({ name: reviewed.name, description: reviewed.description, inputSchema: reviewed.inputSchema }) !== g.pin;
-    });
-    if (stale.length) throw new StepFailure(`Run without asking for ${stale.map(g => g.tool).join(", ")} was switched on for a different description than the one the keeper recorded. Nothing was accepted. Start again to read the current descriptions.`, false);
     const publication = parseOutsideDescriptorPublication(await keeper<unknown>("outside.discovery-review-publish", { ...base,
       expectedGeneration: review.expectedGeneration, expectedDescriptorHash: review.descriptorHash }, who.actor));
     if (!publication) throw new StepFailure("The keeper's record of the descriptions was not understood. Press Try again.");
@@ -248,5 +234,32 @@ export async function connectRemoveDeclaration(input: { agent: string; name: str
     if (saved.applicationStatus !== "applied")
       await keeper<unknown>("outside.connections.apply", { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: saved.definitionHash, expectedAccessRevision: saved.accessRevision }, who.actor, TIMEOUT);
     return { removed: true };
+  });
+}
+
+/**
+ * Switches "run without asking" on for lookups, after the connection exists. The keeper does the real work: it takes each tool's
+ * fingerprint from the description the agent has stored (never from here), refuses a tool nobody has read yet, and refuses anyone
+ * who could not approve the agent's outside calls. A refusal is shown in the keeper's own words.
+ */
+export async function connectSwitchOnTrust(input: { agent: string; name: string; tools: string[] }): Promise<ConnectStep<{ switchedOn: string[] }>> {
+  await requireConsoleMember();
+  const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, tools: z.array(z.string().min(1)).min(1).max(200) }).safeParse(input);
+  if (!parsed.success) return fail("The tool list is not valid.");
+  const { agent, name, tools } = parsed.data;
+  return step("Run without asking could not be switched on.", async (who) => {
+    const state = await read(who, agent);
+    const current = state.connections.find(c => c.name === name);
+    if (!current) throw new StepFailure("This connection is not on the agent any more.", false);
+    const wanted = tools.filter(t => current.tools.read.includes(t) && current.tools.allow.includes(t));
+    const kept = current.tools.trusted ?? [];
+    const added = wanted.filter(t => !kept.some(k => k.tool === t)).map(tool => ({ tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() }));
+    const next = { ...current, tools: { ...current.tools, trusted: [...kept, ...added] } };
+    const connections = [...state.connections.filter(c => c.name !== name), next];
+    const saved = stateSchema.parse(await keeper<unknown>("outside.connections.save",
+      { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: state.definitionHash, expectedAccessRevision: state.accessRevision, connections }, who.actor, TIMEOUT));
+    if (saved.applicationStatus !== "applied")
+      await keeper<unknown>("outside.connections.apply", { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: saved.definitionHash, expectedAccessRevision: saved.accessRevision }, who.actor, TIMEOUT);
+    return { switchedOn: added.map(a => a.tool) };
   });
 }

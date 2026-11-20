@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ cookies: vi.fn(), sessionMember: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn(), pinned: vi.fn() }));
-vi.mock("../lib/outside-tools", () => ({ pinnedToolsFor: (...a: unknown[]) => mocks.pinned(...a) }));
+const mocks = vi.hoisted(() => ({ cookies: vi.fn(), sessionMember: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn() }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
 vi.mock("../lib/auth", () => ({ sessionMember: mocks.sessionMember, memberAuditAddress: mocks.memberAuditAddress }));
 vi.mock("../lib/keeper-client", () => ({
@@ -9,7 +8,6 @@ vi.mock("../lib/keeper-client", () => ({
     constructor(message: string, readonly findings?: { check: string; message: string }[]) { super(message); }
   },
 }));
-import { toolPinHash } from "@lares/agent-kit/outside-pins";
 import { applyOutsideConnections, getOutsideConnections, saveOutsideConnections } from "../app/actions/outside-connections";
 
 const token = "A".repeat(43);
@@ -37,20 +35,6 @@ describe("outside connection console actions", () => {
     expect(mocks.keeper).toHaveBeenCalledWith("outside.connections.save", expect.objectContaining({ sessionToken: token, connections: [connection] }), "member@example.test", { timeoutMs: 90_000 });
     await expect(saveOutsideConnections({ name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2,
       connections: [{ ...connection, credential: "forbidden" }] })).rejects.toThrow("Connection details are invalid.");
-  });
-
-  it("binds a newly switched-on lookup to the description the agent has pinned, and refuses one nobody has seen", async () => {
-    const wanted = { ...connection, tools: { ...connection.tools, trusted: [{ tool: "find_rate", pin: "0".repeat(64), by: "pending", at: "1970-01-01T00:00:00.000Z" }] } };
-    const input = { name: "bookkeeper", expectedDefinitionHash: "a".repeat(64), expectedAccessRevision: 2, connections: [wanted] };
-    mocks.pinned.mockResolvedValueOnce(null);
-    const refused = await saveOutsideConnections(input);
-    expect(refused.ok).toBe(false);
-    expect(mocks.keeper).not.toHaveBeenCalled();
-    mocks.pinned.mockResolvedValueOnce([{ name: "find_rate", description: "Looks up a rate", inputSchema: { type: "object" } }]);
-    await saveOutsideConnections(input);
-    const sent = mocks.keeper.mock.calls[0]![1].connections[0].tools.trusted[0];
-    expect(sent.pin).toBe(toolPinHash({ name: "find_rate", description: "Looks up a rate", inputSchema: { type: "object" } }));
-    expect(sent.pin).not.toBe("0".repeat(64));
   });
 
   it("uses the current session and bounded timeout for Apply, and rejects malformed selectors", async () => {

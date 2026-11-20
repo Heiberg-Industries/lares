@@ -248,7 +248,8 @@
         "outside-connect.connectListAgents",
         "outside-connect.connectLookUpTools",
         "outside-connect.connectRemoveDeclaration",
-        "outside-connect.connectReviewAndStage"
+        "outside-connect.connectReviewAndStage",
+        "outside-connect.connectSwitchOnTrust"
       ],
       "routes": []
     },
@@ -989,6 +990,16 @@
     },
     {
       "id": "outside-connect.connectReviewAndStage",
+      "kind": "action",
+      "file": "app/actions/outside-connect.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/connect-outside-tool"],
+      "see": "owner"
+    },
+    {
+      "id": "outside-connect.connectSwitchOnTrust",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
       "act": "owner",

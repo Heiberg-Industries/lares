@@ -18,6 +18,7 @@ import { NOTE_LIST_PAGE, NoteNotFoundError, visibleTo, type Reader, type StoreNa
 import { boundText, DEFAULT_READ_LIMIT } from '@lares/agent-kit/bounded-text';
 import { requireBoundExactApproval } from '@lares/agent-kit/approval-execution';
 import { outsideApprovalAdapter } from '@lares/agent-kit/outside-approval';
+import { openRepair } from '@lares/agent-kit/repairs';
 import { outsideToolsInEffect, trustGrantFor } from '@lares/agent-kit/outside-tools';
 import { entryConfigHash, toolPinHash } from '@lares/agent-kit/outside-pins';
 import { autonomyOf } from '@lares/agent-kit/manifest';
@@ -277,7 +278,18 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    const assertCurrent=()=>{assertNotAborted();if(expiresAt<=Date.now())throw new Error('expired')};assertCurrent();
    // The same custody path as an approved call: a one-use receipt, then dispatch. No new way for the token to move.
    // The audit row was written as 'pending' before any custody call; it ends as what really happened.
-   const finish=(outcome:'ok'|'failed',detail:string)=>pool.query("UPDATE keeper_audit SET outcome=$2,detail=$3,completed_at=now() WHERE operation_id=$1 AND outcome='pending'",[auditId,outcome,detail]).catch(()=>undefined);
+   // A run must never stay 'pending' unnoticed: if the closing write fails, say so loudly and open a repair.
+   const finish=async(outcome:'ok'|'failed',detail:string)=>{
+    try{
+     const done=await pool.query("UPDATE keeper_audit SET outcome=$2,detail=$3,completed_at=now() WHERE operation_id=$1 AND outcome='pending' RETURNING operation_id",[auditId,outcome,detail]);
+     if(done.rows.length!==1)throw new Error('the audit row was not pending');
+    }catch(error){
+     console.error(`keeper: could not close the audit row for a run under standing trust (${agent}, ${call.connectionName}__${call.toolName}, operation ${auditId}): ${error instanceof Error?error.message:'unknown error'}`);
+     await openRepair(pool as never,{kind:'outside-audit-open',ref:`${agent}:${auditId}`,severity:'error',
+      what:`${agent}: a lookup ran under standing trust but its audit record is still open`,
+      howToFix:'Check that the database is reachable and healthy. The record shows the lookup started; it is not known whether it finished.'});
+    }
+   };
    try{
     await socketOptions.outsideCustody.approveExecution(binding,call,{requestId:`standing-trust-${call.callId}`.slice(0,128),
      definitionHash:checked.hash,expiresAt},{deadlineAtMs:requestDeadline,assertCurrent});

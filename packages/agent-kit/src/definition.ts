@@ -178,7 +178,13 @@ function canonicalize(value: unknown): unknown {
 /** Stable identity of the whole definition — the three files together. A stored copy is
  *  compared with it to notice a hand edit; the keeper stores it on every save. */
 export function hashOf(loaded: Pick<LoadedDefinition, "definition" | "dutiesMd" | "voiceMd">): string {
-  const canonical = JSON.stringify(canonicalize(loaded.definition));
+  // The owner's "run without asking" switches are NOT part of the identity. Keeper binds a stored credential to this hash,
+  // so counting them would make switching a lookup on or off force the token to be reviewed and sent again. They are
+  // not credential scope: Keeper re-reads them from the applied definition on every call and checks them against the pin.
+  const d = loaded.definition;
+  const identity = d.outsideTools === undefined ? d
+    : { ...d, outsideTools: d.outsideTools.map(({ tools: { trusted: _trusted, ...tools }, ...entry }) => ({ ...entry, tools })) };
+  const canonical = JSON.stringify(canonicalize(identity));
   return createHash("sha256")
     .update(canonical).update("\n--\n")
     .update(loaded.dutiesMd).update("\n--\n")
