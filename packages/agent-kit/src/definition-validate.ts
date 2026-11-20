@@ -211,6 +211,13 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
       if (stray.length > 0) {
         out.push({ check: "outside-tools", message: `outside tool "${t.name}": read lists ${stray.join(", ")}, which are not in allow — read must be a subset of allow` });
       }
+      const notRead = (t.tools.trusted ?? []).map((x) => x.tool).filter((x) => !t.tools.read.includes(x));
+      if (notRead.length > 0) {
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": ${notRead.join(", ")} cannot run without asking, because it is not marked as only looking things up — a tool that changes something always asks you first` });
+      }
+      if (new Set((t.tools.trusted ?? []).map((x) => x.tool)).size !== (t.tools.trusted ?? []).length) {
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": a tool is listed twice under run-without-asking` });
+      }
       if (grant?.scope === "read") {
         const reads = new Set(t.tools.read);
         const writes = t.tools.allow.filter((x) => !reads.has(x));

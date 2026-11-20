@@ -1,5 +1,5 @@
 import { createConnection, createServer, type Socket } from 'node:net';
-import { randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import { chmod, chown, lstat, mkdir, unlink, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -18,6 +18,10 @@ import { NOTE_LIST_PAGE, NoteNotFoundError, visibleTo, type Reader, type StoreNa
 import { boundText, DEFAULT_READ_LIMIT } from '@lares/agent-kit/bounded-text';
 import { requireBoundExactApproval } from '@lares/agent-kit/approval-execution';
 import { outsideApprovalAdapter } from '@lares/agent-kit/outside-approval';
+import { openRepair } from '@lares/agent-kit/repairs';
+import { outsideToolsInEffect, trustGrantFor } from '@lares/agent-kit/outside-tools';
+import { entryConfigHash, toolPinHash } from '@lares/agent-kit/outside-pins';
+import { autonomyOf } from '@lares/agent-kit/manifest';
 import { outsidePayloadHash } from '@lares/agent-kit/outside-execution-receipts';
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
 import { turnAuthoritySchema, vaultWriteBindingSchema } from '@lares/agent-kit/authority-contract';
@@ -222,7 +226,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
  }
  async function runtimeHandle(line:string,signal:AbortSignal):Promise<Record<string,unknown>>{
   const operation=object(JSON.parse(line)).op;
-  const requestDeadline=Date.now()+(operation==='outside.execute'?8000:operation==='vault.scheduled'?SCHEDULED_VAULT_DEADLINE_MS:1700),transactionDeadline={deadlineAtMs:requestDeadline};
+  const requestDeadline=Date.now()+(operation==='outside.execute'||operation==='outside.run-trusted'?8000:operation==='vault.scheduled'?SCHEDULED_VAULT_DEADLINE_MS:1700),transactionDeadline={deadlineAtMs:requestDeadline};
   const assertNotAborted=()=>{if(signal.aborted||Date.now()>=requestDeadline)throw new Error('deadline')};assertNotAborted();
   const req=object(JSON.parse(line)),agent=req.agent,incarnation=req.incarnation,requestId=req.requestId,timestamp=req.timestamp,op=req.op,input=object(req.input);
   if(typeof agent!=='string'||!/^[a-z][a-z0-9-]{1,30}$/.test(agent)||typeof incarnation!=='string'||!/^[a-f0-9-]{36}$/.test(incarnation)||typeof requestId!=='string'||!/^[A-Za-z0-9_-]{32,64}$/.test(requestId)||!Number.isSafeInteger(timestamp)||Math.abs(Date.now()-Number(timestamp))>30_000||typeof op!=='string'||typeof req.mac!=='string')throw new Error('identity');
@@ -231,6 +235,69 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
   prune(Date.now(),turnNow());if(given.length!==expected.length||!timingSafeEqual(given,expected)||runtimeRequests.has(requestId)||runtimeRequests.size>=MAX_LIVE)throw new Error('signature');
   runtimeRequests.set(requestId,Date.now()+60_000);
   const active=await authorityTransaction(pool,async db=>{await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");return db.query("SELECT d.hash FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid'",[agent,incarnation])},transactionDeadline);assertNotAborted();if(active.rows.length!==1)throw new Error('runtime');
+  if(op==='outside.run-trusted'){
+   // A lookup the owner let run without a card. Nothing the runtime says is believed: the applied definition,
+   // the per-tool trust, the pin, the ratchet level and the session are all read here, and any doubt is a
+   // refusal (the runtime then raises an ordinary card on the next call, it never runs).
+   const requested=object(input.call);
+   if(Object.keys(requested).some(key=>!['callId','connectionName','toolName','input'].includes(key))||
+      typeof requested.callId!=='string'||typeof requested.connectionName!=='string'||typeof requested.toolName!=='string'||
+      typeof input.sessionId!=='string'||typeof input.memberId!=='string'||typeof input.admissionNonce!=='string'||
+      !socketOptions.outsideCustody)throw new Error('outside');
+   const call=requested as unknown as OutsideToolCallRequest,auditId=randomUUID();
+   outsidePayloadHash(call.toolName,call.input);
+   const tuple={agent,incarnation,sessionId:input.sessionId,memberId:input.memberId,admissionNonce:input.admissionNonce};
+   const checked=await authorityTransaction(pool,async db=>{
+    await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");
+    const rows=await db.query(`SELECT r.applied_definition,a.hash FROM agent_resources r JOIN agent_definitions a ON a.name=r.name
+     WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready'
+     AND NOT r.pending AND a.status='valid' AND r.applied_definition IS NOT NULL FOR SHARE OF r,a`,[agent,incarnation]);
+    if(rows.rows.length!==1)throw new Error('trust');
+    const definition=parseDefinition(rows.rows[0].applied_definition),entry=outsideToolsInEffect(definition).find(e=>e.name===call.connectionName);
+    const grantor=entry&&entry.tools.allow.includes(call.toolName)?trustGrantFor(entry,call.toolName):undefined;
+    if(!entry||!grantor)throw new Error('trust');
+    const board=await db.query("SELECT level FROM ratchet WHERE agent=$1 AND capability='outside' AND action='' FOR SHARE",[agent]);
+    if(!['gated','autonomous'].includes(String(board.rows[0]?.level??autonomyOf(definition,'outside'))))throw new Error('trust');
+    // The pin is what the owner reviewed. A different address or allow-list, or a description change the owner has not
+    // yet accepted (a recorded mismatch), ends the trust.
+    const pin=await db.query("SELECT config_hash,seen_hash,pin_tools FROM outside_tool_pins WHERE agent=$1 AND tool=$2 FOR SHARE",[agent,call.connectionName]);
+    if(pin.rows.length!==1||pin.rows[0].config_hash!==entryConfigHash(entry)||pin.rows[0].seen_hash!==null)throw new Error('trust');
+    // The description the owner switched this tool on for must be the one pinned now (pin_tools can be absent when too long: then no trust).
+    const pinned=Array.isArray(pin.rows[0].pin_tools)?(pin.rows[0].pin_tools as Array<{name:string;description?:string;inputSchema?:unknown}>).find(t=>t.name===call.toolName):undefined;
+    if(!pinned||toolPinHash(pinned)!==grantor.pin)throw new Error('trust');
+    const binding=await requireConsoleSessionBinding(tuple,db);
+    await db.query("INSERT INTO keeper_audit (operation_id,action,actor,input,outcome,detail,completed_at) VALUES ($1,'outside.run-trusted',$2,$3::jsonb,'pending',$4,NULL)",
+     [auditId,tuple.memberId,JSON.stringify({agent,connection:call.connectionName,tool:call.toolName,sessionId:tuple.sessionId,callId:call.callId,
+      trustGrantedBy:grantor.by,trustGrantedAt:grantor.at}),'started under the standing trust of the owner, no card']);
+    return {hash:String(rows.rows[0].hash),policyRevision:binding.policyRevision};
+   },transactionDeadline);
+   assertNotAborted();
+   const binding={agent,incarnation,sessionId:tuple.sessionId,memberId:tuple.memberId,admissionNonce:tuple.admissionNonce,
+    approverMemberId:tuple.memberId,policyRevision:checked.policyRevision};
+   const expiresAt=Math.min(Date.now()+60_000,requestDeadline);
+   const assertCurrent=()=>{assertNotAborted();if(expiresAt<=Date.now())throw new Error('expired')};assertCurrent();
+   // The same custody path as an approved call: a one-use receipt, then dispatch. No new way for the token to move.
+   // The audit row was written as 'pending' before any custody call; it ends as what really happened.
+   // A run must never stay 'pending' unnoticed: if the closing write fails, say so loudly and open a repair.
+   const finish=async(outcome:'ok'|'failed',detail:string)=>{
+    try{
+     const done=await pool.query("UPDATE keeper_audit SET outcome=$2,detail=$3,completed_at=now() WHERE operation_id=$1 AND outcome='pending' RETURNING operation_id",[auditId,outcome,detail]);
+     if(done.rows.length!==1)throw new Error('the audit row was not pending');
+    }catch(error){
+     console.error(`keeper: could not close the audit row for a run under standing trust (${agent}, ${call.connectionName}__${call.toolName}, operation ${auditId}): ${error instanceof Error?error.message:'unknown error'}`);
+     await openRepair(pool as never,{kind:'outside-audit-open',ref:`${agent}:${auditId}`,severity:'error',
+      what:`${agent}: a lookup ran under standing trust but its audit record is still open`,
+      howToFix:'Check that the database is reachable and healthy. The record shows the lookup started; it is not known whether it finished.'});
+    }
+   };
+   try{
+    await socketOptions.outsideCustody.approveExecution(binding,call,{requestId:`standing-trust-${call.callId}`.slice(0,128),
+     definitionHash:checked.hash,expiresAt},{deadlineAtMs:requestDeadline,assertCurrent});
+    assertCurrent();
+    const result=await socketOptions.outsideCustody.dispatchApproved(binding,call,{deadlineAtMs:requestDeadline,assertCurrent});
+    assertCurrent();await finish('ok','ran under the standing trust of the owner, no card');return {result};
+   }catch(error){await finish('failed','did not complete under the standing trust of the owner');throw error;}
+  }
   if(op==='outside.approve'||op==='outside.execute'){
    const requested=object(input.call);
    if(Object.keys(requested).some(key=>!['callId','connectionName','toolName','input'].includes(key))||

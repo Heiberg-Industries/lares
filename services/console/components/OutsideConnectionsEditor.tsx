@@ -1,5 +1,5 @@
 "use client";
-import { Choice, Field, PageHeader } from "@lares/ui/patterns";
+import { Choice, Field, FieldGroup, PageHeader } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { SaveEndsConversations } from "./SaveEndsConversations";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
@@ -9,15 +9,16 @@ import Link from "next/link";
 import { useState, type FormEvent } from "react";
 import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
 import { applyOutsideConnections, saveOutsideConnections, type OutsideConnectionsState } from "../app/actions/outside-connections";
+import { BIND_TO_PINNED } from "../lib/outside-connect-words";
 
 type Draft = {
   name: string; url: string; description: string; token: boolean;
-  allow: string; read: string; trusted: boolean; runsAt: string;
+  allow: string; read: string; free: string[]; runsAt: string;
 };
 const draftOf = (connection?: OutsideToolDeclaration): Draft => ({
   name: connection?.name ?? "", url: connection?.url ?? "", description: connection?.description ?? "",
   token: connection?.token ?? false, allow: connection?.tools.allow.join(", ") ?? "",
-  read: connection?.tools.read.join(", ") ?? "", trusted: connection?.trusted ?? false, runsAt: connection?.runsAt ?? "",
+  read: connection?.tools.read.join(", ") ?? "", free: (connection?.tools.trusted ?? []).map(t => t.tool), runsAt: connection?.runsAt ?? "",
 });
 const listOf = (value: string) => [...new Set(value.split(",").map(item => item.trim()).filter(Boolean))];
 
@@ -60,11 +61,17 @@ export function OutsideConnectionsEditor({ initial, running }: { initial: Outsid
         expectedAccessRevision: state.accessRevision, connections,
       });
       if (!result.ok) { setMessage(result.message); return; }
+      // A switch the keeper ended (its tool changed, or is no longer a lookup) is said out loud, not dropped quietly.
+      const had = state.connections.flatMap(c => (c.tools.trusted ?? []).map(t => `${c.name}/${t.tool}`));
+      const has = new Set(result.result.connections.flatMap(c => (c.tools.trusted ?? []).map(t => `${c.name}/${t.tool}`)));
+      const still = new Set(connections.flatMap(c => (c.tools.trusted ?? []).map(t => `${c.name}/${t.tool}`)));
+      const lost = had.filter(k => still.has(k) && !has.has(k));
       setState(result.result); setDraft(null); setEditing(null);
       // A save with nothing waiting is applied as it is saved; new conversations use it at once.
       setMessage(result.result.applicationStatus === "applied"
         ? "Saved. New conversations with this agent use these connection settings."
         : "Saved. The agent will use the saved connection settings after they are applied.");
+      if (lost.length) setMessage(m => `${m} Run without asking was switched off for ${lost.join(", ")} because the tool changed.`);
     } catch {
       setMessage("The change could not be confirmed. Refresh this page before trying again.");
     } finally { setBusy(false); }
@@ -73,9 +80,16 @@ export function OutsideConnectionsEditor({ initial, running }: { initial: Outsid
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!draft) return;
+    const allow = listOf(draft.allow), read = listOf(draft.read);
+    // Only a tool that looks things up can run without asking. Every ticked tool is bound, when the page saves, to the
+    // description the agent has pinned now: that restores trust after a description change in one save, and the keeper
+    // keeps the original who and when for a switch whose description did not change.
+    const trusted = draft.free.filter(tool => read.includes(tool) && allow.includes(tool))
+      .map(tool => ({ tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() }));
     const connection: OutsideToolDeclaration = {
       name: draft.name.trim(), url: draft.url.trim(), description: draft.description.trim(), token: draft.token,
-      tools: { allow: listOf(draft.allow), read: listOf(draft.read) }, trusted: draft.trusted,
+      // Always an explicit list, even an empty one: an absent list means "keep what is on", so only a list can switch one off.
+      tools: { allow, read, trusted },
       ...(draft.runsAt.trim() ? { runsAt: draft.runsAt.trim() } : {}),
     };
     const next = editing
@@ -116,7 +130,11 @@ export function OutsideConnectionsEditor({ initial, running }: { initial: Outsid
       <Field label="Tools this agent may use" hint="Enter tool names separated by commas."><Input required value={draft.allow} onChange={e => setDraft({ ...draft, allow: e.target.value })} /></Field>
       <Field label="Read-only tools" hint="Must be chosen from the allowed tools. Leave empty when all allowed tools make changes."><Input value={draft.read} onChange={e => setDraft({ ...draft, read: e.target.value })} /></Field>
       <Choice><Checkbox checked={draft.token} onChange={e => setDraft({ ...draft, token: e.target.checked })} /> This server requires a credential</Choice>
-      <Choice><Checkbox checked={draft.trusted} onChange={e => setDraft({ ...draft, trusted: e.target.checked })} /> Allow trusted lookups without asking</Choice>
+      {listOf(draft.read).filter(tool => listOf(draft.allow).includes(tool)).length > 0 && <FieldGroup legend="Run without asking">
+        <p className="lares-muted">Switching a lookup on is recorded as your own decision, with the time. A tool that changes something always asks, and a lookup asks again if the server changes its description.</p>
+        {listOf(draft.read).filter(tool => listOf(draft.allow).includes(tool)).map(tool => <Choice key={tool}><Checkbox checked={draft.free.includes(tool)}
+          onChange={e => setDraft({ ...draft, free: e.target.checked ? [...draft.free, tool] : draft.free.filter(x => x !== tool) })} /> {tool}</Choice>)}
+      </FieldGroup>}
       <Field label="Runs at (optional)"><Input maxLength={200} value={draft.runsAt} onChange={e => setDraft({ ...draft, runsAt: e.target.value })} /></Field>
       <div className="lares-actions"><Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save connections"}</Button><Button type="button" variant="outline" disabled={busy} onClick={() => { setDraft(null); setEditing(null); }}>Cancel</Button></div>
     </form>}

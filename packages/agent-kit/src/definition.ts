@@ -89,9 +89,13 @@ export const outsideToolSchema = z.strictObject({
     allow: z.array(z.string().min(1)).min(1),
     /** The subset of `allow` that only looks things up. */
     read: z.array(z.string().min(1)),
+    /** The tools the owner lets run without a card. Each is also in `read` (a tool that changes
+     *  something always asks; the definition check refuses otherwise). `by` is the member who
+     *  switched it on, `at` when, and `pin` the fingerprint of the tool's description and input schema as the
+     *  owner saw it (`toolPinHash`): a changed description no longer matches, so the trust is void. OPTIONAL WITH NO DEFAULT, like `outsideTools`, so an
+     *  untrusting entry keeps its hash. Trust ends when a tool's description changes. */
+    trusted: z.array(z.strictObject({ tool: z.string().min(1), by: z.string().min(1).max(256), at: z.string().datetime({ offset: true }), pin: z.string().regex(/^[a-f0-9]{64}$/) })).optional(),
   }),
-  /** The owner's decision that lookups may run freely. Changes always ask (runtime, not here). */
-  trusted: z.boolean().default(false),
   runsAt: z.string().min(1).optional(),
 });
 export type OutsideToolDeclaration = z.infer<typeof outsideToolSchema>;
@@ -174,7 +178,13 @@ function canonicalize(value: unknown): unknown {
 /** Stable identity of the whole definition — the three files together. A stored copy is
  *  compared with it to notice a hand edit; the keeper stores it on every save. */
 export function hashOf(loaded: Pick<LoadedDefinition, "definition" | "dutiesMd" | "voiceMd">): string {
-  const canonical = JSON.stringify(canonicalize(loaded.definition));
+  // The owner's "run without asking" switches are NOT part of the identity. Keeper binds a stored credential to this hash,
+  // so counting them would make switching a lookup on or off force the token to be reviewed and sent again. They are
+  // not credential scope: Keeper re-reads them from the applied definition on every call and checks them against the pin.
+  const d = loaded.definition;
+  const identity = d.outsideTools === undefined ? d
+    : { ...d, outsideTools: d.outsideTools.map(({ tools: { trusted: _trusted, ...tools }, ...entry }) => ({ ...entry, tools })) };
+  const canonical = JSON.stringify(canonicalize(identity));
   return createHash("sha256")
     .update(canonical).update("\n--\n")
     .update(loaded.dutiesMd).update("\n--\n")

@@ -79,6 +79,7 @@
     "./slack-dispatcher": "./src/slack-dispatcher.ts",
     "./outside-connections": "./src/outside-connections.ts",
     "./outside-execution-receipts": "./src/outside-execution-receipts.ts",
+    "./outside-pins": "./src/outside-pins.ts",
     "./attachment-hydration": "./src/attachment-hydration.ts",
     "./unreadable-content": "./src/unreadable-content.ts",
     "./google-auth": "./src/google-auth.ts",

@@ -18,20 +18,22 @@ import { keeperReason } from "../../lib/keeper-reason";
 import { parseOutsideDescriptorAcceptance, parseOutsideDescriptorPublication, parseOutsideDescriptorReview, parseOutsideDiscoveryDocument,
   parseOutsideDiscoveryInspection, parseOutsideDiscoveryPreview, type OutsideDescriptorReviewDto, type OutsideDiscoveryDocumentDto,
   type OutsidePendingApplyDto } from "../../lib/outside-discovery-dto";
-import { PENDING_TOOL } from "../../lib/outside-connect-words";
+import { PENDING_TOOL, BIND_TO_PINNED } from "../../lib/outside-connect-words";
 
 /** `retryable: false`: pressing the same step again would be wrong (a token may already have been sent, or what the owner
  *  read is out of date), so the screen offers only "start again". */
 export type ConnectStep<T> = { ok: true; value: T } | { ok: false; message: string; retryable: boolean };
 export type ConnectTool = OutsideDiscoveryDocumentDto["tools"][number];
 export type ConnectIdentity = { accountId: string; agentName: string; connectionName: string; requestId: string; claimOperationId: string };
-export type ConnectDeclared = { definitionHash: string; accessRevision: number; applied: boolean };
+/** `currentTrusted` / `previousTools`: what the agent already had for this connection, so a reconnect can show the current switches.
+ *  `droppedTrust`: switches the save ended (their tool changed), said out loud on the screen. */
+export type ConnectDeclared = { definitionHash: string; accessRevision: number; applied: boolean; currentTrusted: string[]; previousTools: string[]; droppedTrust: string[] };
 
 const nameSchema = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
 const uuid = z.string().uuid();
 const identitySchema = z.strictObject({ accountId: uuid, agentName: nameSchema, connectionName: nameSchema, requestId: uuid, claimOperationId: uuid });
 const connectionSchema = z.strictObject({
-  name: nameSchema, url: z.string().min(1).max(2048), description: z.string().min(1).max(500), token: z.boolean(), trusted: z.boolean(),
+  name: nameSchema, url: z.string().min(1).max(2048), description: z.string().min(1).max(500), token: z.boolean(),
   allow: z.array(z.string().min(1)).max(200), read: z.array(z.string().min(1)).max(200),
 });
 const stateSchema = z.object({ definitionHash: z.string().regex(/^[a-f0-9]{64}$/), accessRevision: z.number().int().positive(),
@@ -66,7 +68,7 @@ async function read(who: { sessionToken: string; actor: string }, agent: string)
 }
 
 function declarationOf(c: z.infer<typeof connectionSchema>): OutsideToolDeclaration {
-  return { name: c.name, url: c.url, description: c.description, token: c.token, trusted: c.trusted, tools: { allow: c.allow, read: c.read } };
+  return { name: c.name, url: c.url, description: c.description, token: c.token, tools: { allow: c.allow, read: c.read } };
 }
 
 /** Agents the owner can tick. The keeper decides, per agent, whether the member may edit it. */
@@ -87,17 +89,27 @@ export async function connectDeclare(input: unknown): Promise<ConnectStep<Connec
   const { agent, connection, provisional } = parsed.data, applyNow = parsed.data.applyNow !== false;
   return step("The connection could not be saved.", async (who) => {
     const state = await read(who, agent);
+    const existing = state.connections.find(c => c.name === connection.name);
+    const currentTrusted = (existing?.tools.trusted ?? []).map(t => t.tool), previousTools = existing && !existing.tools.allow.includes(PENDING_TOOL) ? existing.tools.allow : [];
+    // Reconnecting a connection that is already on the agent, at the same address: ask the server through the declaration that is
+    // already there, so the switches the owner set are not wiped by a placeholder.
+    if (provisional && existing && state.applicationStatus === "applied" && previousTools.length > 0 && existing.url === connection.url && existing.token === connection.token)
+      return { definitionHash: state.definitionHash, accessRevision: state.accessRevision, applied: true, currentTrusted, previousTools, droppedTrust: [] };
     const next = declarationOf(provisional ? { ...connection, allow: [PENDING_TOOL], read: [] } : connection);
     const connections = [...state.connections.filter(c => c.name !== connection.name), next];
     const staging = connection.token ? [connection.name] : [];
     const saved = stateSchema.parse(await keeper<unknown>("outside.connections.save",
       { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: state.definitionHash, expectedAccessRevision: state.accessRevision,
         connections, ...(staging.length ? { stagingCredentialFor: staging } : {}) }, who.actor, TIMEOUT));
-    if (saved.applicationStatus === "applied" || !applyNow) return { definitionHash: saved.definitionHash, accessRevision: saved.accessRevision, applied: saved.applicationStatus === "applied" };
+    // The keeper keeps a switch only while its tool is still a lookup with the description it was switched on for.
+    const after = new Set((saved.connections.find(c => c.name === connection.name)?.tools.trusted ?? []).map(t => t.tool));
+    const droppedTrust = provisional ? [] : currentTrusted.filter(t => !after.has(t));
+    const result = (s: State) => ({ definitionHash: s.definitionHash, accessRevision: s.accessRevision, applied: s.applicationStatus === "applied", currentTrusted, previousTools, droppedTrust });
+    if (saved.applicationStatus === "applied" || !applyNow) return result(saved);
     const applied = stateSchema.parse(await keeper<unknown>("outside.connections.apply",
       { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: saved.definitionHash, expectedAccessRevision: saved.accessRevision,
         ...(staging.length ? { stagingCredentialFor: staging } : {}) }, who.actor, TIMEOUT));
-    return { definitionHash: applied.definitionHash, accessRevision: applied.accessRevision, applied: applied.applicationStatus === "applied" };
+    return result(applied);
   });
 }
 
@@ -234,5 +246,33 @@ export async function connectRemoveDeclaration(input: { agent: string; name: str
     if (saved.applicationStatus !== "applied")
       await keeper<unknown>("outside.connections.apply", { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: saved.definitionHash, expectedAccessRevision: saved.accessRevision }, who.actor, TIMEOUT);
     return { removed: true };
+  });
+}
+
+/**
+ * Switches "run without asking" on for lookups, after the connection exists. The keeper does the real work: it takes each tool's
+ * fingerprint from the description the agent has stored (never from here), refuses a tool nobody has read yet, and refuses anyone
+ * who could not approve the agent's outside calls. A refusal is shown in the keeper's own words.
+ */
+export async function connectSwitchOnTrust(input: { agent: string; name: string; tools: string[] }): Promise<ConnectStep<{ switchedOn: string[]; switchedOff: string[] }>> {
+  await requireConsoleMember();
+  const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, tools: z.array(z.string().min(1)).max(200) }).safeParse(input);
+  if (!parsed.success) return fail("The tool list is not valid.");
+  const { agent, name, tools } = parsed.data;
+  return step("Run without asking could not be switched on.", async (who) => {
+    const state = await read(who, agent);
+    const current = state.connections.find(c => c.name === name);
+    if (!current) throw new StepFailure("This connection is not on the agent any more.", false);
+    const wanted = tools.filter(t => current.tools.read.includes(t) && current.tools.allow.includes(t));
+    // The list sent is the whole truth: tools left out lose their switch (needs no approver rights), tools already on keep theirs, new ones are bound by the keeper.
+    const kept = (current.tools.trusted ?? []).filter(k => wanted.includes(k.tool));
+    const added = wanted.filter(t => !kept.some(k => k.tool === t)).map(tool => ({ tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() }));
+    const next = { ...current, tools: { ...current.tools, trusted: [...kept, ...added] } };
+    const connections = [...state.connections.filter(c => c.name !== name), next];
+    const saved = stateSchema.parse(await keeper<unknown>("outside.connections.save",
+      { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: state.definitionHash, expectedAccessRevision: state.accessRevision, connections }, who.actor, TIMEOUT));
+    if (saved.applicationStatus !== "applied")
+      await keeper<unknown>("outside.connections.apply", { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: saved.definitionHash, expectedAccessRevision: saved.accessRevision }, who.actor, TIMEOUT);
+    return { switchedOn: added.map(a => a.tool), switchedOff: (current.tools.trusted ?? []).filter(k => !wanted.includes(k.tool)).map(k => k.tool) };
   });
 }

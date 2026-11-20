@@ -76,6 +76,40 @@ export function outsideToolsInEffect(
   return tools;
 }
 
+/** The owner's recorded trust for one tool: only a tool listed in `read` can have it. */
+export function trustGrantFor(entry: Pick<OutsideToolDeclaration, "tools">, bareTool: string): NonNullable<OutsideToolDeclaration["tools"]["trusted"]>[number] | undefined {
+  return entry.tools.read.includes(bareTool) ? (entry.tools.trusted ?? []).find((t) => t.tool === bareTool) : undefined;
+}
+
+/** Whether the owner lets this tool run without a card, NOW. It must be in BOTH `read` and `trusted`
+ *  (a tool that changes something always asks), and the description the owner switched it on for must be
+ *  the one in force (`currentPin`, from `toolPinHash`); with no current pin the answer is no. */
+export function isTrustedRead(entry: Pick<OutsideToolDeclaration, "tools">, bareTool: string, currentPin: string | undefined): boolean {
+  const grant = trustGrantFor(entry, bareTool);
+  return grant !== undefined && currentPin !== undefined && grant.pin === currentPin;
+}
+
+/** Who and when, written by the keeper and never taken from the browser. A switch that was already on
+ *  for the same tool with the same description keeps its original who and when; a new or re-ticked one
+ *  is stamped with `by` and `now`. Anything else the browser sent for `by`/`at` is thrown away. */
+export function stampTrust(
+  next: readonly OutsideToolDeclaration[],
+  previous: readonly OutsideToolDeclaration[],
+  by: string,
+  now: string,
+): OutsideToolDeclaration[] {
+  return next.map((entry) => {
+    const trusted = entry.tools.trusted;
+    if (trusted === undefined) return entry;
+    const before = previous.find((p) => p.name === entry.name)?.tools.trusted ?? [];
+    const stamped = trusted.map((t) => {
+      const kept = before.find((b) => b.tool === t.tool && b.pin === t.pin);
+      return kept ?? { tool: t.tool, pin: t.pin, by, at: now };
+    });
+    return { ...entry, tools: { ...entry.tools, trusted: stamped } };
+  });
+}
+
 /** The https hostnames the keeper must open in the proxy for these entries. Internal http
  *  service names add nothing (the internal networks are already reachable). An entry whose URL
  *  fails the check is skipped here; the definition check refuses it at save. */

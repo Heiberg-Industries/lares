@@ -51,3 +51,14 @@ export async function runOutsideTool(connectionName:string,toolName:string,input
  const approved=await vaultBrokerRequest<{outsideCapability:string}>('outside.approve',{...binding,call});
  return executeApprovedOutsideCall({...binding,outsideCapability:approved.outsideCapability},call);
 }
+/** A lookup the owner let run without a card. Only the person who is talking to the agent is named; Keeper
+ *  re-reads the applied definition, the pin and the session itself and refuses anything it cannot confirm,
+ *  so nothing here is taken on trust. A refusal is an error, never a silent run. */
+export async function runTrustedOutsideTool(connectionName:string,toolName:string,input:unknown,ctx:Context){
+ const own=managedIdentity(process.env),session=ctx.session,human=consoleAdmission(session?.auth?.current),name=`${connectionName}__${toolName}`;
+ if(!own||!session?.id||human?.purpose!=='human'||!ctx.callId||ctx.toolName!==name)
+  throw new Error('Outside execution is unavailable for this call');
+ const response=await vaultBrokerRequest<{result:unknown}>('outside.run-trusted',{sessionId:session.id,memberId:human.memberId,
+  admissionNonce:human.admissionNonce,call:{callId:ctx.callId,connectionName,toolName,input}},10_000);
+ return response.result;
+}

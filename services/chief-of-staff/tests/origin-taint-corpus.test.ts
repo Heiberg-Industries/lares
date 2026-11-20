@@ -70,11 +70,11 @@ describe("the taint hook over the injection corpus", () => {
       expect(currentTaint(key)).toBe("third_party");
     });
 
-    it(`${c.id} from a TRUSTED outside tool leaves the turn alone (the owner's own call)`, async () => {
-      const h = makeOriginTaint({ definitionFor: async () => definition({ outsideTools: [entry({ trusted: true })] }) });
+    it(`${c.id} from a TRUSTED outside tool still taints the turn`, async () => {
+      const h = makeOriginTaint({ definitionFor: async () => definition({ outsideTools: [entry({ tools: { allow: ["lookup"], read: ["lookup"], trusted: [{ tool: "lookup", by: "m", at: "2026-11-20T10:00:00Z", pin: "a".repeat(64) }] } })] }) });
       const r = settled("registry__lookup", c.text);
       await h.onCallSettled(r.event, r.ctx);
-      expect(currentTaint(key)).toBeUndefined();
+      expect(currentTaint(key)).toBe("third_party");
     });
   }
 });

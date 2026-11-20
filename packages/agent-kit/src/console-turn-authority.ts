@@ -74,7 +74,13 @@ async function currentAgentUse(db:AuthorityDatabase,agent:string,memberId:string
   if(revision===undefined)denied();
   return revision!;
 }
-/** Runs before registry, route-password or upstream access; returns no resource metadata. */
+/** The one rule for "this member may resolve this agent's outside call card": current use access, through `currentAgentUse` above
+ *  (`PgGrantStore.captureUse`, a read-only evaluation: only SELECT ... FOR SHARE, no write, counter or capture row).
+ *  The rule itself is `PgGrantStore.captureUse` (use access, owner policy, definition validity). `bindConsoleSession` reaches it through
+ *  `currentAgentUse`, and `checkedConsoleSessionBinding` (which every card answer and execution passes through, via
+ *  `requireBoundExactApproval`) calls `captureUse`/`captureUseWithExpiry` on the same evaluator. The keeper's check for who may switch a
+ *  tool on calls THIS function: one rule, no parallel copy.
+ *  Runs before registry, route-password or upstream access; returns no resource metadata. */
 export async function requireConsoleAgentUse(agent:string,memberId:string,db?:AuthorityDatabase,env:NodeJS.ProcessEnv=process.env):Promise<void> {
   try {await authorityTransaction(db,async client=>{await currentAgentUse(client,agent,memberId,env);});}catch{denied();}
 }

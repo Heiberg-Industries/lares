@@ -76,3 +76,39 @@ the agent, prove provider reachability, or revoke the previous key at the provid
 is uncertain, the page checks the current exact custody revision and asks you to refresh before
 trying again; it does not blindly repeat the request. Custody revocation, provider-side key revocation
 and channel-specific approval verification remain separate operations.
+
+## Run without asking, per tool
+
+Every outside tool call asks for approval unless you switched that one tool to **Run without asking**.
+Only a tool that only looks things up can be switched on; a tool that changes something always asks, and
+the console refuses to save it as switched on. On the Connect screen the switch starts ticked only for
+tools the server itself marks as read-only; you can change any switch before connecting, and later on the
+agent's Outside connections page. Switching a tool on records who did it and when.
+
+A switched-on tool still asks when the agent has just read someone else's words in the same
+conversation, and a result from any outside tool, including one you switched on, counts as someone
+else's words for the rest of that turn. The switch is tied to the tool description you saw. If the server changes that
+description, the tool asks again until you switch it on again, and the connection is paused until you
+have reviewed the new description. Each run under the switch is written to the Keeper audit log
+(who switched it on, when, the tool, the conversation) without the tool's arguments.
+
+Changing a switch after connecting edits the agent's definition, like any other definition change.
+
+### Who can switch it on, and what is recorded
+
+- Only a member who could approve that agent's outside calls (use access to the agent) can switch a tool on. Editing access
+  alone is not enough, and the keeper refuses it on every way of saving a definition. A save through the raw definition
+  editor, which has no signed-in member behind it, is accepted only from the host or the installation administrator.
+- The fingerprint of the description a switch is tied to is always taken by the keeper from the description the agent has
+  stored (`outside_tool_pins`), never from what a page or a file says. A tool the agent has not yet read from the server
+  cannot be switched on: ask the agent for a look-up once, then switch it on. The Connect screen shows your ticks and offers
+  a "Switch on Run without asking" button once you are connected.
+- Switching a tool OFF needs no approver rights; anyone who can edit the agent's connections can do it, and an explicit empty list switches everything off.
+- A save that says nothing about the switches (a reconnect, or an edit elsewhere) keeps the ones whose description is unchanged and ends the others; the Connect screen and the connection page say which were ended.
+- The record holds who and when. "Who" is the signed-in member's email address (the keeper's audit address), not a member id.
+- Until a switch is applied, each save of the definition records the time again; once applied, a switch that did not change
+  keeps its original who and when. A switch whose tool description changed counts as new and is recorded again.
+- Switches are not part of the definition's identity hash, so switching a lookup on or off does not force the stored token to
+  be reviewed and sent again.
+- Each run is written to the audit log as started, then finished or failed. If the closing write fails, the keeper logs it
+  loudly and opens a repair, so a run never stays "started" unnoticed.

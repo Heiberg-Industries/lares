@@ -12,7 +12,7 @@ import { applyOutsideConnections, getOutsideConnections, saveOutsideConnections 
 
 const token = "A".repeat(43);
 const connection = { name: "rates", url: "https://tools.example.org/mcp", description: "Look up rates", token: false,
-  tools: { allow: ["find_rate"], read: ["find_rate"] }, trusted: false };
+  tools: { allow: ["find_rate"], read: ["find_rate"] } };
 const saved = { name: "bookkeeper", definitionHash: "a".repeat(64), accessRevision: 2, connections: [connection],
   applicationStatus: "pending" as const, appliedConnections: [] };
 beforeEach(() => {

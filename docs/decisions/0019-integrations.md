@@ -109,8 +109,11 @@ the ratchet and the approval cards need to know exactly what a write does.
    bad, from which release it stops working, how to fix it — fed by sign-in failures, rate
    limits, a stale generated file, or a failed live-probe re-run.
 10. **No third-party code runs inside the engine.** Un-reviewed tools reach an agent only through
-    MCP, outside the engine process: a tool allow-list per connection; reads *and* writes stay
-    behind approval until the connection is trusted; tool descriptions are pinned and diffed on
+    MCP, outside the engine process: a tool allow-list per connection; every call stays behind approval
+    unless the owner switched that one tool to "run without asking". Only a tool marked as a lookup can be switched on (a tool
+    that changes something always asks); the switch is the owner's recorded decision (who, when) and is bound to the
+    description the owner saw, so a changed description ends it. A lookup under that switch still asks once the turn has read
+    someone else's words, and Keeper re-checks the switch, the pin, the ratchet level and the session on every call; tool descriptions are pinned and diffed on
     every change (an official vendor's own MCP server can carry commercial instruction text in its tool descriptions — that text must never reach the core prompt unreviewed); the server's own instruction text is kept out of the core prompt; where the
     server runs is recorded against the connection.
 11. **Microsoft 365 comes after the first public release**, on the official Graph SDK for JavaScript, behind the
