@@ -44,7 +44,7 @@ import {
 } from "eve/channels/slack";
 import { approvalCardShape, coversApproval, shortenedNotice, type CardBodyPart } from "./approval-summary.js";
 import { placesShowingWhole, waitingPageLink } from "./card-layer.js";
-import { shortenedCardSentence } from "./card-sentences.js";
+import { CARD_OUTCOME_TEXT, shortenedCardSentence } from "./card-sentences.js";
 
 /** Slack refuses a section whose text is longer than this (Block Kit: section text, 3,000). */
 export const SLACK_SECTION_TEXT_LIMIT = 3000;
@@ -188,10 +188,42 @@ function compactCardWith(
 }
 
 /**
+ * The line a settled approval card ends with, in the kit's words (`CARD_OUTCOME_TEXT`), the same as
+ * on every other door. eve's own line is "Approve by <@U>" with a green tick even for Deny, and
+ * "No longer needed" for a request nobody answered. Who answered stays, as Slack shows it. Only an
+ * open or settled approval whose first block is eve's compact card with a subtext is touched; the
+ * buttons and the body are not.
+ */
+export function settledOutcomeLine(card: SlackInteractionCard): string | undefined {
+  const { interaction } = card;
+  if (interaction.request.kind !== "approval" || interaction.status !== "settled") return undefined;
+  const outcome = (interaction as { outcome?: unknown }).outcome;
+  const line = outcome === "accepted" ? CARD_OUTCOME_TEXT.approved : outcome === "declined" ? CARD_OUTCOME_TEXT.denied : CARD_OUTCOME_TEXT.notApproved;
+  const by = typeof card.answeredBy === "string" && card.answeredBy !== "" && (outcome === "accepted" || outcome === "declined") ? ` by <@${card.answeredBy}>` : "";
+  return `${line}${by}`;
+}
+
+function withOutcomeLine(card: SlackInteractionCard, parts: SlackInteractionCardParts): SlackInteractionCardParts {
+  const line = settledOutcomeLine(card);
+  const [first, ...rest] = parts.controls.blocks as BlockKitBlock[];
+  if (line === undefined || first === undefined || first.type !== "card") return parts;
+  const changed = { ...first, subtext: { type: "mrkdwn", text: line, verbatim: false } } as BlockKitBlock;
+  return { ...parts, controls: { ...parts.controls, blocks: [changed, ...rest] } };
+}
+
+/**
  * `renderers.interactionCard` for the Slack door. Exported on its own so tests can call it with
  * eve's real default card as `next`.
  */
 export function approvalInteractionCard(
+  card: SlackInteractionCard,
+  next: (card: SlackInteractionCard) => SlackInteractionCardParts,
+  env: NodeJS.ProcessEnv = process.env,
+): SlackInteractionCardParts {
+  return withOutcomeLine(card, drawnApprovalCard(card, next, env));
+}
+
+function drawnApprovalCard(
   card: SlackInteractionCard,
   next: (card: SlackInteractionCard) => SlackInteractionCardParts,
   env: NodeJS.ProcessEnv = process.env,

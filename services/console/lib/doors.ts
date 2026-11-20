@@ -18,6 +18,25 @@ export function slackBotScopes(role:string):string[] {
 /** Shown on the app's Slack profile. `agent_view` is the manifest setting that makes Slack label the
  * app an agent (with `assistant:write`) instead of a plain app. */
 export const SLACK_APP_DESCRIPTION='An assistant you talk to in direct messages, or mention in a channel.';
+/** Slack limits: the profile line is 140 characters, the agent description 300. */
+const SLACK_PROFILE_MAX=140, SLACK_AGENT_DESCRIPTION_MAX=300;
+/** The app's background colour. The definition has no colour or brand field, so every app gets this
+ * one neutral grey; the owner can change it in Slack. */
+export const SLACK_APP_BACKGROUND_COLOR='#4a4a4a';
+/** Suggested prompts shown when someone opens the agent in Slack (Slack allows up to four). Plain
+ * defaults the agent's default tools can answer; the definition has no field for prompts. */
+export const SLACK_SUGGESTED_PROMPTS:{title:string;message:string}[]=[
+  {title:'Today',message:"What's on my calendar today?"},
+  {title:'My inbox',message:"What's new in my inbox?"},
+  {title:'Reply',message:'Draft a reply to my latest email.'},
+  {title:'This week',message:'What should I prepare this week?'},
+];
+function fitted(text:string|undefined,max:number):string {
+  const t=(text??'').replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').trim().replace(/\s+/g,' ');
+  if(t==='')return SLACK_APP_DESCRIPTION;
+  const chars=[...t];
+  return chars.length<=max?t:`${chars.slice(0,max-1).join('').trimEnd()}…`;
+}
 /** A Slack manifest cannot carry the app's picture; it is uploaded by hand. */
 export const SLACK_ICON_STEP='Slack cannot take the picture from the manifest. Upload one yourself: Basic Information, then Display Information, then App icon.';
 /** For an app made before this setting existed. Slack cannot undo the switch to agent view. */
@@ -28,12 +47,12 @@ export const slackExistingAppSteps:string[]=[
   'Switching an app to agent view cannot be undone. Reload Slack with a full refresh (Cmd/Ctrl+Shift+R in the browser) to see the app labelled as an agent.',
   SLACK_ICON_STEP,
 ];
-export function slackManifest(agent: {name:string;display:string;role:string}, consoleUrl:string) {
+export function slackManifest(agent: {name:string;display:string;role:string;description?:string}, consoleUrl:string) {
   if (!/^[a-z][a-z0-9-]{0,30}$/.test(agent.name)) throw new Error('Invalid agent name');
   const origin=publicDoorOrigin(consoleUrl);
   const manifest={
-    display_information:{name:agent.display,description:SLACK_APP_DESCRIPTION},
-    features:{agent_view:{agent_description:SLACK_APP_DESCRIPTION},bot_user:{display_name:agent.display,always_online:false},app_home:{home_tab_enabled:false,messages_tab_enabled:true,messages_tab_read_only_enabled:false}},
+    display_information:{name:agent.display,description:fitted(agent.description,SLACK_PROFILE_MAX),background_color:SLACK_APP_BACKGROUND_COLOR},
+    features:{agent_view:{agent_description:fitted(agent.description,SLACK_AGENT_DESCRIPTION_MAX),suggested_prompts:SLACK_SUGGESTED_PROMPTS},bot_user:{display_name:agent.display,always_online:true},app_home:{home_tab_enabled:false,messages_tab_enabled:true,messages_tab_read_only_enabled:false}},
     oauth_config:{scopes:{bot:slackBotScopes(agent.role)}},
     settings:{event_subscriptions:{request_url:`${origin}/api/doors/${agent.name}/slack/events`,bot_events:['message.im','app_mention']},
       interactivity:{is_enabled:true,request_url:`${origin}/api/doors/${agent.name}/slack/events`},org_deploy_enabled:false,socket_mode_enabled:false,token_rotation_enabled:false},

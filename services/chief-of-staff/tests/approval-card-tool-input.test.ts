@@ -193,9 +193,9 @@ describe("an email approval card", () => {
   });
 
   it.each([
-    ["approved", settled("accepted", "approve"), "Approve"],
-    ["denied", settled("declined", "deny"), "Deny"],
-    ["ended without an answer", settled("withdrawn"), "No longer needed"],
+    ["approved", settled("accepted", "approve"), "✅ Approved"],
+    ["denied", settled("declined", "deny"), "✖ Denied"],
+    ["ended without an answer", settled("withdrawn"), "✖ Not approved"],
   ] as const)("still shows the subject and body after it is %s", (_name, ending, label) => {
     const { parts, fallback } = render(approval("gmail_send", MAIL, ending), "U0000000000");
 

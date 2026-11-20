@@ -146,21 +146,12 @@ function stringList(v: unknown): string[] {
     : [str(v)].filter((x): x is string => x !== null);
 }
 
-/** Recipient lists arrive as string[] (gmail `to`, calendar `attendees`) but a model may pass
- *  a bare string. Render the first, count the rest — "and 3 more" is the detail that matters
- *  before authorising a send. */
-function recipients(v: unknown): string | null {
-  const list = stringList(v);
-  if (list.length === 0) return null;
-  const [first] = list as [string, ...string[]];
-  if (list.length > 1) cutSomething = true;
-  return list.length === 1 ? trunc(first) : `${trunc(first, 48)} and ${list.length - 1} more`;
-}
-
 /** All recipients from an array or scalar, each truncated individually so none are dropped
  *  for length. Used when every recipient must be named (e.g. a meeting follow-up where a
- *  wrong match must be visibly wrong before approval). Unlike `recipients()`, this never
- *  abbreviates to "and N more", which would hide who is about to be emailed. */
+ *  wrong match must be visibly wrong before approval). It never
+ *  abbreviates to "and N more", which would hide who is about to be emailed. Mail and calendar
+ *  titles use it too: a title that counted instead of naming was marked shortened, and Telegram
+ *  takes Approve off a card that says so, although the details named everyone. */
 function allRecipients(v: unknown): string | null {
   const list = stringList(v);
   if (list.length === 0) return null;
@@ -259,8 +250,8 @@ type Formatter = (input: Record<string, unknown>, tz: string) => string | null;
 
 const FORMATTERS: Record<string, Formatter> = {
   // — Mail. `to` and subject are the two fields that decide whether this is safe to approve.
-  gmail_send: (i) => line("Send email to", recipients(i["to"]), quoted(i["subject"]) && `— ${quoted(i["subject"])}`),
-  gmail_draft: (i) => line("Draft email to", recipients(i["to"]), quoted(i["subject"]) && `— ${quoted(i["subject"])}`),
+  gmail_send: (i) => line("Send email to", allRecipients(i["to"]), quoted(i["subject"]) && `— ${quoted(i["subject"])}`),
+  gmail_draft: (i) => line("Draft email to", allRecipients(i["to"]), quoted(i["subject"]) && `— ${quoted(i["subject"])}`),
 
   // Changing who an EXISTING draft goes to ("add Mats to the reply to Henrik").
   // Every address is named, never counted: the card is the one moment to see exactly who is
@@ -278,8 +269,7 @@ const FORMATTERS: Record<string, Formatter> = {
   // The card is where a WRONG meeting match becomes visible — refuses to
   // guess, but the one thing it cannot rule out is a confident wrong match, and the only
   // defence against that is a human seeing the meeting and the addresses side by side
-  // before tapping. So both are named, never summarised away. Unlike `recipients()`,
-  // `allRecipients()` never abbreviates to "and N more", which would hide who will receive
+  // before tapping. So both are named, never summarised away. `allRecipients()` never abbreviates to "and N more", which would hide who will receive
   // the follow-up email.
   meeting_followup_send: (i, tz) => line(
     "Send meeting follow-up for",
@@ -366,7 +356,7 @@ const FORMATTERS: Record<string, Formatter> = {
   twenty_do_not_contact: (i) => line("CRM: mark DO-NOT-CONTACT", quoted(i["reason"]) && `— ${quoted(i["reason"])}`),
 
   // — Calendar. `notify` decides whether real people receive mail; it is always stated.
-  calendar_create_event: (i, tz) => line("Calendar: create", quoted(i["summary"]), when(i["start"], tz) && `at ${when(i["start"], tz)}`, recipients(i["attendees"]) && `with ${recipients(i["attendees"])}`, i["notify"] === true ? "(guests notified)" : null),
+  calendar_create_event: (i, tz) => line("Calendar: create", quoted(i["summary"]), when(i["start"], tz) && `at ${when(i["start"], tz)}`, allRecipients(i["attendees"]) && `with ${allRecipients(i["attendees"])}`, i["notify"] === true ? "(guests notified)" : null),
   calendar_update_event: (i, tz) => line("Calendar: update", quoted(i["summary"]) ?? (str(i["eventId"]) && `event ${trunc(str(i["eventId"])!, 32)}`), when(i["start"], tz) && `to ${when(i["start"], tz)}`, i["notify"] === true ? "(guests notified)" : null),
   // `account`/`calendarId` name WHERE the event lives carries them
   // through from the calendar the fan-out read it off), and `reason` names WHY the agent is

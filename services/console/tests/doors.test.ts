@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { slackExistingAppSteps, slackManifest, slackBotScopes, telegramSteps, telegramConnectLink, doorStateText, doorTouched, slackClaimMessage } from '../lib/doors';
+import { SLACK_APP_DESCRIPTION, slackExistingAppSteps, slackManifest, slackBotScopes, telegramSteps, telegramConnectLink, doorStateText, doorTouched, slackClaimMessage } from '../lib/doors';
 describe('door setup', () => {
   it('carries only this agent request URLs', () => {
     const { manifest, createUrl } = slackManifest({name:'bookkeeper',display:'Bookkeeper',role:'creative'}, 'https://doors.example.com');
@@ -20,6 +20,29 @@ describe('door setup', () => {
     expect(manifest.display_information.description).toBeTruthy();
     expect(slackExistingAppSteps.join(' ')).toMatch(/icon/i);
     expect(slackExistingAppSteps.join(' ')).toMatch(/cannot be undone/);
+  });
+  it('keeps the bot online, sets a neutral background colour and up to four plain suggested prompts', () => {
+    const {manifest}=slackManifest({name:'b',display:'B',role:'creative'},'https://c.example.com');
+    expect(manifest.features.bot_user.always_online).toBe(true);
+    expect(manifest.display_information.background_color).toMatch(/^#[0-9a-f]{6}$/i);
+    const prompts=manifest.features.agent_view.suggested_prompts;
+    expect(prompts.length).toBeGreaterThan(0);
+    expect(prompts.length).toBeLessThanOrEqual(4);
+    for(const p of prompts){expect(p.title).toBeTruthy();expect(p.message).toBeTruthy();}
+  });
+  it('uses the definition description for the profile and the agent, cut to Slack limits, else the default', () => {
+    const base={name:'b',display:'B',role:'creative'};
+    const own=slackManifest({...base,description:'Keeps the books.'},'https://c.example.com').manifest;
+    expect(own.display_information.description).toBe('Keeps the books.');
+    expect(own.features.agent_view.agent_description).toBe('Keeps the books.');
+    const long=slackManifest({...base,description:'x'.repeat(500)},'https://c.example.com').manifest;
+    expect(long.display_information.description.length).toBe(140);
+    expect(long.features.agent_view.agent_description.length).toBe(300);
+    for(const description of [undefined,'','   ']){
+      const m=slackManifest({...base,...(description===undefined?{}:{description})},'https://c.example.com').manifest;
+      expect(m.display_information.description).toBe(SLACK_APP_DESCRIPTION);
+      expect(m.features.agent_view.agent_description).toBe(SLACK_APP_DESCRIPTION);
+    }
   });
   it('lets only the chief of staff open the direct-message conversation for its scheduled messages', () => {
     const {manifest}=slackManifest({name:'b',display:'B',role:'chief-of-staff'},'https://c.example.com');

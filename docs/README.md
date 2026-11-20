@@ -22,6 +22,11 @@ Start with `decisions/0015-…` (agents are definitions), `decisions/0017-the-va
 
 Numbering has gaps; see [`decisions/README.md`](decisions/README.md).
 
+## doors
+
+- [`adding-a-door.md`](adding-a-door.md) — What a new door must provide
+- [`door-messages.md`](door-messages.md) — How an agent's messages look on every door, kind by kind
+
 ## how-to
 
 - [`using-the-console.md`](how-to/using-the-console.md) — A tour of the console's pages

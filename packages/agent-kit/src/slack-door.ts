@@ -34,7 +34,7 @@ import { recordCardPosted } from "./approval-ledger.js";
 import { getPool } from "./db.js";
 import { installSlackProxyDispatcher } from "./slack-dispatcher.js";
 import { slackUnreadableNote } from "./unreadable-content.js";
-import { respondToTurnFailed } from "./gateway-budget.js";
+import { respondToTurnFailed, SPENDING_CAP_REFUSED_TEXT } from "./gateway-budget.js";
 import { anyCallCompleted, conversationTooLongSlackSentence, withPartlyDone } from "./conversation-too-long.js";
 import { approvalCardRenderer, installSlackCardHook, slackCardPostedWhole } from "./slack-approval-card.js";
 
@@ -126,8 +126,7 @@ export function isAllowedSlackUser(message: SlackMessage): boolean {
  * voice. The sentence is fixed and says only what is true: nothing ran. No retry — an uncapped
  * retry around a paid call is a known cost trap, and a budget refusal is the last place to add one.
  */
-export const SLACK_BUDGET_EXCEEDED_TEXT =
-  "I have hit my spending cap — nothing was done. It resets with the next budget period, or you can raise the cap.";
+export const SLACK_BUDGET_EXCEEDED_TEXT = SPENDING_CAP_REFUSED_TEXT;
 
 const FAILURE_OPTIONS = { refusalText: SLACK_BUDGET_EXCEEDED_TEXT, dialect: "slack" } as const;
 

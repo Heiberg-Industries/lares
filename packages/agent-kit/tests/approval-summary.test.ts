@@ -42,9 +42,9 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
     expect(summarizeApproval("gmail_draft_recipients", { draftId: "d1" })).toBe("Change the draft's recipients");
   });
 
-  it("counts extra recipients rather than hiding them, and says the title is shortened", () => {
+  it("names every recipient, so the title is not marked shortened", () => {
     expect(summarizeApproval("gmail_send", { to: ["a@example.com", "b@example.com", "c@example.com"], subject: "Hi" }))
-      .toBe('Send email to a@example.com and 2 more — "Hi" (shortened)');
+      .toBe('Send email to a@example.com, b@example.com, c@example.com — "Hi"');
     // One recipient and a short subject: nothing left out, nothing said.
     expect(summarizeApproval("gmail_send", { to: ["a@example.com"], subject: "Hi" })).toBe('Send email to a@example.com — "Hi"');
   });
@@ -738,7 +738,7 @@ describe("approvalCardShape — one card shape for every door", () => {
 
   it("holds the title and the exact change in full, and the short form Telegram reads", () => {
     const shape = approvalCardShape("gmail_send", MAIL);
-    expect(shape.title).toBe('Send email to a@example.com and 2 more — "Weekly notes" (shortened)');
+    expect(shape.title).toBe('Send email to a@example.com, b@example.com, c@example.com — "Weekly notes"');
     // Every recipient, the subject and the whole body: nothing cut, nothing admitted as cut.
     expect(shape.body).toHaveLength(1);
     const text = shape.body[0]!.text;

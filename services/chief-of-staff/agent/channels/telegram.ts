@@ -54,6 +54,7 @@ import {
   defaultTurnFailedText,
   respondToSessionFailed,
   respondToTurnFailed,
+  SPENDING_CAP_REFUSED_TEXT,
   type FailureEventData,
 } from "@lares/agent-kit/gateway-budget";
 import { handleProposalCallback } from "../../lib/proposal-buttons.js";
@@ -685,8 +686,7 @@ export async function onInteractionSettled(
  * and eve's own failure posts are plain strings too, so the non-budget path stays identical
  * to what eve would have posted.
  */
-const BUDGET_EXCEEDED_TEXT =
-  "I have hit my spending cap — nothing was done. It resets with the next budget period, or you can raise the cap.";
+const BUDGET_EXCEEDED_TEXT = SPENDING_CAP_REFUSED_TEXT;
 
 const FAILURE_OPTIONS = { refusalText: BUDGET_EXCEEDED_TEXT, dialect: "telegram" } as const;
 
