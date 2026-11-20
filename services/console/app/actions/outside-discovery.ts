@@ -2,6 +2,7 @@
 import { cookies } from "next/headers";
 import { memberAuditAddress,sessionMember } from "../../lib/auth";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
+import { keeperReason } from "../../lib/keeper-reason";
 import { parseOutsideDiscoveryDocument,parseOutsideDiscoveryInspection,parseOutsideDiscoveryPreview,parseOutsideDiscoveryTargets,
   parseOutsideDescriptorAcceptance,parseOutsideDescriptorPublication,parseOutsideDescriptorReview,
   parseOutsidePendingApply,type OutsidePendingApplyDto,type OutsideDescriptorAcceptanceDto,type OutsideDescriptorPublicationDto,type OutsideDescriptorReviewDto,
@@ -26,7 +27,7 @@ async function admitted():Promise<{sessionToken:string;auditActor:string}>{
   return {sessionToken,auditActor};
 }
 function unavailable(error:unknown):never{
-  if(error instanceof KeeperRefusedError)throw new Error("Discovery was refused. Refresh membership and review the connection again.");
+  if(error instanceof KeeperRefusedError)throw new Error(keeperReason(error,"Discovery was refused. Refresh membership and review the connection again."));
   throw new Error("Private discovery is unavailable. Refresh membership and try again.");
 }
 

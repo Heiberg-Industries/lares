@@ -7,7 +7,7 @@ vi.mock("../app/actions/outside-connect", () => ({ connectDeclare: mocks.declare
 import { ConnectOutsideTool } from "../components/ConnectOutsideTool";
 
 const agents = [{ name: "saga", displayName: "Saga" }, { name: "worker", displayName: "Worker" }];
-const tools = [{ name: "find_company", description: "Looks up a company", inputSchema: { type: "object" } }, { name: "push_lead", description: "Sends a lead to a CRM", inputSchema: { type: "object" } }];
+const tools = [{ name: "find_company", description: "Looks up a company", inputSchema: { type: "object" }, readOnly: true as const }, { name: "push_lead", description: "Sends a lead to a CRM", inputSchema: { type: "object" } }];
 const identity = { accountId: "a", agentName: "saga", connectionName: "example", requestId: "r", claimOperationId: "c" };
 const ok = <T,>(value: T) => ({ ok: true as const, value });
 const address = () => screen.getByLabelText(/^Server address/) as HTMLInputElement;
@@ -48,9 +48,8 @@ describe("ConnectOutsideTool", () => {
     expect(mocks.review).not.toHaveBeenCalled(); expect(mocks.activate).not.toHaveBeenCalled();
     // The confirmation shows each tool, defaulting to "changes something", used, and nothing trusted.
     const kinds = screen.getAllByRole("combobox") as HTMLSelectElement[];
-    expect(kinds.map(k => k.value)).toEqual(["change", "change"]);
+    expect(kinds.map(k => k.value)).toEqual(["read", "change"]);
     expect((screen.getByLabelText(/Let look-ups run without asking/) as HTMLInputElement).checked).toBe(false);
-    fireEvent.change(kinds[0]!, { target: { value: "read" } });
     fireEvent.click(screen.getByLabelText("push_lead"));
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await screen.findByText(/Connected\./);

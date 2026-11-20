@@ -93,7 +93,7 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
         if (result.ok) {
           seen.current = result.value.tools;
           setServerName(result.value.serverName);
-          setRows(result.value.tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, use: true, kind: "change" })));
+          setRows(result.value.tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, use: true, kind: t.readOnly ? "read" : "change" })));
         }
         return result;
       } },
@@ -177,7 +177,7 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
 
     {phase === "confirm" && <div className="lares-stack">
       <h2 className="lares-section-title">{serverName ? `${serverName} offers ${rows.length} tool${rows.length === 1 ? "" : "s"}` : "Tools you chose"}</h2>
-      <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Until you say otherwise, every call asks you first. If the server later changes a tool's description, that tool stops until you review it again.</p>
+      <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Tools the server itself marks as read-only start as “only looks things up”; the rest start as “changes something”. Until you say otherwise, every call asks you first. If the server later changes a tool's description, that tool stops until you review it again.</p>
       {!serverName && <p>Lares has not seen these tools yet. Their descriptions are recorded the first time the agent connects, and a later change pauses the tool.</p>}
       <ul className="lares-data-list">{rows.map((row, i) => <li key={row.name} className="lares-stack">
         <Choice><Checkbox checked={row.use} onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, use: e.target.checked } : r))} /> <strong>{row.name}</strong></Choice>

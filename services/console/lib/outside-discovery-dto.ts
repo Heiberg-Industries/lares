@@ -6,7 +6,7 @@ export type OutsideDiscoveryPreviewDto={accountId:string;requestId:string;claimO
   endpoint:string;purpose:'streamable-http-discovery-v1';definitionHash:string;accessRevision:number;destinationHash:string;
   routePolicyHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;consentGeneration:number};
 export type OutsideDiscoveryDocumentDto={protocolVersion:'2025-06-18';serverInfo:{name:string;version:string};
-  tools:{name:string;description?:string;inputSchema:Record<string,unknown>}[]};
+  tools:{name:string;description?:string;inputSchema:Record<string,unknown>;readOnly?:true}[]};
 export type OutsideDiscoveryInspectionDto={state:'unresolved'}|{state:'complete';document:OutsideDiscoveryDocumentDto};
 export type OutsideDescriptorReviewDto={descriptor:{version:1;connectionName:string;scope:'read'|'write'|'write-with-confirm';allow:string[];read:string[];
   tools:OutsideDiscoveryDocumentDto['tools']};descriptorHash:string;expectedGeneration:number;expectedCandidateRevision:number|null;
@@ -112,12 +112,12 @@ export function parseOutsideDiscoveryDocument(value:unknown):OutsideDiscoveryDoc
   const names=new Set<string>(),tools:OutsideDiscoveryDocumentDto['tools']=[];
   for(const candidate of item.tools){
     const tool=record(candidate);
-    if(!tool||Object.keys(tool).some(key=>!['name','description','inputSchema'].includes(key))||!text(tool.name,128)||
+    if(!tool||Object.keys(tool).some(key=>!['name','description','inputSchema','readOnly'].includes(key))||tool.readOnly!==undefined&&tool.readOnly!==true||!text(tool.name,128)||
         /[\x00-\x1f\x7f]/.test(tool.name)||names.has(tool.name)||tool.description!==undefined&&!description(tool.description))return;
     const inputSchema=record(tool.inputSchema);
     if(!inputSchema||!jsonValue(inputSchema))return;
     names.add(tool.name);
-    tools.push({name:tool.name,...(tool.description===undefined?{}:{description:tool.description}),inputSchema});
+    tools.push({name:tool.name,...(tool.description===undefined?{}:{description:tool.description}),inputSchema,...(tool.readOnly===true?{readOnly:true as const}:{})});
   }
   const document:OutsideDiscoveryDocumentDto={protocolVersion:'2025-06-18',serverInfo:{name:serverInfo.name,version:serverInfo.version},tools};
   let encoded:string;
