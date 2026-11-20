@@ -50,7 +50,7 @@ describe("buildReplyPrompt — one prompt for both drafters, written for a think
 
   it("ends with the exact return-format line splitDraft parses", () => {
     const p = buildReplyPrompt(base);
-    expect(p.trimEnd().endsWith('Return ONLY the reply in exactly: "Subject: <subject>\\n\\n<body>" — no commentary, no placeholders like "[Name]".')).toBe(true);
+    expect(p.trimEnd().endsWith('Return ONLY the reply in exactly: "Subject: <subject>\\n\\n<body>" — no commentary, no placeholders like "[Name]". The only bracket allowed is a [confirm: …] marker.')).toBe(true);
   });
 
   it("names the mailbox the reply leaves from and quotes the original", () => {

@@ -310,34 +310,36 @@ describe("absentBlockClause — a missing block is not a memory prompt", () => {
   });
 });
 
-// ── Suggestions, not promises ────────────────────────────────────────
-// untakenActionsClause() bans past-tense claims; this clause bans the future-tense twin only for
-// things the draft has no authority to promise, and allows ordinary suggestions and questions.
-describe("noCommitmentsClause — suggestions, not promises", () => {
-  it("allows suggesting a next step or asking a question", () => {
+// ── Never commit the owner to what nobody agreed ─────────────────────
+// untakenActionsClause() bans past-tense claims; this clause bans the future-tense twin: a date,
+// deadline, price, discount, scope, deliverable or meeting time the thread has not agreed.
+describe("noCommitmentsClause — nothing promised that the thread has not agreed", () => {
+  it("names every kind of commitment a draft must not make", () => {
     const c = noCommitmentsClause();
-    expect(c).toMatch(/suggest/i);
-    expect(c).toMatch(/ask a question/i);
-  });
-
-  it("still names dates, payments, bookings, prices and deliverables as things not to promise", () => {
-    const c = noCommitmentsClause();
-    expect(c).toMatch(/do not promise/i);
-    for (const word of ["date", "payment", "booking", "price", "deliverable"]) {
+    expect(c).toMatch(/never commit the owner/i);
+    for (const word of ["date", "deadline", "price", "discount", "scope", "deliverable", "meeting time"]) {
       expect(c).toMatch(new RegExp(word, "i"));
     }
   });
 
-  it("tells the model what to do instead: offer it for the owner to confirm, or leave it out", () => {
+  it("allows what the thread agreed or the owner dictated", () => {
     const c = noCommitmentsClause();
-    expect(c).toMatch(/owner can confirm/i);
-    expect(c).toMatch(/leave it out/i);
+    expect(c).toMatch(/already agreed/i);
+    expect(c).toMatch(/owner told you to say it/i);
   });
 
-  it("has no gendered pronoun and no 'his to take'", () => {
+  it("closes the soft-promise loophole: no 'I will confirm / settle it later' either", () => {
+    expect(noCommitmentsClause()).toMatch(/do not offer to confirm, settle or work one out later/i);
+  });
+
+  it("tells the model to leave a [confirm: …] marker and keep questions to the owner out of the email", () => {
     const c = noCommitmentsClause();
-    expect(c).not.toMatch(/his to take/i);
-    expect(c).not.toMatch(/\b(he|him|his)\b/i);
+    expect(c).toContain("[confirm: <what the owner must decide>]");
+    expect(c).toMatch(/ask nothing of the owner inside the email/i);
+  });
+
+  it("has no gendered pronoun", () => {
+    expect(noCommitmentsClause()).not.toMatch(/\b(he|him|his)\b/i);
   });
 
   it("contractClauses includes it only when asked — the default stack is unchanged", () => {

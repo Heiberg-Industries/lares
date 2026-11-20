@@ -12,6 +12,7 @@
   },
   "exports": {
     "./vault-files": "./src/vault-files.ts",
+    "./confirm-markers": "./src/confirm-markers.ts",
     "./tracks": "./src/tracks.ts",
     "./vault-note-write": "./src/vault-note-write.ts",
     "./budget-admission-store": "./src/budget-admission-store.ts",

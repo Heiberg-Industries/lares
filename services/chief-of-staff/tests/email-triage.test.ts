@@ -247,6 +247,18 @@ describe("triageOneMessage", () => {
     expect(gmail.draft).toHaveBeenCalledWith(expect.objectContaining({ signatureHtml: "<p>Test Owner</p>" }));
   });
 
+  it("a draft with [confirm: …] markers is still saved, and the result carries them for the ping", async () => {
+    vi.mocked(gatewayComplete).mockImplementation(async (prompt: string) => {
+      if (prompt.includes("Classify")) return "needs_reply";
+      return "Subject: Re: hi\n\nThe new date is [confirm: new delivery date].";
+    });
+    const gmail = fakeGmail();
+    const result = await triageOneMessage({ gmail, voice: noVoice }, "owner@project.example", message());
+    expect(result.outcome).toBe("drafted");
+    expect(result.outcome === "drafted" && result.needsAnswer).toEqual(["new delivery date"]);
+    expect(gmail.draft).toHaveBeenCalledWith(expect.objectContaining({ bodyText: expect.stringContaining("[confirm: new delivery date]") }));
+  });
+
   // REGRESSION PIN — email-triage.ts used to import a trimmed local fork of
   // compose-contract.ts that lacked the groundingClause toolResults option and
   // absentBlockClause entirely. Now both runtimes import @lares/compose-contract, so the
@@ -645,6 +657,15 @@ describe("notifyTextFor", () => {
     const text = notifyTextFor({ outcome: "drafted", from: "a@b.com", subject: "Hi", account: "owner@project.example" });
     expect(text).toContain("Drafted a reply");
     expect(text).toContain("owner@project.example");
+  });
+  it("lists what the draft left for the owner to decide", () => {
+    const text = notifyTextFor({ outcome: "drafted", from: "a@b.com", subject: "Hi", account: "owner@project.example",
+      needsAnswer: ["new delivery date", "price for the extra segment"] });
+    expect(text).toContain("Needs your answer: new delivery date; price for the extra segment");
+  });
+  it("says nothing about answers when the draft left none", () => {
+    expect(notifyTextFor({ outcome: "drafted", from: "a@b.com", subject: "Hi", account: "owner@project.example" }))
+      .not.toContain("Needs your answer");
   });
   it("returns a distinct reminder for 'draft-pending'", () => {
     const text = notifyTextFor({ outcome: "draft-pending", from: "a@b.com", subject: "Hi", account: "owner@project.example" });

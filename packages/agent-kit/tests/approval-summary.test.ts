@@ -468,6 +468,19 @@ describe("detailsForApproval — the draft itself, rendered under a mail card", 
     }
   });
 
+  it("lists every [confirm: …] marker as 'Needs your answer', above the body, on all three mail tools", () => {
+    const withMarker = { ...input, bodyText: "Hei,\n\nLevering: [confirm: new delivery date]. Pris: [confirm: price for the extra segment]." };
+    for (const tool of ["gmail_send", "gmail_draft", "meeting_followup_send"]) {
+      const d = detailsForApproval(tool, withMarker) ?? "";
+      expect(d, tool).toContain("*Needs your answer:* new delivery date; price for the extra segment");
+      expect(d.indexOf("Needs your answer"), tool).toBeLessThan(d.indexOf("Hei,"));
+    }
+  });
+
+  it("adds no such line when the draft has no marker", () => {
+    expect(detailsForApproval("gmail_draft", input)).not.toContain("Needs your answer");
+  });
+
   it("is undefined for a tool whose arguments are not a message —'s card-only shape stays theirs", () => {
     expect(detailsForApproval("read_url", { url: "https://example.com" })).toBeUndefined();
     expect(detailsForApproval("forget", { id: 3 })).toBeUndefined();

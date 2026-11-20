@@ -37,6 +37,7 @@ import { jurisdictionFor, mintYear } from "./deadlines.js";
 
 import { ownerDay } from "./proactivity.js";
 import { doorName, textShownWhole } from "./card-sentences.js";
+import { extractConfirmMarkers } from "./confirm-markers.js";
 
 /** The jurisdiction for a mint card, or null (a card without a count) when the calendar file is
  *  unreadable; the tool itself still reports the real error when it runs. */
@@ -637,6 +638,9 @@ const mailDetails: Details = (i) => {
   const to = allRecipients(i["to"]);
   if (to !== null) parts.push(`*To:* ${escapeMrkdwn(to)}`);
   if (subject !== null) parts.push(`*Subject:* ${escapeMrkdwn(subject)}`);
+  // Before the body so a long draft cannot cut it off: these are what the owner must settle first.
+  const open = extractConfirmMarkers(body);
+  if (open.length > 0) parts.push(`*Needs your answer:* ${escapeMrkdwn(open.join("; "))}`);
   if (body !== null) parts.push(escapeMrkdwn(body));
   return shorten(parts.join("\n\n"));
 };
