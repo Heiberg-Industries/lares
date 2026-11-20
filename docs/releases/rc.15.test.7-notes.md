@@ -32,7 +32,21 @@ The previous release record names no source commit for its images, so the list o
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+What a person using this release will notice:
+
+- **Approval cards show the exact change.** A note write shows the note's text, a calendar change shows the time, a message shows who it goes to. Email drafts wait for Approve when mail is set to ask first.
+- **Slack shows the agent as an agent.** The console's Slack manifest turns on Slack's agent view, sets always-online, a description, a background colour and up to four suggested prompts. An existing app needs the new manifest pasted in Slack and a reinstall. The icon is still uploaded by hand.
+- **Telegram cards show plain labels** instead of literal asterisks, and an email to several people keeps its Approve button.
+- **One message standard for Slack and Telegram** (`docs/door-messages.md`): a settled card says the same on both doors, and the spending-cap message is the same everywhere.
+- **No false "Google isn't connected".** A slow or failed check at the start of a conversation now reads as "not checked yet", and the agent checks before saying anything.
+- **Connect an outside tool from one screen.** Integrations → Connect an outside tool: paste the address and token, review the tool list once, connect. The keeper's own reason is shown when something is refused.
+- **Each outside lookup tool can run without asking.** Only tools that only look things up can be switched on; a tool that changes something always asks. A lookup still asks when the same turn has already read outside text. A changed tool description pauses that tool and ends its trust.
+- **Add a mail account without typing an address.** Add account → Connect with Google opens Google's own account chooser. Each account shows a status, and Microsoft is listed on the same page.
+- **Drafts never promise what nobody agreed.** A reply draft writes `[confirm: …]` or asks the owner instead of committing to a date, price, scope or delivery.
+- **A fresh install can take a Notion key.** The installer prepares the Notion key slot when nothing else uses it; `lares update` does the same on an existing install.
+- **One command publishes a test release** (`publish-test-release.yml`), which built this release.
+
+Not proven on a real server yet: the in-place update from rc.15.test.6 to this release, connecting a real outside tool server, and the new Slack manifest on an existing app.
 
 ## Security scan
 

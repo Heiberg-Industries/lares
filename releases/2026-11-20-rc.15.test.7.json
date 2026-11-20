@@ -26,6 +26,9 @@
     "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
   },
   "breaking": [
-    "TO BE WRITTEN BY A PERSON: replace this line with one sentence for each change an operator updating from the previous release must know, or delete it if there is none."
+    "This is a test release, not a finished rc.15. Use it only on a test server or on an installation whose owner has agreed to test it.",
+    "Update in place from rc.15.test.5 or rc.15.test.6 with lares update. This release adds no new database file, so the update changes no table.",
+    "Outside tool connections now record which tools may run without asking. An existing connection keeps asking for every call until its owner switches a lookup tool on, and a connection's old whole-connection 'trusted' setting no longer exists.",
+    "Slack apps made from an earlier console manifest keep showing as an app until the owner pastes the new manifest in Slack and reinstalls the app; the console's Slack setup lists the steps."
   ]
 }
