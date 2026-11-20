@@ -1991,6 +1991,7 @@ run_keeper() {
   # A key made by THIS run is taken back if the run stops before keeper.json holds the block that
   # binds it, so a failed first run can be repeated instead of looking like a half-finished setup.
   drop_new_outside_key() {
+    # undo: nothing to undo; this removes only the key folder this very run created, and a re-run makes a new one
     [ -z "$outside_key_fingerprint" ] || [ "$DRY" -eq 1 ] || rm -rf -- "$outside_dir"
   }
   # The renderer checks the key file it is told about, so it needs to see that one folder.

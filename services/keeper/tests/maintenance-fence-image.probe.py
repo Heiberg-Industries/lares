@@ -654,7 +654,7 @@ def prove_keeper_default_admission() -> None:
         project, str(keeper_root), str(agents_dir), str(retired_dir), str(backup_dir),
         str(egress_dir), str(secrets_dir), str(fixture_prefix / "run/lares"),
         str(fixture_prefix / "run/lares-host"), network, subnet,
-        str(ipaddress.ip_network(subnet).network_address + 2),
+        str(ipaddress.ip_network(subnet).network_address + 250),
         "http://gateway.invalid", "lares_state", "proof-owner", "owner@example.invalid",
         "proof.invalid", "UTC", str(fixture_prefix), "",
     ]
