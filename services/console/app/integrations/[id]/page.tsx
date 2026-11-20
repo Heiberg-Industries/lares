@@ -1,6 +1,8 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireConsolePage } from "../../../lib/auth";
 import { Page } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
 import { getConnectionRows } from "../../../lib/connections";
 import { getBoardRows } from "../../../lib/board";
 import { getCredentialView } from "../../../lib/credentials";
@@ -68,7 +70,8 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
     await Promise.all((declared ?? []).map(async (a) => { evidence[a.agent] = await getOutsideToolEvidence(a.agent); }));
     return (
       <Page className="lares-stack">
-        <IntegrationHeader card={{ ...card, line: "Tools from servers outside Lares. They are added for one agent at a time, on that agent's page." }} />
+        <IntegrationHeader card={{ ...card, line: "Tools from servers outside Lares. Connect one with its address, and a token if it needs one, then choose which agents get it." }} />
+        <div className="lares-actions"><Button asChild><Link href="/integrations/connect-outside-tool">Connect an outside tool</Link></Button></div>
         <OutsideToolsOverview declared={declared} evidence={evidence} />
       </Page>
     );

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { suggestConnectionName, toolNamesOf } from "../lib/outside-connect-words";
+import { suggestConnectionName, toolNamesOf, uniqueConnectionName } from "../lib/outside-connect-words";
 
 describe("outside connect wording helpers", () => {
   it("suggests a short name from the server address", () => {
     expect(suggestConnectionName("https://tools.example.org/api/mcp")).toBe("example");
+    expect(suggestConnectionName("https://registry.fly.dev/mcp")).toBe("registry");
+    expect(suggestConnectionName("https://api.mcp.Rates-Hub.co.uk/v1")).toBe("rates-hub");
+    expect(suggestConnectionName("https://www.mcp.com/")).toBe("www");
+    expect(suggestConnectionName("https://203.0.113.7:8080/mcp")).toBe("t-203");
+    expect(suggestConnectionName("https://xn--bcher-kva.example/mcp")).toBe("xn--bcher-kva");
     expect(suggestConnectionName("https://mcp.example.com/")).toBe("example");
     expect(suggestConnectionName("https://example.com/mcp")).toBe("example");
     expect(suggestConnectionName("http://localhost:3000/mcp")).toBe("localhost");
@@ -14,6 +19,16 @@ describe("outside connect wording helpers", () => {
       const name = suggestConnectionName(address);
       expect(name === "" || /^[a-z][a-z0-9-]{1,30}$/.test(name)).toBe(true);
     }
+  });
+  it("makes the name unique when another connection has it", () => {
+    expect(uniqueConnectionName("example", [])).toBe("example");
+    expect(uniqueConnectionName("example", ["other"])).toBe("example");
+    expect(uniqueConnectionName("example", ["example"])).toBe("example-2");
+    expect(uniqueConnectionName("example", ["example", "example-2"])).toBe("example-3");
+    const long = "a".repeat(31);
+    const made = uniqueConnectionName(long, [long]);
+    expect(made).toMatch(/^[a-z][a-z0-9-]{1,30}$/); expect(made).not.toBe(long);
+    expect(uniqueConnectionName("", ["x"])).toBe("");
   });
   it("splits typed tool names once each", () => {
     expect(toolNamesOf("find_rate, list_rates  find_rate\nget")).toEqual(["find_rate", "list_rates", "get"]);

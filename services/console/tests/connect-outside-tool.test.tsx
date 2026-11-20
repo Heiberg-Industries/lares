@@ -33,6 +33,49 @@ async function fillToken() {
   await screen.findByText(/Example 1.0 offers 2 tools/);
 }
 
+describe("ConnectOutsideTool form", () => {
+  it("shows only address, token, agents and Connect at first; name and purpose sit under More options", () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    expect(screen.getByLabelText(/^Server address/)).toBeTruthy();
+    expect(tokenField()).toBeTruthy();
+    const more = document.querySelector("details") as HTMLDetailsElement;
+    expect(more.textContent).toContain("More options");
+    expect(more.open).toBe(false);
+    expect(more.contains(screen.getByLabelText(/^Name/))).toBe(true);
+    expect(more.contains(screen.getByLabelText(/^What it is for/))).toBe(true);
+    expect(more.contains(address())).toBe(false);
+    expect(more.contains(tokenField())).toBe(false);
+  });
+
+  it("asks for tool names only while the token field is empty", () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    expect(screen.queryByLabelText(/^Tools the agent may use/)).toBeTruthy();
+    fireEvent.change(tokenField(), { target: { value: "tok" } });
+    expect(screen.queryByLabelText(/^Tools the agent may use/)).toBeNull();
+    fireEvent.change(tokenField(), { target: { value: "" } });
+    expect(screen.queryByLabelText(/^Tools the agent may use/)).toBeTruthy();
+  });
+
+  it("fills the name from the address, keeps it unique, and lets the owner change it", async () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" takenNames={["example"]} />);
+    const name = screen.getByLabelText(/^Name/) as HTMLInputElement;
+    fireEvent.change(address(), { target: { value: "https://mcp.example.org/api" } });
+    expect(name.placeholder).toBe("example-2");
+    fireEvent.change(tokenField(), { target: { value: "tok-SECRET" } });
+    fireEvent.click(screen.getByLabelText(/I allow Lares to send this token/));
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText(/Example 1.0 offers 2 tools/);
+    expect(mocks.declare.mock.calls[0]![0]).toMatchObject({ connection: { name: "example-2" } });
+  });
+
+  it("uses a name typed under More options instead", async () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "mine" } });
+    await fillToken();
+    expect(mocks.declare.mock.calls[0]![0]).toMatchObject({ connection: { name: "mine" } });
+  });
+});
+
 describe("ConnectOutsideTool", () => {
   it("ticks the agent the owner came from", () => {
     render(<ConnectOutsideTool agents={agents} initialAgent="worker" />);

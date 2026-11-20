@@ -8,7 +8,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSwitchOnTrust,
   type ConnectIdentity, type ConnectStep, type ConnectTool } from "../app/actions/outside-connect";
 import type { OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
-import { suggestConnectionName, toolNamesOf } from "../lib/outside-connect-words";
+import { suggestConnectionName, toolNamesOf, uniqueConnectionName } from "../lib/outside-connect-words";
 
 type Agent = { name: string; displayName: string };
 type Phase = "form" | "working" | "confirm" | "done";
@@ -23,7 +23,7 @@ type Settings = { name: string; url: string; description: string; hasToken: bool
  * this page's memory while the owner reads the confirmation, is sent to the keeper (never to the agent),
  * and is dropped as soon as the work ends, fails for good or is cancelled.
  */
-export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; initialAgent?: string }) {
+export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { agents: Agent[]; initialAgent?: string; takenNames?: string[] }) {
   const first = agents.find(a => a.name === initialAgent)?.name ?? agents[0]?.name;
   const [phase, setPhase] = useState<Phase>("form");
   const [url, setUrl] = useState(""), [token, setToken] = useState(""), [name, setName] = useState(""), [description, setDescription] = useState("");
@@ -37,7 +37,7 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
   // What the agent already had for this connection: a reconnect shows those switches as they are.
   const prior = useRef<{ trusted: string[]; tools: string[] }>({ trusted: [], tools: [] });
 
-  const suggested = suggestConnectionName(url);
+  const suggested = uniqueConnectionName(suggestConnectionName(url), takenNames);
   const connectionName = (name.trim() || suggested);
   const needsToken = token.trim().length > 0;
 
@@ -177,12 +177,17 @@ export function ConnectOutsideTool({ agents, initialAgent }: { agents: Agent[]; 
         <Input type="password" autoComplete="off" maxLength={4096} value={token} onChange={e => setToken(e.target.value)} /></Field>
       <p className="lares-muted">Servers that use a sign-in page instead of a token will be connected here in a later version.</p>
       {!needsToken && <Field label="Tools the agent may use" hint="With no token Lares cannot ask the server for its tool list. Type the tool names, separated by commas."><Input value={toolText} onChange={e => setToolText(e.target.value)} /></Field>}
-      <Field label="Name" hint="Short, lowercase. Used as a prefix on the tool names."><Input maxLength={31} placeholder={suggested} value={name} onChange={e => setName(e.target.value)} /></Field>
-      <Field label="What it is for (optional)"><Input maxLength={500} value={description} onChange={e => setDescription(e.target.value)} /></Field>
       <FieldGroup legend="Agents that get these tools">
         {agents.map(agent => <Choice key={agent.name}><Checkbox checked={ticked.includes(agent.name)}
           onChange={e => setTicked(list => e.target.checked ? [...list, agent.name] : list.filter(n => n !== agent.name))} /> {agent.displayName}</Choice>)}
       </FieldGroup>
+      <details>
+        <summary>More options</summary>
+        <div className="lares-stack">
+          <Field label="Name" hint="Short, lowercase. Used as a prefix on the tool names. Filled in from the address."><Input maxLength={31} placeholder={suggested} value={name} onChange={e => setName(e.target.value)} /></Field>
+          <Field label="What it is for (optional)"><Input maxLength={500} value={description} onChange={e => setDescription(e.target.value)} /></Field>
+        </div>
+      </details>
       {needsToken && <Choice><Checkbox checked={consent} onChange={e => setConsent(e.target.checked)} /> I allow Lares to send this token to the address above, up to once per agent plus once to read the tool list.</Choice>}
       {error && <p role="alert">{error}</p>}
       <div className="lares-actions"><Button type="submit">Connect</Button></div>

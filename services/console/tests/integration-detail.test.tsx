@@ -152,13 +152,16 @@ it("lists the outside tools per agent with key and description checks, and links
     locks: { available: true, value: { open: { pinHash: "a", seenHash: "b", seenAt: "2026-10-08T10:00:00.000Z", pinTools: null, seenTools: null } } },
   });
   const html = await show("outside");
-  expect(html).toContain("Tools from servers outside Lares. They are added for one agent at a time, on that agent&#x27;s page.");
+  expect(html).toContain("Tools from servers outside Lares. Connect one with its address, and a token if it needs one, then choose which agents get it.");
   expect(html).toContain("Assistant");
   expect(html).toContain("Key file in place.");
   expect(html).toContain("Key file missing");
   expect(html).toContain("Key status unavailable: the keeper could not check the key file.");
   expect(html).toContain("Locked: its tool descriptions changed.");
   expect(html).toContain('href="/agents/assistant/outside-tools"');
+  expect(html).toContain('href="/integrations/connect-outside-tool"');
+  expect(html).toContain("Connect an outside tool");
+  expect(html).not.toContain("one agent at a time");
   expect(m.evidence).toHaveBeenCalledWith("assistant");
 });
 
@@ -166,7 +169,7 @@ it("says when the keeper could not be asked, when no agent uses outside tools, a
   m.declared.mockResolvedValue([{ agent: "assistant", displayName: "Assistant", servers: [{ name: "docs", needsKey: true, tools: ["search"] }] }]);
   expect(await show("outside")).toContain("Key status unavailable: the keeper could not be asked.");
   m.declared.mockResolvedValue([]);
-  expect(await show("outside")).toContain("No agent uses outside tools yet. Open an agent and choose Outside tools to add some.");
+  expect(await show("outside")).toContain("No agent uses outside tools yet. Use Connect an outside tool to add some.");
   m.declared.mockResolvedValue(null);
   expect(await show("outside")).toContain("Outside tools could not be read. Reload the page to try again.");
 });
