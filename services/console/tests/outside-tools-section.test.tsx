@@ -45,7 +45,7 @@ describe("OutsideToolsSection", () => {
     const html = renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[rates, notes]} />);
     expect(html).toContain("Outside tools");
     expect(html).toContain("tools.example.com");
-    expect(html).toContain("Trusted: lookups run without asking");
+    expect(html).toContain("Run without asking: find_rate");
     expect(html).toContain("Every call asks you first.");
     expect(html).toContain("Needs a key: yes");
     expect(html).toContain("Needs a key: no");

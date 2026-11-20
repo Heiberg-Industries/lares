@@ -31,6 +31,20 @@ describe("OutsideConnectionsEditor", () => {
     expect(screen.getByText("The last applied runtime definition matches these saved declarations.")).toBeTruthy();
   });
 
+  it("offers a run-without-asking switch only for lookups, and saves a newly ticked one for the page's action to bind", async () => {
+    const existing = { name: "rates", url: "https://tools.example.org/mcp", description: "Rates", token: false,
+      tools: { allow: ["find_rate", "set_rate"], read: ["find_rate"] } };
+    render(<OutsideConnectionsEditor initial={{ ...initial, connections: [existing] }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    // Only the lookup is listed; the tool that changes something has no switch.
+    expect(screen.getByLabelText("find_rate")).toBeTruthy();
+    expect(screen.queryByLabelText("set_rate")).toBeNull();
+    fireEvent.click(screen.getByLabelText("find_rate"));
+    fireEvent.click(screen.getByRole("button", { name: "Save connections" }));
+    await waitFor(() => expect(mocks.save).toHaveBeenCalled());
+    expect(mocks.save.mock.calls[0]![0].connections[0].tools.trusted).toEqual([expect.objectContaining({ tool: "find_rate", pin: "0".repeat(64) })]);
+  });
+
   it("shows the save warning only for a running agent", () => {
     render(<OutsideConnectionsEditor initial={initial} running={false} />);
     expect(screen.queryByText(SAVE_ENDS_CONVERSATIONS)).toBeNull();
