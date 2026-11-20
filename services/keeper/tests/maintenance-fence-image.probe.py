@@ -804,14 +804,14 @@ def prove_keeper_default_admission() -> None:
         "s.on('data',x=>b+=x);s.on('end',()=>{clearTimeout(t);let r;"
         "try{r=JSON.parse(b)}catch{process.exit(3)};"
         "if(r.ok!==true||r.result?.slot!=='notion:shared'||"
-        "r.result?.state!=='host-administration-required'||r.result?.guidance!=='review-consumers'){"
+        "r.result?.state!=='not-configured'||r.result?.guidance!==null){"
         "console.error(JSON.stringify({state:r.result?.state,guidance:r.result?.guidance}));"
         "process.exit(4)};"
         "console.log(JSON.stringify({ready:true,state:r.result.state}))});"
         "s.on('error',()=>{clearTimeout(t);process.exit(5)})"
     )
-    # The slot is prepared and holds no key. In this fixture the keeper answers "review-consumers"
-    # (observed in CI); the pair below pins exactly that, so any other answer fails the probe.
+    # The slot is prepared and holds no key, and the keeper's own container (which mounts the whole
+    # keeper root) is not counted as a holder of the key: the exact status is "not-configured", no guidance.
     readiness_result: subprocess.CompletedProcess | None = None
     while time.monotonic() < deadline:
         inspected = docker("inspect", name, check=False, timeout=15)

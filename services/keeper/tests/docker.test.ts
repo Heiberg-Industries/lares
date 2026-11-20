@@ -2,7 +2,8 @@ import { vi,it,expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { Socket } from 'node:net';
 const calls=vi.hoisted(()=>[] as string[][]);
-vi.mock('node:child_process',()=>({execFile:Object.assign((_bin:string,args:string[],_opts:unknown,cb:any)=>{calls.push(args);cb(null,{stdout:args[0]==='network'?'[{"Containers":{"other":{"IPv4Address":"172.18.0.7/16"}},"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]':'',stderr:''});},{})}));
+const reply=vi.hoisted(()=>({fn:undefined as undefined|((args:string[])=>string)}));
+vi.mock('node:child_process',()=>({execFile:Object.assign((_bin:string,args:string[],_opts:unknown,cb:any)=>{calls.push(args);cb(null,{stdout:reply.fn?reply.fn(args):args[0]==='network'?'[{"Containers":{"other":{"IPv4Address":"172.18.0.7/16"}},"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]':'',stderr:''});},{})}));
 import { AgentNotHealthyError, NoOwnedContainerError, OutsideRouteAcknowledgementError, acknowledgeOutsideSquidStage,
   outsideRouteStageAcknowledged, ownedDocker } from '../lib/docker.js';
 const image='example/image@sha256:'+'a'.repeat(64);
@@ -219,4 +220,16 @@ it('honours a smaller probe count',async()=>{
  const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},health as typeof fetch,async()=>{});
  await expect(d.start('bookkeeper','172.18.0.24',false,15)).rejects.toBeInstanceOf(AgentNotHealthyError);
  expect(health).toHaveBeenCalledTimes(15);
+});
+
+it('does not count the keeper\'s own container, which mounts the whole keeper root, as a holder of the Notion key',async()=>{
+ const key='/owned/secrets/notion-token';
+ const mount=(source:string)=>JSON.stringify([{Type:'bind',Source:source}]);
+ const labels=(service:string)=>JSON.stringify({'com.docker.compose.project':'test','com.docker.compose.service':service,'lares.incarnation':'11111111-1111-4111-8111-111111111111'});
+ reply.fn=args=>args[0]==='ps'?'aaaaaaaaaaaa\nbbbbbbbbbbbb\n':args[0]==='inspect'
+  ?(args.at(-1)==='aaaaaaaaaaaa'?`${mount('/owned')}|${labels('lares-keeper')}`:`${mount(key)}|${labels('lares-example')}`):'';
+ try {
+  const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},vi.fn() as unknown as typeof fetch,async()=>{});
+  await expect(d.credentialMounts!(key)).resolves.toEqual([{name:'example',incarnation:'11111111-1111-4111-8111-111111111111',owned:true}]);
+ } finally { reply.fn=undefined; }
 });
