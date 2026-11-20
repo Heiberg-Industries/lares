@@ -627,6 +627,14 @@ changes waiting is left alone and picks the id up when you apply them. Leave the
 Save to clear it. Until it is set, the follow-up schedule stops with "NOTION_MEETINGS_DATA_SOURCE_ID is not set"
 each time it runs, and nothing else is affected.
 
+**The Notion key itself.** On the Connections page, Notion key, you paste the key, choose **Test**,
+then **Apply**. The installer makes the page ready for this on every run, so a new installation has
+the key field from the start, and an installation that was set up before this was possible gets it
+after the next `lares update`. If the page still says it is not ready to store a key, the earlier
+configuration shows that Notion is already used another way (a service outside Lares allowed to
+reach Notion, or an agent with its own key file); the installer prints one line saying which and
+leaves it as it was for you to review. A key that is ready is never switched back by a later run.
+
 The id is stored in the installation's database, so running the installer again keeps it. An older
 installation may still carry it in `/etc/lares/keeper.json` under
 `defaultBindings["chief-of-staff"].environment.NOTION_MEETINGS_DATA_SOURCE_ID`; that value is used

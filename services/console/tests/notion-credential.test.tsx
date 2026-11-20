@@ -53,7 +53,7 @@ it('retains known evidence after an unknown result and permits only an explicit 
 });
 it.each(['prepare-managed-slot', 'review-consumers', 'inspect-journal'] as const)('shows %s guidance without editable secret controls', guidance => {
   const html = renderToStaticMarkup(<NotionCredential initial={{ kind: 'status', status: status({ state: guidance === 'inspect-journal' ? 'recovery-required' : 'host-administration-required', guidance }) }} />);
-  expect(html).not.toContain('type="password"'); expect(html).not.toContain('Test current key'); expect(html).toContain('host operator'); expect(html).toContain('Provider revocation is not implemented');
+  expect(html).not.toContain('type="password"'); expect(html).not.toContain('Test current key'); expect(html).toContain(guidance === 'prepare-managed-slot' ? 'lares update' : 'host operator'); expect(html).toContain('Provider revocation is not implemented');
 });
 it('renders unavailable status as unavailable, never as empty configured evidence', () => {
   const html = renderToStaticMarkup(<NotionCredential initial={{ kind: 'unavailable' }} />);

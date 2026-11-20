@@ -207,7 +207,8 @@ def fixture_secret_values() -> set[str]:
     secrets folder and the installed configuration (whole lines of the two secret folders,
     KEY=VALUE values whose key names a secret, JSON strings whose key names a secret)."""
     values = set(generated_secrets) | {operator_password, app_password}
-    for folder, whole_lines in ((private_root, True), (secrets_dir, True), (fixture_prefix / "etc", False)):
+    for folder, whole_lines in ((private_root, True), (secrets_dir, True),
+                                (fixture_prefix / "srv/lares/secrets", True), (fixture_prefix / "etc", False)):
         try:
             paths = [path for path in folder.rglob("*") if path.is_file() and not path.is_symlink()]
         except Exception:
@@ -620,6 +621,10 @@ def prove_keeper_default_admission() -> None:
                       fixture_prefix / "etc/lares"):
         directory.mkdir(parents=True, exist_ok=True, mode=0o755)
     (egress_dir / "squid.conf").write_text("http_port 3128\nhttp_access deny all\n", encoding="ascii")
+    # The installer makes the keeper's own secret folder (root only) before the keeper starts, and the
+    # renderer now marks the Notion key slot prepared, so the keeper expects this folder to exist.
+    (keeper_root / "secrets").mkdir(exist_ok=True, mode=0o700)
+    (keeper_root / "secrets").chmod(0o700)
 
     # The actual renderer needs the same files Compose will mount. Credentials are disposable
     # fixture values provisioned for this isolated database proof.
@@ -799,11 +804,14 @@ def prove_keeper_default_admission() -> None:
         "s.on('data',x=>b+=x);s.on('end',()=>{clearTimeout(t);let r;"
         "try{r=JSON.parse(b)}catch{process.exit(3)};"
         "if(r.ok!==true||r.result?.slot!=='notion:shared'||"
-        "r.result?.state!=='host-administration-required'||"
-        "r.result?.guidance!=='prepare-managed-slot')process.exit(4);"
+        "r.result?.state!=='host-administration-required'||r.result?.guidance!=='review-consumers'){"
+        "console.error(JSON.stringify({state:r.result?.state,guidance:r.result?.guidance}));"
+        "process.exit(4)};"
         "console.log(JSON.stringify({ready:true,state:r.result.state}))});"
         "s.on('error',()=>{clearTimeout(t);process.exit(5)})"
     )
+    # The slot is prepared and holds no key. In this fixture the keeper answers "review-consumers"
+    # (observed in CI); the pair below pins exactly that, so any other answer fails the probe.
     readiness_result: subprocess.CompletedProcess | None = None
     while time.monotonic() < deadline:
         inspected = docker("inspect", name, check=False, timeout=15)
@@ -824,7 +832,14 @@ def prove_keeper_default_admission() -> None:
         raise ProbeFailure("keeper-startup-timeout")
     if not app_socket.is_socket() or not host_socket.is_socket() or \
        readiness_result is None or readiness_result.returncode != 0:
-        raise ProbeFailure("keeper-ready-rpc-timeout")
+        # Name what the keeper itself said: its last log lines go to the job log (redacted and
+        # trimmed by report_failure), so a socket that answers wrongly is told apart from silence.
+        keeper_log = docker("logs", "--tail", "200", name, check=False, timeout=15)
+        raise ProbeFailure("keeper-ready-rpc-timeout",
+                           step="readiness request exit status %s, answered %s; the keeper's log follows" %
+                           (readiness_result.returncode if readiness_result is not None else "none",
+                            (as_text(readiness_result.stdout) + as_text(readiness_result.stderr)).strip()[:200] if readiness_result is not None else "nothing"),
+                           result=keeper_log)
     proof["claims"]["keeperDefaultServePassedDatabaseReadinessAndBothSockets"] = True
     proof["stages"]["keeperAuthenticatedReadinessRequest"] = True
     if info.get("Path") != expected_entrypoint[0] or info.get("Args") != [

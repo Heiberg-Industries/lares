@@ -98,10 +98,56 @@ export interface KeeperConfigOptions {
   readonly previousOutsideCustody?: KeeperConfig["outsideCustody"];
   readonly previousOutsideRouteConsumer?: NonNullable<KeeperConfig['lifecycle']>['egress']['legacyConsumers'][number];
   readonly previousGatewayBudget?: KeeperConfig["gatewayBudget"];
+  /** What the keeper.json already on this host said about the Notion key slot, or nothing on a
+   *  fresh install. Decides whether the slot is rendered prepared (see `decideNotionSlot`). */
+  readonly previousNotionSlot?: PreviousNotionSlot;
   /** Optional Console model-purpose signer. Omit only when the installation has no custody file. */
   readonly modelPurposeConsoleSigningKeyFile?: string | null;
   /** Dedicated shared socket subdirectory for the chief-only model-purpose claim socket. */
   readonly modelPurposeRuntimeDir?: string | null;
+}
+
+/** The parts of an earlier keeper.json that say who could already be using a Notion key. */
+export interface PreviousNotionSlot {
+  /** The `mode` the file was rendered in. Anything but "rendered" is an older per-agent-image install. */
+  readonly mode?: unknown;
+  readonly credentials?: { prepared?: unknown; inventoryComplete?: unknown; retainedConsumers?: unknown };
+  /** Hosts the egress proxy lets outside services reach (`lifecycle.egress.legacyConsumers`). */
+  readonly legacyConsumerHosts: readonly (readonly string[])[];
+  /** Every binding's secret keys (`lifecycle.bindings` and `lifecycle.defaultBindings`). */
+  readonly bindingSecretKeys: readonly string[];
+}
+
+export interface NotionSlotDecision {
+  readonly prepared: boolean;
+  readonly inventoryComplete: boolean;
+  readonly retainedConsumers: NonNullable<KeeperConfig["credentials"]>["retainedConsumers"];
+  /** Set when the slot stays unprepared on purpose: why, in words for the person installing. */
+  readonly leftUnpreparedBecause?: string;
+}
+
+/** The Notion key slot is a file the keeper alone writes, in a folder only root can open. "Prepared"
+ *  says that folder is the keeper's and no outside key file is being adopted; "inventory complete"
+ *  says every service that could read the key is known. On a fresh install nothing else exists, so
+ *  both are true. A prepared slot is never flipped back. An installation that is not yet prepared
+ *  is prepared only when its own earlier config proves nobody else uses a Notion key: it was
+ *  rendered by this installer, names no Notion consumer outside the engine, and binds no Notion
+ *  key file to any agent. Anything else stays as it was for a person to review. */
+export function decideNotionSlot(previous: PreviousNotionSlot | undefined): NotionSlotDecision {
+  const ready = { prepared: true, inventoryComplete: true, retainedConsumers: [] as NotionSlotDecision["retainedConsumers"] };
+  if (!previous) return ready;
+  const old = previous.credentials;
+  if (old?.prepared === true) {
+    const retained = Array.isArray(old.retainedConsumers) ? old.retainedConsumers as NotionSlotDecision["retainedConsumers"] : [];
+    return { prepared: true, inventoryComplete: old.inventoryComplete === true, retainedConsumers: retained };
+  }
+  const held = (reason: string): NotionSlotDecision => ({ prepared: false, inventoryComplete: false,
+    retainedConsumers: Array.isArray(old?.retainedConsumers) ? old.retainedConsumers as NotionSlotDecision["retainedConsumers"] : [], leftUnpreparedBecause: reason });
+  if (previous.mode !== "rendered") return held("this installation was not set up by the current installer");
+  if (Array.isArray(old?.retainedConsumers) && old.retainedConsumers.length > 0) return held("an administrator has recorded services that use a Notion key");
+  if (previous.legacyConsumerHosts.some(hosts => hosts.some(h => /notion/i.test(h)))) return held("a service outside the engine is allowed to reach Notion");
+  if (previous.bindingSecretKeys.includes("NOTION_TOKEN_FILE")) return held("an agent is set up with its own Notion key file");
+  return ready;
 }
 
 /** Refuses (throws `ReleaseManifestInvalid`, re-thrown from `imageFor`) when the release names
@@ -151,6 +197,7 @@ export function renderKeeperConfig(
   }
 
   const tzEnvironment: Record<string, string> = opts.ownerHomeTz ? { OWNER_HOME_TZ: opts.ownerHomeTz } : {};
+  const { leftUnpreparedBecause: _why, ...notionSlot } = decideNotionSlot(opts.previousNotionSlot);
   return {
     publicDoorOrigin: opts.publicDoorOrigin,
     designatedOwnerId: opts.ownerId,
@@ -180,11 +227,12 @@ export function renderKeeperConfig(
     // under its writable same-path root; installer-owned inputs remain under opts.secretsDir and
     // are mounted read-only into the keeper.
     secretsDir: managedSecretsDir,
-    // Preparation is an explicit host step. Never adopt an external token or widen mounts.
+    // The installer prepares the slot when it can prove nobody else uses a Notion key (see
+    // `decideNotionSlot`). It never adopts an external token or widens mounts.
     credentials: {
       ...(opts.credentialAdministrator ? { administrator: opts.credentialAdministrator } : {}),
-      slot: "notion:shared", binding: "NOTION_TOKEN_FILE", prepared: false,
-      inventoryComplete: false, retainedConsumers: [],
+      slot: "notion:shared", binding: "NOTION_TOKEN_FILE",
+      ...notionSlot,
     },
     rolesDir: KEEPER_ROLES_DIR,
     templatesDir: KEEPER_TEMPLATES_DIR,
