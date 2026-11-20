@@ -443,7 +443,7 @@ export async function triageOneMessage(
 export function notifyTextFor(result: TriageResult): string | null {
   if (result.outcome === "drafted") {
     return `✍️ Drafted a reply to ${result.from} re "${result.subject}" in ${result.account} — review in Gmail.${result.draftNote ? ` ${result.draftNote}` : ""}${
-      result.needsAnswer?.length ? `\nNeeds your answer: ${result.needsAnswer.join("; ")} (marked [confirm: …] in the draft; remove the marker before sending)` : ""}`;
+      result.needsAnswer?.length ? `\nNeeds your answer: ${result.needsAnswer.join("; ")} (marked [confirm: …] in the draft; replace each marker before sending)` : ""}`;
   }
   if (result.outcome === "draft-pending") {
     return `✍️ Draft already pending for ${result.from} re "${result.subject}" in ${result.account} — review in Gmail.`;

@@ -183,7 +183,8 @@ export function noCommitmentsClause(): string {
     "Do not offer to confirm, settle or work one out later either. " +
     "Where the reply needs one, write [confirm: <what the owner must decide>] at that spot, " +
     "for example [confirm: new delivery date] or [confirm: price for the extra segment]. " +
-    "Ask nothing of the owner inside the email itself: the marker is the question, and it is removed before sending. " +
+    "Ask nothing of the owner inside the email itself: the marker is the question, and the owner replaces it before sending, " +
+    "so keep it to the decision needed and put nothing private in it. " +
     "You may ask the counterpart a question or suggest a next step that commits to nothing."
   );
 }
