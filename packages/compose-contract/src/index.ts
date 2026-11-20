@@ -163,17 +163,28 @@ export function absentBlockClause(): string {
 }
 
 /**
- * Suggestions, not promises: a draft may propose next steps and ask questions, but never commits
- * the owner to a date, payment, booking, price or deliverable (it began as a blanket ban on any
- * forward-looking sentence, which also stopped ordinary suggestions).
+ * Never commit the owner to something the thread has not agreed.
  *
- * Opt-in like absentBlocks: only the callers that draft outbound replies want it.
+ * A draft is written in the owner's name, so any date, deadline, price, discount, scope,
+ * deliverable or meeting time in it reads as the owner's own promise. A draft once told a customer
+ * it would confirm a delivery date and offered to settle a price, neither of which anybody had
+ * agreed. The rule: state such a thing only when the thread already agreed it, or the owner
+ * dictated it in this conversation. Otherwise leave a `[confirm: …]` marker where it would go.
+ * The marker is the contract with the code around it: the approval card and the triage ping list
+ * every marker as "Needs your answer", so the owner sees what to decide before sending. The marker
+ * text is parsed by `extractConfirmMarkers` in the agent kit; keep the two spelled the same.
+ *
+ * Opt-in like absentBlocks: only the callers that draft outbound email want it.
  */
 export function noCommitmentsClause(): string {
   return (
-    "You may suggest a next step or ask a question (\"shall we say Friday?\", \"happy to send the deck " +
-    "if useful\"). Do not promise, on the owner's behalf, a date, a payment, a booking, a price or a " +
-    "deliverable — offer it as a suggestion the owner can confirm, or leave it out."
+    "Never commit the owner to a date, deadline, price, discount, scope, deliverable or meeting time " +
+    "unless the thread already agreed it or the owner told you to say it. " +
+    "Do not offer to confirm, settle or work one out later either. " +
+    "Where the reply needs one, write [confirm: <what the owner must decide>] at that spot, " +
+    "for example [confirm: new delivery date] or [confirm: price for the extra segment]. " +
+    "Ask nothing of the owner inside the email itself: the marker is the question, and it is removed before sending. " +
+    "You may ask the counterpart a question or suggest a next step that commits to nothing."
   );
 }
 

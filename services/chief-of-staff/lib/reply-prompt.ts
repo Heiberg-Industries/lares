@@ -53,7 +53,7 @@ export interface ReplyPromptInput {
 }
 
 export const REPLY_FORMAT_LINE =
-  'Return ONLY the reply in exactly: "Subject: <subject>\\n\\n<body>" — no commentary, no placeholders like "[Name]".';
+  'Return ONLY the reply in exactly: "Subject: <subject>\\n\\n<body>" — no commentary, no placeholders like "[Name]". The only bracket allowed is a [confirm: …] marker.';
 
 export function buildReplyPrompt(i: ReplyPromptInput): string {
   const who = i.ownerName?.trim() || "the owner";

@@ -24,6 +24,7 @@
 import { classifySender } from "@lares/junk";
 import { gatewayComplete } from "./llm-complete.js";
 import { detectLanguage, buildVoiceBlock, pickModel } from "./voice.js";
+import { extractConfirmMarkers } from "@lares/agent-kit/confirm-markers";
 import { buildReplyPrompt, type ReplyExample } from "./reply-prompt.js";
 import { selectExemplars } from "./voice-learn.js";
 import { replyRecipients, ownerRecipientPosition, otherToNames, PRIVATE_REPLY_NOTE } from "./reply-recipients.js";
@@ -52,7 +53,9 @@ export type TriageResult =
   | { outcome: "fyi"; reason?: "mailing-list"; from: string; subject: string }
   | { outcome: "drafted"; from: string; subject: string; account: string; context?: Record<string, ContextStatus>;
       /** The Gmail draft just created (sql/001_baseline.sql remembers it so its recipients can be changed later). */
-      draftId?: string; threadId?: string; draftNote?: string }
+      draftId?: string; threadId?: string; draftNote?: string;
+      /** What the draft left as `[confirm: …]` for the owner to decide before sending. */
+      needsAnswer?: string[] }
   | { outcome: "draft-pending"; from: string; subject: string; account: string };
 
 export interface EmailTriageDeps {
@@ -419,6 +422,7 @@ export async function triageOneMessage(
     { model, purpose: "writer" },
   );
   const { body: replyBody } = splitDraft(draft, subject);
+  const open = extractConfirmMarkers(replyBody);
   // The subject comes from the original, so the draft joins its Gmail conversation.
   const replySubject = threadedSubject(subject);
 
@@ -430,14 +434,16 @@ export async function triageOneMessage(
   });
 
   return { outcome: "drafted", from, subject: replySubject, account, context , draftId: created.gmailDraftId, threadId: created.gmailThreadId || threadId,
-    ...(ownerPosition === "bcc_or_list" ? { draftNote: PRIVATE_REPLY_NOTE } : {}) };
+    ...(ownerPosition === "bcc_or_list" ? { draftNote: PRIVATE_REPLY_NOTE } : {}),
+    ...(open.length > 0 ? { needsAnswer: open } : {}) };
 }
 
 /** Sends the informational Slack ping for a completed triage — matches the old workflow's
  *  wording, split out so the schedule can call it after recordOutcome. */
 export function notifyTextFor(result: TriageResult): string | null {
   if (result.outcome === "drafted") {
-    return `✍️ Drafted a reply to ${result.from} re "${result.subject}" in ${result.account} — review in Gmail.${result.draftNote ? ` ${result.draftNote}` : ""}`;
+    return `✍️ Drafted a reply to ${result.from} re "${result.subject}" in ${result.account} — review in Gmail.${result.draftNote ? ` ${result.draftNote}` : ""}${
+      result.needsAnswer?.length ? `\nNeeds your answer: ${result.needsAnswer.join("; ")} (marked [confirm: …] in the draft; remove the marker before sending)` : ""}`;
   }
   if (result.outcome === "draft-pending") {
     return `✍️ Draft already pending for ${result.from} re "${result.subject}" in ${result.account} — review in Gmail.`;
