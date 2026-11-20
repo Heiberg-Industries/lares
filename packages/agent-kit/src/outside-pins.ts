@@ -58,6 +58,12 @@ export function descriptionsHash(tools: readonly ListedTool[], allow: readonly s
   return sha256(canonical(allowedTools(tools, allow)));
 }
 
+/** Fingerprint of ONE tool as the model is shown it: name, description and input schema. The owner's
+ *  per-tool "run without asking" is bound to it, so a changed description voids that trust. */
+export function toolPinHash(tool: { name: string; description?: string; inputSchema?: unknown }): string {
+  return sha256(canonical({ name: tool.name, description: tool.description ?? "", inputSchema: tool.inputSchema ?? null }));
+}
+
 /** Descriptions longer than this (as JSON) are not kept for review; the fingerprint still is. A
  *  server writes these words, so the store must not grow without bound because of one. */
 export const KEPT_TOOLS_MAX_BYTES = 64 * 1024;

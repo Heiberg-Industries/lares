@@ -25,7 +25,7 @@ export type OutsideUseCapture = {
   outside: {
     scope: Exclude<AgentDefinition['grants'][number]['scope'], 'none'>;
     autonomy: 'gated' | 'autonomous';
-    connection: { name: string; url: string; auth: 'bearer'; allow: readonly string[]; read: readonly string[]; trusted: boolean; runsAt?: string };
+    connection: { name: string; url: string; auth: 'bearer'; allow: readonly string[]; read: readonly string[]; runsAt?: string };
   };
   grant: { kind: 'owner'; validUntil: null } | { kind: 'grant'; id: string; principal: { kind: 'member' | 'organisation'; id: string }; permission: 'use'; validUntil: string | null };
 };
@@ -235,7 +235,7 @@ export class PgGrantStore {
         actor:{memberId:member.id,organisationId:member.organisationId,role:member.role},
         agent:{name:agentName,ownerMemberId:row.owner_member_id,accessRevision,definitionHash:row.hash},
         ownerPolicy:proof.ownerPolicy,
-        outside:{scope:locked.scope,autonomy:locked.autonomy,connection:{name:connection.name,url:connection.url,auth:'bearer',allow,read,trusted:connection.trusted,...(connection.runsAt===undefined?{}:{runsAt:connection.runsAt})}},
+        outside:{scope:locked.scope,autonomy:locked.autonomy,connection:{name:connection.name,url:connection.url,auth:'bearer',allow,read,...(connection.runsAt===undefined?{}:{runsAt:connection.runsAt})}},
         grant:proof.grant,
       };
     });

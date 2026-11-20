@@ -89,9 +89,13 @@ export const outsideToolSchema = z.strictObject({
     allow: z.array(z.string().min(1)).min(1),
     /** The subset of `allow` that only looks things up. */
     read: z.array(z.string().min(1)),
+    /** The tools the owner lets run without a card. Each is also in `read` (a tool that changes
+     *  something always asks; the definition check refuses otherwise). `by` is the member who
+     *  switched it on, `at` when, and `pin` the fingerprint of the tool's description and input schema as the
+     *  owner saw it (`toolPinHash`): a changed description no longer matches, so the trust is void. OPTIONAL WITH NO DEFAULT, like `outsideTools`, so an
+     *  untrusting entry keeps its hash. Trust ends when a tool's description changes. */
+    trusted: z.array(z.strictObject({ tool: z.string().min(1), by: z.string().min(1).max(256), at: z.string().datetime({ offset: true }), pin: z.string().regex(/^[a-f0-9]{64}$/) })).optional(),
   }),
-  /** The owner's decision that lookups may run freely. Changes always ask (runtime, not here). */
-  trusted: z.boolean().default(false),
   runsAt: z.string().min(1).optional(),
 });
 export type OutsideToolDeclaration = z.infer<typeof outsideToolSchema>;

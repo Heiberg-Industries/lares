@@ -76,6 +76,19 @@ export function outsideToolsInEffect(
   return tools;
 }
 
+/** The owner's recorded trust for one tool: only a tool listed in `read` can have it. */
+export function trustGrantFor(entry: Pick<OutsideToolDeclaration, "tools">, bareTool: string): NonNullable<OutsideToolDeclaration["tools"]["trusted"]>[number] | undefined {
+  return entry.tools.read.includes(bareTool) ? (entry.tools.trusted ?? []).find((t) => t.tool === bareTool) : undefined;
+}
+
+/** Whether the owner lets this tool run without a card, NOW. It must be in BOTH `read` and `trusted`
+ *  (a tool that changes something always asks), and the description the owner switched it on for must be
+ *  the one in force (`currentPin`, from `toolPinHash`); with no current pin the answer is no. */
+export function isTrustedRead(entry: Pick<OutsideToolDeclaration, "tools">, bareTool: string, currentPin: string | undefined): boolean {
+  const grant = trustGrantFor(entry, bareTool);
+  return grant !== undefined && currentPin !== undefined && grant.pin === currentPin;
+}
+
 /** The https hostnames the keeper must open in the proxy for these entries. Internal http
  *  service names add nothing (the internal networks are already reachable). An entry whose URL
  *  fails the check is skipped here; the definition check refuses it at save. */
