@@ -21,6 +21,7 @@
 //      `--env-file` carries the whole set and `docker compose` has nothing left to guess.
 //
 // NOTHING HERE TOUCHES A NETWORK, A REGISTRY OR A CONTAINER.
+import { createHash } from "node:crypto";
 import {financialCustodyConfigSchema,gatewayBudgetConfigSchema,nativeCustodyConfigSchema,outsideCustodyConfigSchema} from "../../keeper/lib/config.js";
 import { lifecycleSchema } from "../../keeper/lib/lifecycle-config.js";
 import { loadBoundOutsideCustodyKey } from "../../keeper/lib/outside-custody.js";
@@ -30,7 +31,7 @@ import { readFileSync, writeFileSync, chmodSync, lstatSync, existsSync } from "n
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest, imageFor } from "../lib/release-manifest.js";
-import { decideNotionSlot, renderKeeperConfig, type PreviousNotionSlot } from "../lib/keeper-config.js";
+import { decideNotionSlot, keeperAddressFor, renderKeeperConfig, type PreviousNotionSlot } from "../lib/keeper-config.js";
 import { provenanceRecord } from "../lib/doctor-parity.js";
 import { DEADLINE_CALENDAR_IN_CONTAINER } from "../lib/stack-compose.js";
 import { runtimeBindingsSchema } from "../../keeper/lib/runtime-bindings.js";
@@ -135,6 +136,8 @@ export function renderKeeperComposeEnvironment(manifest: ReleaseManifest, input:
     ]),
     ...(config.modelPurposeConsoleSigningKeyFile ? [`LARES_MODEL_PURPOSE_SIGNING_KEY_FILE=${config.modelPurposeConsoleSigningKeyFile}`] : []),
     `LARES_PROXY_ADDRESS=${input.proxyAddress}`,
+    // The keeper is pinned to one address so the outside route's source address is really its own.
+    `LARES_KEEPER_ADDRESS=${keeperAddressFor(config, input.proxyAddress)}`,
     `LARES_NETWORK=${input.network}`,
     `LARES_MAINTENANCE_ADMISSION_DIR=${input.maintenanceAdmission.directory}`,
     `LARES_MAINTENANCE_INSTALLATION_ID=${input.maintenanceAdmission.installationId}`,
@@ -169,6 +172,7 @@ const ARGUMENTS = [
   "domain", // the installation's public domain; becomes publicDoorOrigin (https://<domain>)
   "ownerHomeTz", // the owner's time zone, "" when unknown
   "maintenancePrefix", // host prefix whose completed custody receipt is validated before reads
+  "outsideKeyFingerprint", // SHA-256 of the outside custody key the installer just prepared, "" when it prepared none
 ] as const;
 
 const HELP_TEXT = [
@@ -217,9 +221,22 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
   // wipe those settings, and the previous file is left untouched for the owner to repair.
   const previous = readPrevious(at("keeperConfig"));
   if (previous.outsideCustody) {
-    const key = loadBoundOutsideCustodyKey(join(at("maintenancePrefix"), "var/lib/lares/outside-custody/key"), previous.outsideCustody.keyFingerprint);
-    key.fill(0);
+    const keyPath = join(at("maintenancePrefix"), "var/lib/lares/outside-custody/key");
+    if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING === "1") {
+      // Test fixtures run as an ordinary user, so the root-ownership checks cannot pass; the
+      // file must still hold the key the earlier keeper.json committed to.
+      if (createHash("sha256").update(readFileSync(keyPath)).digest("hex") !== previous.outsideCustody.keyFingerprint)
+        throw new Error("Outside credential is not available");
+    } else {
+      const key = loadBoundOutsideCustodyKey(keyPath, previous.outsideCustody.keyFingerprint);
+      key.fill(0);
+    }
   }
+  // The installer prepared a key on this run (host side, because it needs root and python) and
+  // hands over only its fingerprint, which the same script just read from the preparing command.
+  // renderKeeperConfig refuses anything that is not a SHA-256; the keeper itself checks the file
+  // against it at every start, so a wrong value stops the keeper and never widens anything.
+  const newOutsideKeyFingerprint = previous.outsideCustody ? "" : at("outsideKeyFingerprint");
 
   // The deadline calendar, bound for the chief of staff only when it is a plain file. The keeper
   // refuses a symlink in verifyBindingSources, which would block every later change to every
@@ -241,6 +258,7 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     ...(previous.gatewayBudget?{previousGatewayBudget:previous.gatewayBudget}:{}),
     ...(previous.outsideCustody?{previousOutsideCustody:previous.outsideCustody}:{}),
     ...(previous.outsideRouteConsumer?{previousOutsideRouteConsumer:previous.outsideRouteConsumer}:{}),
+    ...(newOutsideKeyFingerprint?{newOutsideKeyFingerprint}:{}),
     ...(previous.notionSlot?{previousNotionSlot:previous.notionSlot}:{}),
     modelPurposeConsoleSigningKeyFile: modelPurposeKeyFile,
     modelPurposeRuntimeDir: modelPurposeKeyFile ? join(at("socketDir"), "model-purpose") : null,

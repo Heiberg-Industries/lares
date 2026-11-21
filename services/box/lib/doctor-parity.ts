@@ -37,6 +37,9 @@ export interface ParityInput {
   readonly keeperConfig: unknown;
   readonly keeperConfigPresent: boolean;
   readonly rendered: ProvenanceRecord | null;
+  /** What the host saw in the keeper's egress folder: "ready" when the last firewall seal carried
+   *  the outside route's stage marker, "not-ready" when it did not, absent when it could not look. */
+  readonly outsideRoute?: "ready" | "not-ready";
 }
 
 /** keeper.json parts that a shipped Lares command (not the installer's render) writes later, on
@@ -44,8 +47,9 @@ export interface ParityInput {
  *  documented hand step writes is not listed, so parity flags it.
  *    budgetFinancial, budgetNative, gatewayBudget  ops/budget-commands.py (`lares budget setup`)
  *    lifecycle.runtime.google                      ops/configure-google-keeper.py
- *  No shipped command writes `outsideCustody`, `lifecycle.egress.legacyConsumers` or
- *  `lifecycle.runtime.microsoft` (they are set by an operator by hand), so they are not listed. */
+ *  The installer itself writes `outsideCustody` and the outside route's consumer (it keeps them
+ *  across runs), so they are compared like any other rendered setting. No shipped command writes
+ *  `lifecycle.runtime.microsoft` (it is set by an operator by hand), so it is not listed. */
 export const TOOL_MANAGED_PREFIXES: readonly string[] = [
   "budgetFinancial",
   "budgetNative",
@@ -232,4 +236,29 @@ export function checkParity(input: ParityInput): CheckResult {
     };
   }
   return { id: "parity", state: "ok", say: `This server runs exactly release ${releaseName}, with nothing extra.`, fix: null };
+}
+
+/** Whether outside tools can be connected on this server, in words for the owner. "On" means the
+ *  keeper is configured with outside custody and a route for it; the route is "ready" once a
+ *  firewall seal has carried its marker, which happens when the keeper starts and whenever an
+ *  agent or an outside tool is saved. */
+export function checkOutsideTools(input: ParityInput): CheckResult {
+  const config = input.keeperConfig as { outsideCustody?: { routeConsumerName?: string }; lifecycle?: { egress?: { legacyConsumers?: { name?: string }[] } } } | undefined;
+  if (!input.keeperConfigPresent || config === undefined || config === null) {
+    return { id: "outside-tools", state: "unknown", say: "Outside tools: the keeper's configuration could not be read, so this was not checked.", fix: null };
+  }
+  const custody = config.outsideCustody;
+  if (!custody) {
+    return { id: "outside-tools", state: "warn", say: "Outside tools are OFF: this server has no outside custody, so no outside tool can connect.",
+      fix: "sudo lares update --release <the release you run>   (this switches outside tools on once)" };
+  }
+  const route = config.lifecycle?.egress?.legacyConsumers?.some(c => c.name === custody.routeConsumerName) === true;
+  if (!route) {
+    return { id: "outside-tools", state: "fail", say: "Outside tools are ON but their route is missing from the keeper's configuration, so none can connect.", fix: "Contact the person who set up this server: this needs operator recovery." };
+  }
+  if (input.outsideRoute === "not-ready") {
+    return { id: "outside-tools", state: "warn", say: "Outside tools are ON, but their route is NOT ready yet: it becomes ready when the keeper has finished starting or when an agent is next saved.",
+      fix: "Wait a minute after a restart; if it stays like this, run: sudo docker logs lares-keeper 2>&1 | grep -i 'outside route'" };
+  }
+  return { id: "outside-tools", state: "ok", say: input.outsideRoute === "ready" ? "Outside tools are ON and their route is ready." : "Outside tools are ON; whether their route is ready could not be seen from here.", fix: null };
 }

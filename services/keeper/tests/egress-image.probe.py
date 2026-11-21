@@ -1545,6 +1545,8 @@ def rendered_compose_environment(subnet, proxy_address, identity, epoch):
             env[variable] = network
         elif variable == 'LARES_PROXY_ADDRESS':
             env[variable] = proxy_address
+        elif variable == 'LARES_KEEPER_ADDRESS':
+            env[variable] = str(ipaddress.ip_address(proxy_address) - 1)
         elif variable == 'LARES_EGRESS_DIR':
             env[variable] = str(config_root)
         elif variable == 'LARES_MAINTENANCE_ADMISSION_DIR':

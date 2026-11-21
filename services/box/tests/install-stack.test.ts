@@ -114,7 +114,7 @@ beforeEach(() => {
   // A fourth is run_keeper's `render-keeper-config` at the end of the install. This
   // file is about the stack, so that one gets a placeholder pair of files, not the real
   // renderer — tests/install-keeper.test.ts is where THAT one runs for real.
-  stub("pnpm", `case "$*" in *render-keeper-config*) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; *render-database-bootstrap*) exec ${REAL_NODE} --import tsx/esm "${join(here, "..", "bin", "render-database-bootstrap.ts")}" "\${@:4}" ;; *render-stack*) exec ${REAL_NODE} --import tsx/esm "${join(here, "..", "bin", "render-stack.ts")}" "\${@:4}" ;; esac\nexit 0`);
+  stub("pnpm", `case "$*" in *render-keeper-config*) printf '{"outsideCustody":{}}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; *render-database-bootstrap*) exec ${REAL_NODE} --import tsx/esm "${join(here, "..", "bin", "render-database-bootstrap.ts")}" "\${@:4}" ;; *render-stack*) exec ${REAL_NODE} --import tsx/esm "${join(here, "..", "bin", "render-stack.ts")}" "\${@:4}" ;; esac\nexit 0`);
   stub("id", "echo 0");                                   // running as root
   stub("uname", "echo Linux");
   stub("free", 'echo "Mem: 8192 1024 7168"');

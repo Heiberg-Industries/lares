@@ -2357,6 +2357,20 @@ def main(argv: list[str]) -> int:
         if not pathlib.Path("/usr/local/bin/lares").is_symlink():
             raise RuntimeError("the installer finished without installing the lares command")
         passed("install-finished-from-an-ordinary-folder")
+
+        # Outside tools need outside custody. A fresh install must have switched it on by itself:
+        # a custody block, one route of its own with no hosts yet, and the keeper pinned to the
+        # route's address so the route's source really is the keeper.
+        keeper_json = json.loads(pathlib.Path("/etc/lares/keeper.json").read_text())
+        custody = keeper_json.get("outsideCustody")
+        consumers = keeper_json["lifecycle"]["egress"]["legacyConsumers"]
+        route = [c for c in consumers if custody and c["name"] == custody["routeConsumerName"]]
+        if not custody or len(route) != 1 or route[0]["hosts"] != []:
+            raise RuntimeError("a fresh install did not switch outside custody on with an empty route")
+        keeper_ip = output("docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", output("docker", "ps", "-q", "--filter", "label=com.docker.compose.service=lares-keeper").split()[0]).split()
+        if route[0]["address"] not in keeper_ip:
+            raise RuntimeError("the keeper is not running on the outside route's address")
+        passed("outside-custody-on-after-a-fresh-install")
         wait_for_sign_in_offer()
         passed("console-answers-over-https-and-offers-sign-in")
 
@@ -2620,6 +2634,10 @@ def main(argv: list[str]) -> int:
         if len(parity) != 1 or not parity[0].startswith("PASS"):
             raise RuntimeError(f"the parity check did not read ok on this install: {parity or 'no such line'}")
         passed("doctor-parity-reads-ok-on-a-fresh-install")
+        outside = [line for line in said.splitlines() if "Outside tools" in line]
+        if len(outside) != 1 or not outside[0].startswith("PASS") or "route is ready" not in outside[0]:
+            raise RuntimeError(f"lares doctor did not report outside tools ON with the route ready: {outside or 'no such line'}")
+        passed("doctor-reports-outside-tools-on-and-route-ready")
 
         # One harmless hand-set key in keeper.json must be named by path and fail the doctor; the
         # file is put back byte for byte afterwards (the keeper only reads it when it starts).

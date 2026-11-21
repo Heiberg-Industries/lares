@@ -27,7 +27,7 @@ const secrets = join(etc, "secrets"), keeperConfig = join(etc, "keeper.json"), r
 const stage = join(root, "stage");
 const ownerId = "neutral-ci-owner", domain = "example.test", alias = "lares-brain", providerModel = "openai/synthetic-model";
 const keyPath = join(secrets, "gateway-budget-service-key"), policyPath = join(etc, "native-policy.json");
-const request = { prefix, releaseFile, project: "lares-ci", network: "lares-ci", subnet: "172.30.42.0/24", proxyAddress: "172.30.42.2", pgDatabase: "lares_ci" };
+const request = { prefix, releaseFile, project: "lares-ci", network: "lares-ci", subnet: "172.30.42.0/24", proxyAddress: "172.30.42.250", pgDatabase: "lares_ci" };
 const cli = join(repo, "services", "box", "bin", "render-gateway-authority-stage.ts");
 const activePaths = {
   keeperConfig: join(etc, "keeper.json"),
@@ -134,7 +134,7 @@ const run = () => {
     ownerHomeTz: "Europe/Oslo", modelAlias: alias, pgDatabase: request.pgDatabase, deadlineCalendarFile: null,
   });
   const profileText = `${JSON.stringify(profile)}\n`;
-  const environmentKeeper = { ...previousKeeper, lifecycle: { maintenanceAdmission: {
+  const environmentKeeper = { ...previousKeeper, lifecycle: { subnet: request.subnet, maintenanceAdmission: {
     hostDirectory: maintenanceAdmission.directory,
     installationId: maintenanceAdmission.installationId,
     epoch: maintenanceAdmission.epoch,

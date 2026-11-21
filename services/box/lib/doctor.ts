@@ -40,7 +40,7 @@ import { listApplied, type AppliedMigration } from "./migration-ledger.js";
 import { readEngineSeed } from "./first-owner.js";
 import type { SettingReader } from "@lares/vault-format/settings";
 import { settingByName } from "@lares/vault-format/settings";
-import { checkParity, type ParityInput } from "./doctor-parity.js";
+import { checkOutsideTools, checkParity, type ParityInput } from "./doctor-parity.js";
 import { checkSettings, type FileProbe, type ProbeFile } from "@lares/vault-format/settings-check";
 import { engineDatabasePrivilegesMatch } from "./database-privileges.js";
 
@@ -866,7 +866,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<CheckResult[]> {
     ? await checkProviderKey(deps.testProviderKey)
     : await checkGateway(deps.testModel);
 
-  return [settings, database, migrations, ...(permissions ? [permissions] : []), owner, backup, repairs, gateway, ...(deps.parity ? [checkParity(deps.parity)] : [])];
+  return [settings, database, migrations, ...(permissions ? [permissions] : []), owner, backup, repairs, gateway, ...(deps.parity ? [checkParity(deps.parity), checkOutsideTools(deps.parity)] : [])];
 }
 
 const CHECK_NAME: Record<string, string> = {
@@ -880,6 +880,7 @@ const CHECK_NAME: Record<string, string> = {
   gateway: "Model connection",
   "provider-key": "Model provider key",
   parity: "Matches the release",
+  "outside-tools": "Outside tools",
 };
 
 const STATE_LABEL: Record<CheckState, string> = {

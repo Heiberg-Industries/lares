@@ -941,6 +941,22 @@ while [ ! -e "$MARK.release" ]; do sleep 0.01; done
                 custody.prepare_outside_custody_key(prefix, expected_uid=self.owner)
             self.assertEqual(key_file.read_bytes(), raw)
 
+    def test_outside_key_preparation_accepts_root_only_parents_but_nothing_wider(self) -> None:
+        with patch.dict(os.environ, {"LARES_MAINTENANCE_TESTING": "1"}):
+            for mode, ok in ((0o700, True), (0o775, False)):
+                prefix = self.root / f"outside-key-parents-{mode:o}"
+                (prefix / "var/lib/lares").mkdir(parents=True)
+                for parent in (prefix / "var", prefix / "var/lib", prefix / "var/lib/lares"):
+                    parent.chmod(0o755)
+                (prefix / "var/lib/lares").chmod(mode)
+                if ok:
+                    custody.prepare_outside_custody_key(prefix, expected_uid=self.owner)
+                    self.assertTrue((prefix / "var/lib/lares/outside-custody/key").is_file())
+                else:
+                    with self.assertRaises(ValueError):
+                        custody.prepare_outside_custody_key(prefix, expected_uid=self.owner)
+                    self.assertFalse((prefix / "var/lib/lares/outside-custody").exists())
+
     def test_receipt_publication_fsync_error_leaves_closed_marker(self) -> None:
         fresh = self.root / "fsync-prefix"
         fresh.mkdir()

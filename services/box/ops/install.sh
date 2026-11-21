@@ -1970,18 +1970,47 @@ run_keeper() {
   # only the exact admission child through its own Compose bind.
   local -a keeper_mounts=(--rw "$(dirname "$keeper_config")" --ro "$RELEASE_FILE" --ro "$PREFIX/var/lib/lares-maintenance")
   [ ! -d "$root/installation" ] || keeper_mounts+=(--ro "$root/installation")
+  # Outside tools need outside custody: a key only the keeper can read, a database login and a
+  # route of their own. Switched on here once, on a fresh install and on the first update that
+  # finds none of it; an installation that already has it is left exactly as it is.
+  local outside_key_fingerprint="" outside_dir="$PREFIX/var/lib/lares/outside-custody"
+  if [ -f "$keeper_config" ] && grep -q '"outsideCustody"' "$keeper_config"; then
+    :
+  elif [ -e "$outside_dir" ] || [ -L "$outside_dir" ]; then
+    die "$outside_dir exists but $keeper_config has no outside custody block. That is a half-finished setup, and nothing here adopts it: operator recovery is required. Nothing was changed." "$EX_REFUSED"
+  elif [ ! -s "$SECRETS_DIR/outside-custody-database-password" ]; then
+    die "the outside custody database password file is missing from $SECRETS_DIR, so outside tools cannot be switched on. Nothing was changed." "$EX_REFUSED"
+  elif [ "$DRY" -eq 1 ]; then
+    say "would prepare outside custody (a key only the keeper can read) so outside tools can connect"
+  else
+    local prepared
+    prepared=$(python3 "$HERE/maintenance-custody.py" prepare-outside-custody-key "${PREFIX:-/}" --confirm-fresh) || die "outside custody could not be prepared; operator recovery is required. Nothing else was changed." "$EX_REFUSED"
+    outside_key_fingerprint=$(printf '%s' "$prepared" | python3 -c 'import json,sys; print(json.load(sys.stdin)["keyFingerprint"])') || die "outside custody was prepared but its fingerprint could not be read; operator recovery is required." "$EX_REFUSED"
+    say "outside custody prepared: outside tools can now be connected from the console"
+  fi
+  # A key made by THIS run is taken back if the run stops before keeper.json holds the block that
+  # binds it, so a failed first run can be repeated instead of looking like a half-finished setup.
+  drop_new_outside_key() {
+    # undo: nothing to undo; this removes only the key folder this very run created, and a re-run makes a new one
+    [ -z "$outside_key_fingerprint" ] || [ "$DRY" -eq 1 ] || rm -rf -- "$outside_dir"
+  }
+  # The renderer checks the key file it is told about, so it needs to see that one folder.
+  if [ -d "$outside_dir" ] && [ ! -L "$outside_dir" ]; then keeper_mounts+=(--ro "$outside_dir"); fi
   if ! engine_run "${keeper_mounts[@]}" bin/render-keeper-config.ts \
       "$RELEASE_FILE" "$tmp" "$env_tmp" "$keeper_config" \
       "$LARES_PROJECT" "$root" "$agents_dir" "$retired_dir" "$backup_dir" "$egress_dir" \
       "$SECRETS_DIR" "$socket_dir" "$host_socket_dir" \
       "$LARES_NETWORK" "$LARES_SUBNET" "$LARES_PROXY_ADDRESS" "$gateway_url" \
       "$db_name" "$OWNER_ID" "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")" \
-      "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")" "${PREFIX:-/}"; then
+      "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")" "${PREFIX:-/}" \
+      "$outside_key_fingerprint"; then
     rm -f "$tmp" "$env_tmp" "$tmp.rendered"
+    drop_new_outside_key
     die "the keeper's configuration could not be rendered from '$RELEASE_FILE' and the keeper.json already on this box (the reason is printed above; $keeper_config itself is untouched). The keeper has not been configured or started, and everything written before this — every secret, $INSTALL_ENV, the stack and its containers, the database, the owner — is left exactly as it is." "$EX_REFUSED"
   fi
   if [ ! -s "$tmp" ]; then
     rm -f "$tmp" "$env_tmp" "$tmp.rendered"
+    drop_new_outside_key
     die "rendering the keeper's configuration from '$RELEASE_FILE' produced nothing, so $keeper_config has not been written. The keeper has not been started, and everything written before this is left exactly as it is." "$EX_REFUSED"
   fi
   # The personal Google and Microsoft files keeper.json names are read from inside the keeper
@@ -1991,6 +2020,7 @@ run_keeper() {
   rm -f "$keeper_personal_compose.partial"
   if ! python3 "$BOX_DIR/ops/keeper-personal-mounts.py" "$tmp" "$keeper_personal_compose.partial" "$SECRETS_DIR" "$PREFIX"; then
     rm -f "$tmp" "$env_tmp" "$tmp.rendered" "$keeper_personal_compose.partial"
+    drop_new_outside_key
     die "a Google or Microsoft file named in $keeper_config cannot be given to the keeper (the reason is printed above). The keeper has not been changed and nothing already written has been changed. Fix the file, then run this again." "$EX_REFUSED"
   fi
   # 0600, set HERE as well as by the program that wrote it: `umask 077` at the top of this file

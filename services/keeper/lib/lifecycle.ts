@@ -42,6 +42,11 @@ const INSTALLED_STAGE = 'installed-stage';
 const OUTSIDE_ROUTE_ATTEMPT = 'discovery-route-attempt';
 export type OutsideRouteReview = { readonly policyHash: string; readonly sourceAddress: string; readonly proxyUrl: string };
 export type OutsideRouteLease = { assertCurrent(): Promise<OutsideRouteReview> };
+type OutsideRouteConsumer = { name: string; address: string; hosts: readonly string[] };
+/** The route's allowed hosts: root-config hosts plus the derived ones, each once, in a fixed order. */
+export function mergeRouteHosts(...lists: readonly (readonly string[])[]): string[] {
+    return [...new Set(lists.flat())].sort();
+}
 /** A budget key belongs to the agent, its incarnation and its model name. It does not follow the rest of the
  * definition: ordinary edits are live, and the money stays bound by the model name, the reviewed prices and the limits. */
 export type NativeRuntimeIdentity = { agent: string; incarnation: string; purposeAlias: string };
@@ -386,14 +391,21 @@ export class AgentLifecycle {
         if (override)
             this.refuseUnknownGrants(override.name, override.definition);
         const { agents, defs } = await this.render(override, omit), c = this.config;
+        // The outside route's hosts are the static root-config hosts plus the https hosts of the
+        // outside tools in the SAVED definitions of the agents that are being planned (the saved
+        // agent included). Nothing else can add one; a retired agent or a removed tool drops its host.
+        const selectedRoute = this.outsideConsumer();
+        const outsideRoute = selectedRoute ? { ...selectedRoute, hosts: mergeRouteHosts(selectedRoute.hosts,
+            agents.flatMap(a => outsideHttpsHosts(outsideToolsInEffect(defs.get(a.name)!))) ) } : undefined;
         const e = generateEgress(agents.map(a => ({ name: a.name, address: a.address, grants: defs.get(a.name)!.grants, doors: a.doors.filter(d => d.kind === 'slack' || d.kind === 'telegram') as {
                 kind: 'slack' | 'telegram';
                 enabled: boolean;
             }[], infrastructureHosts: c.egress.infrastructureHosts, outsideHosts: outsideHttpsHosts(outsideToolsInEffect(defs.get(a.name)!)) })),
-            { ...c.egress, managedServices: await this.managedServices?.egress(), tolerateUnknownGrantsFor: new Set(agents.map(a => a.name).filter(n => n !== override?.name)) });
+            { ...c.egress, legacyConsumers: c.egress.legacyConsumers.map(x => outsideRoute && x.name === outsideRoute.name ? outsideRoute : x),
+                managedServices: await this.managedServices?.egress(), tolerateUnknownGrantsFor: new Set(agents.map(a => a.name).filter(n => n !== override?.name)) });
         for (const s of e.skipped)
             console.warn(`keeper: agent ${s.agent} still grants ${s.capability}; it opens no network hosts until the agent is saved in the new style`);
-        return e;
+        return Object.assign(e, { outsideRoute });
     }
     private async seal(override?: {
         name: string;
@@ -401,12 +413,12 @@ export class AgentLifecycle {
     }, omit?: string) {
         await this.apply(await this.plan(override, omit));
     }
-    private async apply(e: ReturnType<typeof generateEgress>) {
+    private async apply(e: ReturnType<typeof generateEgress> & { outsideRoute?: OutsideRouteConsumer }) {
         await withDefinitionNamespace(this.pool, async () => {
             const c = this.config;
             const stage = randomUUID();
             this.outsideRouteReady = undefined;
-            const selected = this.outsideConsumer();
+            const selected = e.outsideRoute;
             if (selected && e.squid.split('http_access deny all').length !== 2)
                 throw new KeeperRefusedError('Outside route policy is unavailable');
             const squid = selected ? e.squid.replace('http_access deny all', `reply_header_add X-Lares-Route-Stage ${stage} all\nhttp_access deny all`) : e.squid;
@@ -426,14 +438,14 @@ export class AgentLifecycle {
                 await this.docker.acknowledgeOutsideStage(stage, selected.address, c.runtime.proxyUrl, deadlineAtMs);
                 this.outsideRouteReady = { epoch: this.outsideControllerEpoch, stage, sourceAddress: selected.address,
                     squidHash: createHash('sha256').update(squid).digest('hex'), nftHash: createHash('sha256').update(e.nft).digest('hex'),
-                    basePolicyHash: this.outsideBasePolicyHash(e, selected) };
+                    basePolicyHash: this.outsideBasePolicyHash(e, selected), hosts: selected.hosts };
             }
         });
     }
     private readonly outsideControllerEpoch = randomUUID();
-    private outsideRouteReady?: { epoch: string; stage: string; sourceAddress: string; squidHash: string; nftHash: string; basePolicyHash: string };
+    private outsideRouteReady?: { epoch: string; stage: string; sourceAddress: string; squidHash: string; nftHash: string; basePolicyHash: string; hosts: readonly string[] };
     private readonly outsideRouteLeases = new WeakMap<object, { active: boolean; destination: string; policyHash: string; sourceAddress: string; proxyUrl: string; epoch: string; stage: string; deadlineAtMs: number; namespaceClient: ReturnType<typeof requireDefinitionNamespace> }>();
-    private outsideConsumer(): { name: string; address: string; hosts: readonly string[] } | undefined {
+    private outsideConsumer(): OutsideRouteConsumer | undefined {
         const selected = this.paths.outsideCustody;
         if (!selected) return undefined;
         const matches = this.config.egress.legacyConsumers.filter(consumer => consumer.name === selected.routeConsumerName);
@@ -441,17 +453,16 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Outside route source is unavailable');
         return matches[0];
     }
-    private outsideBasePolicyHash(e: ReturnType<typeof generateEgress>, consumer: { name: string; address: string; hosts: readonly string[] }): string {
+    private outsideBasePolicyHash(e: ReturnType<typeof generateEgress>, consumer: OutsideRouteConsumer): string {
         return createHash('sha256').update(JSON.stringify(['lares-outside-route-v1', consumer.name, consumer.address,
             [...new Set(consumer.hosts)].sort(), this.config.runtime.proxyUrl, e.squid, e.nft])).digest('hex');
     }
-    private destinationPolicy(destination: string, basePolicyHash: string): { policyHash: string; host: string } {
+    private destinationPolicy(destination: string, basePolicyHash: string, hosts: readonly string[]): { policyHash: string; host: string } {
         let url: URL;
         try { url = new URL(destination); } catch { throw new KeeperRefusedError('Outside destination is unavailable'); }
         if (url.protocol !== 'https:' || url.username || url.password || url.port && url.port !== '443' || url.hash ||
             url.hostname.endsWith('.invalid')) throw new KeeperRefusedError('Outside destination is unavailable');
-        const consumer = this.outsideConsumer();
-        if (!consumer || !consumer.hosts.some(host => host === url.hostname || host.startsWith('.') && url.hostname.endsWith(host)))
+        if (!this.outsideConsumer() || !hosts.some(host => host === url.hostname || host.startsWith('.') && url.hostname.endsWith(host)))
             throw new KeeperRefusedError('Outside destination is unavailable');
         return { policyHash: createHash('sha256').update(JSON.stringify(['lares-outside-destination-v1', basePolicyHash, url.href])).digest('hex'), host: url.hostname };
     }
@@ -461,7 +472,7 @@ export class AgentLifecycle {
         const selected = this.outsideConsumer(), ready = this.outsideRouteReady;
         if (!selected || !ready || ready.epoch !== this.outsideControllerEpoch || ready.sourceAddress !== selected.address)
             throw new KeeperRefusedError('Outside route is unavailable');
-        const derived = this.destinationPolicy(destination, ready.basePolicyHash);
+        const derived = this.destinationPolicy(destination, ready.basePolicyHash, ready.hosts);
         if (derived.policyHash !== expectedPolicyHash) throw new KeeperRefusedError('Outside route changed; review the destination again');
         const read = (file: string) => readFileSync(join(this.config.egressDir, file), 'utf8');
         let stage: string;
@@ -488,7 +499,7 @@ export class AgentLifecycle {
         return withDefinitionNamespace(this.pool, async () => {
             const ready = this.outsideRouteReady;
             if (!ready) throw new KeeperRefusedError('Outside route is unavailable');
-            const hash = this.destinationPolicy(destination, ready.basePolicyHash).policyHash;
+            const hash = this.destinationPolicy(destination, ready.basePolicyHash, ready.hosts).policyHash;
             return this.assertCurrentOutsideRoute(destination, hash, deadlineAtMs);
         }, { deadlineAtMs });
     }
@@ -500,7 +511,7 @@ export class AgentLifecycle {
             const namespaceClient = requireDefinitionNamespace();
             const ready = this.outsideRouteReady;
             if (!ready) throw new KeeperRefusedError('Outside route is unavailable');
-            const derived = this.destinationPolicy(destination, ready.basePolicyHash);
+            const derived = this.destinationPolicy(destination, ready.basePolicyHash, ready.hosts);
             if (derived.policyHash !== expectedPolicyHash) throw new KeeperRefusedError('Outside route changed; review the destination again');
             const state = { active: true, destination, policyHash: expectedPolicyHash, sourceAddress: ready.sourceAddress,
                 proxyUrl: this.config.runtime.proxyUrl, epoch: ready.epoch, stage: ready.stage, deadlineAtMs, namespaceClient };
@@ -537,7 +548,7 @@ export class AgentLifecycle {
      * attempt; never throws. On failure it logs one line and the next agent change seals afresh. */
     resealAtStart(): Promise<void> {
         this.outsideRouteReady = undefined;
-        this.resealing = withDefinitionNamespace(this.pool, async () => {
+        const reapplied = withDefinitionNamespace(this.pool, async () => {
             const dir = this.config.egressDir;
             const read = (file: string, missing: string) => {
                 try { return readFileSync(join(dir, file), 'utf8'); }
@@ -562,6 +573,17 @@ export class AgentLifecycle {
             }
             catch (error) {
                 console.error(`keeper: could not re-apply the outbound firewall at startup (${(error as Error).message}); agents run without it until the next agent change`);
+            }
+        });
+        // The outside route is acknowledged only by a full seal, never by the replay above. With
+        // outside custody on, take one so the route is usable after a restart; a failure only logs.
+        this.resealing = reapplied.then(async () => {
+            try {
+                if (!this.outsideConsumer()) return;
+                await this.seal();
+                console.log('keeper: outside route acknowledged at startup');
+            } catch (error) {
+                console.error(`keeper: the outside route is not ready (${(error as Error).message}); it becomes ready at the next agent change`);
             }
         });
         return this.resealing;

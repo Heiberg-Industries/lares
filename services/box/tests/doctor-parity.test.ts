@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { Pool } from "pg";
 import { main, parseArgs } from "../bin/doctor.js";
 import { renderKeeperConfig, type KeeperConfigOptions } from "../lib/keeper-config.js";
-import { checkParity, keeperConfigDifferences, provenanceRecord, type ContainerRow, type ParityInput } from "../lib/doctor-parity.js";
+import { checkOutsideTools, checkParity, keeperConfigDifferences, provenanceRecord, type ContainerRow, type ParityInput } from "../lib/doctor-parity.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
 const D = (n: string, c = "a") => `example.invalid/lares-${n}@sha256:${c.repeat(64)}`;
@@ -26,7 +26,7 @@ const RELEASE: ReleaseManifest = {
 const OPTS: KeeperConfigOptions = {
   project: "lares", network: "lares-network", subnet: "172.30.0.0/24",
   maintenanceAdmission: { hostDirectory: "/var/lib/lares-maintenance/admission", installationId: "11111111-1111-4111-8111-111111111111", epoch: 7 },
-  proxyAddress: "172.30.0.2", dir: "/srv/lares", agentsDir: "/srv/lares/agents", retiredDir: "/srv/lares/retired",
+  proxyAddress: "172.30.0.250", dir: "/srv/lares", agentsDir: "/srv/lares/agents", retiredDir: "/srv/lares/retired",
   backupDir: "/srv/lares/backup", egressDir: "/srv/lares/egress", secretsDir: "/etc/lares/secrets", pgDatabase: "lares_state",
   gatewayUrl: "http://lares-gateway:4000", ownerId: "fixture-owner", publicDoorOrigin: "https://lares.example.com",
   ownerHomeTz: "Europe/Berlin",
@@ -231,5 +231,31 @@ describe("the doctor command", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("outside tools", () => {
+  const withCustody = () => renderKeeperConfig(RELEASE, { ...OPTS, newOutsideKeyFingerprint: "d".repeat(64) });
+  it("says OFF in plain words when the server has no outside custody", () => {
+    const r = checkOutsideTools(input());
+    expect(r.state).toBe("warn");
+    expect(r.say).toContain("OFF");
+  });
+  it("says ON with the route ready, not ready, or unseen", () => {
+    const config = withCustody();
+    const base = input({ keeperConfig: config, rendered: provenanceRecord(config) });
+    expect(checkOutsideTools({ ...base, outsideRoute: "ready" })).toMatchObject({ state: "ok", say: expect.stringContaining("route is ready") });
+    expect(checkOutsideTools({ ...base, outsideRoute: "not-ready" })).toMatchObject({ state: "warn", say: expect.stringContaining("NOT ready") });
+    expect(checkOutsideTools(base)).toMatchObject({ state: "ok", say: expect.stringContaining("could not be seen") });
+  });
+  it("fails when custody is on but its route is missing, and is unknown without a readable configuration", () => {
+    const config = withCustody();
+    config.lifecycle!.egress.legacyConsumers = [];
+    expect(checkOutsideTools(input({ keeperConfig: config })).state).toBe("fail");
+    expect(checkOutsideTools(input({ keeperConfig: undefined, keeperConfigPresent: false })).state).toBe("unknown");
+  });
+  it("an installer-rendered outside block is not reported as a hand edit", () => {
+    const config = withCustody();
+    expect(keeperConfigDifferences(config, provenanceRecord(config))).toEqual([]);
   });
 });

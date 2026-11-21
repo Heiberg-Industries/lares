@@ -50,7 +50,7 @@ const RELEASE = JSON.stringify({
  *  call over and gets no prelude. The same prelude answers run_keeper's
  *  `render-keeper-config` call at the end, for the same reason.
  *  tests/install-stack.test.ts is where the real renderer runs. */
-const RENDER_STACK = `case "$3" in render-stack) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; render-database-bootstrap) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; render-keeper-config) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; esac`;
+const RENDER_STACK = `case "$3" in render-stack) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; render-database-bootstrap) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; render-keeper-config) printf '{"outsideCustody":{}}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; esac`;
 
 /** A stub that logs its own name and argv, and exits 0 unless `body` says otherwise. */
 function stub(name: string, body = "exit 0") {
