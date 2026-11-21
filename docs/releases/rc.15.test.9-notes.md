@@ -36,7 +36,14 @@ Commit titles from 039df390a6e22393e388baa643dbca579cfea950 to 9a0d53ca785a4e1e9
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- Outside tools can now be connected on a fresh install. Before, the keeper had no outside custody and no outside route unless an operator set them up by hand, so every Connect attempt was refused.
+- `lares install` and `lares update` now set up outside custody by themselves when it is missing, and refuse to adopt a half-finished setup.
+- The hosts the outside route may reach now come from the outside tools saved in agent definitions, so connecting a tool no longer needs its host written into root settings by hand. Removing the tool removes its host.
+- `lares doctor` has a new line, Outside tools, that says whether outside tools are on and their route is ready.
+- The keeper now has a fixed address on the internal network, just below the egress proxy.
+- A sign-in client for outside tools that use OAuth is in the engine, but nothing uses it yet.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
