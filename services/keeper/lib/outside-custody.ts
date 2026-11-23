@@ -1255,7 +1255,7 @@ export class OutsideCustodyStore {
             !/^[a-f0-9]{64}$/.test(input.expectedDestinationHash)||!/^[a-f0-9]{64}$/.test(input.expectedRoutePolicyHash)||
             !Number.isSafeInteger(input.consentGeneration)||input.consentGeneration<1||input.consentGeneration>Number.MAX_SAFE_INTEGER)return requestDenied('claim.input-shape');
         progress.stage='claim-authority';
-        const result=await this.#withHumanSession(sessionToken,async(db,memberId)=>{
+        const claimWork=async(db:PoolClient,memberId:string)=>{
           this.#assertOpen(requestDenied);
           progress.stage='claim-capture';
           const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName,
@@ -1358,7 +1358,10 @@ export class OutsideCustodyStore {
             candidateRevision:head?.candidate_revision===null||head?.candidate_revision===undefined?null:number(head.candidate_revision),
             headConsentGeneration,consentGeneration:input.consentGeneration,credentialRevision:revision,requestHash:requestDigest.toString('hex'),
             routePolicyHash:route.policyHash,deadlineAtMs:options.deadlineAtMs} satisfies OutsideClaimIdentityState;
-        },options);
+        };
+        const result=await this.#withHumanSession(sessionToken,(db,memberId)=>claimWork(db,memberId).catch(error=>{
+          if(error instanceof OutsideRefusal||error instanceof KeeperRefusedError||error instanceof SourceAuthorityUnavailable||error instanceof OutsideCustodyRecoveryRequired)throw error;
+          return requestDenied(`claim.${progress.stage??'unknown'}`,error);}),options);
         return this.#mintClaimIdentity(result);
       }catch(error){
         const recovery=outsideDiscoveryRecovery(error,input.operationId,progress.stage);
