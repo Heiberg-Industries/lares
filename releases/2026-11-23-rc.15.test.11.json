@@ -26,6 +26,7 @@
     "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
   },
   "breaking": [
-    "TO BE WRITTEN BY A PERSON: replace this line with one sentence for each change an operator updating from the previous release must know, or delete it if there is none."
+    "This is a test release, not a finished rc.15. Use it only on a test server or on an installation whose owner has agreed to test it.",
+    "Update in place from rc.15.test.10 with lares update. This release adds no new database file and changes no setting."
   ]
 }
