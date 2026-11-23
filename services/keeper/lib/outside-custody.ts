@@ -223,7 +223,7 @@ const denied = (): never => { throw new Error(REFUSED); };
  * route error that was folded into it. The keeper log prints both through its scrubbed cause summary. */
 export class OutsideRefusal extends Error {
   readonly code: string;
-  /** The underlying error's class and Postgres SQLSTATE only (e.g. "DatabaseError/42501"); never a message or a value. */
+  /** The underlying error's class and its fixed code only (a Postgres SQLSTATE, or a keeper reason label) (e.g. "DatabaseError/42501"); never a message or a value. */
   readonly detail: string | undefined;
   constructor(code: string, cause?: unknown) {
     super(REQUEST_REFUSED, cause === undefined ? undefined : { cause });
@@ -235,7 +235,7 @@ export class OutsideRefusal extends Error {
 function causeDetail(cause: unknown): string {
   const name = cause instanceof Error ? cause.constructor.name.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "Error" : typeof cause;
   const state = (cause as { code?: unknown } | null)?.code;
-  return typeof state === "string" && /^[0-9A-Z]{5}$/.test(state) ? `${name}/${state}` : name;
+  return typeof state === "string" && (/^[0-9A-Z]{5}$/.test(state) || /^[a-z][a-z-]{2,40}$/.test(state)) ? `${name}/${state}` : name;
 }
 const requestDenied = (code = "closed", cause?: unknown): never => { throw new OutsideRefusal(code, cause); };
 function wipeRejectedCredentialInput(value:unknown):void{
