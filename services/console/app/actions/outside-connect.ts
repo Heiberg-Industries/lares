@@ -147,12 +147,12 @@ export async function connectLookUpTools(input: { agent: string; name: string; c
         expectedDefinitionHash: preview.definitionHash, expectedAccessRevision: preview.accessRevision, expectedDestinationHash: preview.destinationHash,
         expectedRoutePolicyHash: preview.routePolicyHash, consentGeneration: preview.consentGeneration, credential }, who.actor)) ?? undefined;
     } catch (error) {
-      // A refusal means the keeper declined before any exchange: its reason is shown as it is.
+      // A refusal means the keeper declined before any exchange (nothing was sent): its reason, with the name of the check that fired, is shown as it is.
       if (error instanceof KeeperRefusedError) throw error;
       if (error instanceof KeeperUnavailableError && !error.outcomeMayBeUnknown) throw new StepFailure("The keeper could not be reached, so nothing was sent. Press Try again.");
       const found = parseOutsideDiscoveryInspection(await keeper<unknown>("outside.discovery-inspect", { sessionToken: who.sessionToken, accountId: identity.accountId,
         agentName: agent, connectionName: name, requestId: identity.requestId, claimOperationId: identity.claimOperationId }, who.actor).catch(() => undefined));
-      if (found?.state !== "complete") throw new StepFailure("The server's answer did not arrive, and the saved request shows no result. The token was sent at most once and this screen will not send it again. Check the address, then start again.", false);
+      if (found?.state !== "complete") throw new StepFailure("The keeper could not confirm whether the server answered, and the saved request shows no result. The token was sent at most once and this screen will not send it again. Check the address and the keeper log, then start again.", false);
       document = found.document;
     }
     if (!document) throw new StepFailure("The server answered, but not with a tool list this screen can read. Check that the address is the server's MCP address.");
