@@ -35,7 +35,12 @@ Commit titles from 647502d6e07e693e9ad618b043b09d760738de37 to 415649c02c8b05052
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- When connecting an outside tool is refused, the keeper log now names the exact check that refused it, never a value, and the Connect screen says in plain words what happened when the refusal came before the server was contacted.
+- A new test runs the whole token connect, including retries, against a real database.
+- Known limit: each connection name keeps a fixed number of saved attempts that is never freed, so after about three attempts on one name the next is refused. Removing the connection does not reset it yet.
+- Nothing breaks: the update adds no database file and changes no setting.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
