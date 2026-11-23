@@ -95,7 +95,9 @@ export async function connectDeclare(input: unknown): Promise<ConnectStep<Connec
     // already there, so the switches the owner set are not wiped by a placeholder.
     if (provisional && existing && state.applicationStatus === "applied" && previousTools.length > 0 && existing.url === connection.url && existing.token === connection.token)
       return { definitionHash: state.definitionHash, accessRevision: state.accessRevision, applied: true, currentTrusted, previousTools, droppedTrust: [] };
-    const next = declarationOf(provisional ? { ...connection, allow: [PENDING_TOOL], read: [] } : connection);
+    // The placeholder is marked as a lookup: it never runs, and an agent whose grant allows lookups only would otherwise
+    // refuse the very first save, before the server has been asked which tools it offers.
+    const next = declarationOf(provisional ? { ...connection, allow: [PENDING_TOOL], read: [PENDING_TOOL] } : connection);
     const connections = [...state.connections.filter(c => c.name !== connection.name), next];
     const staging = connection.token ? [connection.name] : [];
     const saved = stateSchema.parse(await keeper<unknown>("outside.connections.save",

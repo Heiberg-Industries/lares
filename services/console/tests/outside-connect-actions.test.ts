@@ -48,7 +48,7 @@ describe("connect: declare", () => {
     const result = await connectDeclare({ agent: "worker", provisional: true, connection: { ...connection, allow: [], read: [] } });
     expect(result).toEqual({ ok: true, value: { definitionHash: h("b"), accessRevision: 3, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [] } });
     expect(calls()).toEqual(["outside.connections.get", "outside.connections.save", "outside.connections.apply"]);
-    expect(mocks.keeper.mock.calls[1]![1]).toMatchObject({ sessionToken: session, name: "worker", connections: [declared([PENDING_TOOL], [])], stagingCredentialFor: ["rates"] });
+    expect(mocks.keeper.mock.calls[1]![1]).toMatchObject({ sessionToken: session, name: "worker", connections: [declared([PENDING_TOOL], [PENDING_TOOL])], stagingCredentialFor: ["rates"] });
     expect(mocks.keeper.mock.calls[2]![1]).toMatchObject({ stagingCredentialFor: ["rates"] });
   });
   it("never claims a credential is on the way for a connection that needs none", async () => {
