@@ -1,0 +1,32 @@
+{
+  "release": "2026-11-23-rc.15.test.13",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:d304ce5378ce05136957aaf5cf492b9c5265ec5ceecc765fd09d00eaef80d367",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:692b5d889b1c5b84121c72f2c0c377b0a6880665dc6d6e15e16d513d2007d7f5",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:af754c049d65149581c5cbf0bf0082b6f2979b958dc694da457d9fb2ddbac1f2",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:671da8842332eb468eee4005dc54a60a6b8f5ff5acc17f36d823c632ca0c03ad",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:6fd843f4222776d3b97b913b6fe6e987d071646427d768cba834ceec94eb8398",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:582498d6469cd7d730b864ae1c85335188e11550c057f69bb1e3136e3d94da5c",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:b00ad33ca1fa21341f451f9d7afe7e50a3cb7e616c00b114c7a5b9c7335d0685"
+  },
+  "sources": {
+    "console": "915a62ded49ece6e86b9e108d23355d538e79d86",
+    "lares-keeper": "915a62ded49ece6e86b9e108d23355d538e79d86",
+    "lares-egress-proxy": "915a62ded49ece6e86b9e108d23355d538e79d86",
+    "lares-firewall-helper": "915a62ded49ece6e86b9e108d23355d538e79d86",
+    "chief-of-staff": "915a62ded49ece6e86b9e108d23355d538e79d86",
+    "creative": "915a62ded49ece6e86b9e108d23355d538e79d86",
+    "sync-jobs": "8cfd295f12ef257d820360e553faaf222a83ff89"
+  },
+  "migrations": {
+    "box": "038_approval_card_record.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "This is a test release, not a finished rc.15. Use it only on a test server or on an installation whose owner has agreed to test it.",
+    "Update in place from rc.15.test.12 with lares update, then run lares agent refresh so each agent moves to the new software. This release adds no new database file and changes no setting."
+  ]
+}
