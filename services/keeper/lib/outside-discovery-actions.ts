@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { registerAction } from './actions.js';
+import { registerWithPlainRefusals } from './outside-refusals.js';
 import { OutsideCustodyStore } from './outside-custody.js';
 
 const uuid=z.string().uuid();
@@ -24,18 +25,18 @@ export function registerHumanOutsideDiscoveryActions(store:OutsideCustodyStore):
   registerAction({name:'private-metadata.device-revoke',input:z.strictObject({sessionToken,deviceId:uuid,expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}),
     secretFields:['sessionToken'],successDetail:()=> 'member private metadata device revoked',run:input=>
       store.revokePrivateMetadataDevice(input.sessionToken,{deviceId:input.deviceId,expectedGeneration:input.expectedGeneration},deadline())});
-  registerAction({name:'outside.discovery-targets',input:z.strictObject({sessionToken}),secretFields:['sessionToken'],
+  registerWithPlainRefusals({name:'outside.discovery-targets',input:z.strictObject({sessionToken}),secretFields:['sessionToken'],
     run:input=>store.listHumanDiscoveryTargets(input.sessionToken,deadline())});
-  registerAction({name:'outside.credential-remove',input:z.strictObject({sessionToken,accountId:uuid,agentName:z.string().regex(NAME),
+  registerWithPlainRefusals({name:'outside.credential-remove',input:z.strictObject({sessionToken,accountId:uuid,agentName:z.string().regex(NAME),
     connectionName:z.string().regex(NAME),expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}),
     secretFields:['sessionToken'],run:input=>store.removeHumanCredential(input.sessionToken,{accountId:input.accountId,agentName:input.agentName,
       connectionName:input.connectionName,expectedGeneration:input.expectedGeneration,operationId:randomUUID()},deadline())});
-  registerAction({name:'outside.candidate-apply-preview',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME),connectionName:z.string().regex(NAME)}),
+  registerWithPlainRefusals({name:'outside.candidate-apply-preview',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME),connectionName:z.string().regex(NAME)}),
     secretFields:['sessionToken'],run:input=>store.inspectHumanPendingApply(input.sessionToken,
       {agentName:input.agentName,connectionName:input.connectionName},deadline())});
-  registerAction({name:'outside.discovery-preview',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME),connectionName:z.string().regex(NAME)}),
+  registerWithPlainRefusals({name:'outside.discovery-preview',input:z.strictObject({sessionToken,agentName:z.string().regex(NAME),connectionName:z.string().regex(NAME)}),
     secretFields:['sessionToken'],run:input=>store.previewHumanDiscovery(input.sessionToken,{agentName:input.agentName,connectionName:input.connectionName},deadline())});
-  registerAction({name:'outside.discover',input:z.strictObject({sessionToken,consent:z.literal(true),requestId:uuid,claimOperationId:uuid,accountId:uuid,
+  registerWithPlainRefusals({name:'outside.discover',input:z.strictObject({sessionToken,consent:z.literal(true),requestId:uuid,claimOperationId:uuid,accountId:uuid,
     agentName:z.string().regex(NAME),connectionName:z.string().regex(NAME),expectedGeneration:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     expectedCandidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),expectedDefinitionHash:hash,
     expectedAccessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),expectedDestinationHash:hash,
@@ -46,7 +47,7 @@ export function registerHumanOutsideDiscoveryActions(store:OutsideCustodyStore):
         expectedDefinitionHash:input.expectedDefinitionHash,expectedAccessRevision:input.expectedAccessRevision,
         expectedDestinationHash:input.expectedDestinationHash,expectedRoutePolicyHash:input.expectedRoutePolicyHash,
         consentGeneration:input.consentGeneration,credential:Buffer.from(input.credential,'utf8')},deadline())});
-  registerAction({name:'outside.discovery-inspect',input:z.strictObject({sessionToken,accountId:uuid,agentName:z.string().regex(NAME),
+  registerWithPlainRefusals({name:'outside.discovery-inspect',input:z.strictObject({sessionToken,accountId:uuid,agentName:z.string().regex(NAME),
     connectionName:z.string().regex(NAME),requestId:uuid,claimOperationId:uuid}),secretFields:['sessionToken'],
     run:input=>store.inspectHumanDiscovery(input.sessionToken,{accountId:input.accountId,agentName:input.agentName,
       connectionName:input.connectionName,requestId:input.requestId,claimOperationId:input.claimOperationId},deadline())});
@@ -54,16 +55,16 @@ export function registerHumanOutsideDiscoveryActions(store:OutsideCustodyStore):
   const selectors=discovery.extend({publicationId:uuid,acceptanceId:uuid,expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     expectedCandidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),expectedConsentGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     expectedDefinitionHash:hash,expectedAccessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),expectedPublicationHash:hash,expectedAcceptanceHash:hash});
-  registerAction({name:'outside.discovery-review-preview',input:z.strictObject({sessionToken,...discovery.shape}),secretFields:['sessionToken'],
+  registerWithPlainRefusals({name:'outside.discovery-review-preview',input:z.strictObject({sessionToken,...discovery.shape}),secretFields:['sessionToken'],
     run:input=>store.previewHumanDescriptorReview(input.sessionToken,{accountId:input.accountId,agentName:input.agentName,connectionName:input.connectionName,
       requestId:input.requestId,claimOperationId:input.claimOperationId},deadline())});
-  registerAction({name:'outside.discovery-review-publish',input:z.strictObject({sessionToken,...discovery.shape,expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  registerWithPlainRefusals({name:'outside.discovery-review-publish',input:z.strictObject({sessionToken,...discovery.shape,expectedGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     expectedDescriptorHash:hash}),secretFields:['sessionToken'],run:input=>{const {sessionToken,...value}=input;return store.publishDiscoveredDescriptorReview(sessionToken,
       {...value,operationId:randomUUID()},deadline());}});
-  registerAction({name:'outside.discovery-review-accept',input:z.strictObject({sessionToken,accountId:uuid,publicationId:uuid,expectedPublicationHash:hash}),
+  registerWithPlainRefusals({name:'outside.discovery-review-accept',input:z.strictObject({sessionToken,accountId:uuid,publicationId:uuid,expectedPublicationHash:hash}),
     secretFields:['sessionToken'],run:input=>{const {sessionToken,...value}=input;return store.acceptPublishedDescriptorReview(sessionToken,
       {...value,operationId:randomUUID()},deadline());}});
-  registerAction({name:'outside.candidate-stage',input:z.strictObject({sessionToken,...selectors.shape}),secretFields:['sessionToken'],run:async input=>{
+  registerWithPlainRefusals({name:'outside.candidate-stage',input:z.strictObject({sessionToken,...selectors.shape}),secretFields:['sessionToken'],run:async input=>{
     // The bounded review receipt is prepared inside Keeper and immediately consumed by the
     // existing stage operation. It never activates the candidate or exposes activation controls.
     const {sessionToken,...value}=input;
@@ -76,7 +77,7 @@ export function registerHumanOutsideDiscoveryActions(store:OutsideCustodyStore):
     return {staged:true,activationReviewId,activationReviewHash:activation.reviewHash,expectedPolicyHash:activation.policyHash,
       stageOperationId,candidateRevision:result.credentialRevision};
   }});
-  registerAction({name:'outside.candidate-apply',input:z.strictObject({sessionToken,...selectors.shape,expectedPolicyHash:hash,
+  registerWithPlainRefusals({name:'outside.candidate-apply',input:z.strictObject({sessionToken,...selectors.shape,expectedPolicyHash:hash,
     activationReviewId:uuid,activationReviewHash:hash,stageOperationId:uuid,candidateRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}),
     secretFields:['sessionToken'],run:input=>{const {sessionToken,activationReviewHash,...value}=input;
       return store.apply(sessionToken,{...value,operationId:randomUUID(),expectedActivationReviewHash:activationReviewHash},deadline());}});

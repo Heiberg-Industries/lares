@@ -72,6 +72,8 @@ export class OutsideRouteAcknowledgementError extends Error {
     constructor(reason: OutsideRouteAcknowledgementFailure) {
         super('keeper: outside route acknowledgement unavailable');
         Object.defineProperty(this, 'reason', { value: reason, enumerable: false });
+        // A fixed label, safe for the keeper log; the log's cause summary reads `code`.
+        Object.defineProperty(this, 'code', { value: reason, enumerable: false });
     }
 }
 /** Keep the production predicate byte-for-byte aligned in behavior with the pinned-Squid raw
