@@ -67,6 +67,11 @@ export interface DefinitionOptions {
     /** Called after the meetings source changes: the Notion sync's configuration (and so its accepted preview) depends on it. */
     syncChanged?(actor: string): Promise<void>;
     pool: Pool;
+    /**
+     * Which connections of an agent already hold a credential in custody. Answered by the custody store over its own
+     * database role: the application role is not allowed to read custody tables. Absent when custody is off.
+     */
+    outsideCustodyHeld?(resourceId: string): Promise<readonly string[]>;
     agentsDir: string;
     retiredDir: string;
     secretsDir: string;
@@ -179,9 +184,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         const parsed = definitionSchema.safeParse(definition);
         // Only a declaration that asks for a token has anything to look up.
         if (!parsed.success || !(parsed.data.outsideTools ?? []).some(t => t.token)) return held;
-        const rows = await db().query<{ connection_name: string }>(
-            `SELECT connection_name FROM outside_custody_accounts WHERE resource_id=$1 AND state='active' AND (active_revision IS NOT NULL OR candidate_revision IS NOT NULL)`, [name]);
-        for (const row of rows.rows) held.add(row.connection_name);
+        // Custody off: nothing can be held, so a token declaration is refused exactly as before.
+        if (!o.outsideCustodyHeld) return held;
+        for (const connection of await o.outsideCustodyHeld(name)) held.add(connection);
         return held;
     }
     function validate(input: z.infer<typeof writeInput>, held: ReadonlySet<string> = new Set()): AgentDefinition {
@@ -347,7 +352,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 if (!allowed) refused("Only a member who can approve this agent's outside calls may switch a tool on to run without asking. Editing access alone is not enough.");
                 const found = await storedTool(name, entry.name, grant.tool);
                 if (!found)
-                    refused(`"${grant.tool}" cannot run without asking yet: the agent has not read its description from the server. Start a conversation with the agent first, then switch it on.`);
+                    refused(`A tool you switched on to run without asking cannot do so yet: the agent has not read its description from the server. Start a conversation with the agent first, then switch it on.`);
                 fixed.push({ ...grant, pin: toolPinHash(found!) });
             }
             out.push(...stampTrust([{ ...entry, tools: { ...entry.tools, trusted: fixed } }], previous, actor, new Date().toISOString()));

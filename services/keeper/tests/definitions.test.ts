@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi, type Mock } from 'vite
 import { loadDefinition, readDefinitionFiles } from '@lares/agent-kit/definition';
 import { deployedToolsFor } from '@lares/agent-kit/persona';
 import { registerDefinitionActions } from '../lib/definitions.js';
+import { OutsideCustodyStore } from '../lib/outside-custody.js';
 import { KeeperFailedError, KeeperRefusedError, KeeperUnknownFailureError, resetActions, runAction, type KeeperFailureState } from '../lib/actions.js';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { outsideSecretName } from '@lares/agent-kit/outside-tools';
@@ -87,7 +88,14 @@ const connectionApplyCall = (sessionToken: string, name: string, expectedDefinit
     runAction('outside.connections.apply', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision }, ctx());
 function register(ceiling = 2, storage = true) {
     resetActions();
-    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, providerKeys: new ProviderKeyFiles(secretsDir, { uid: process.getuid!(), gid: process.getgid!() }), ceiling: async () => ceiling, memory: () => 0, compose, backup,
+    // The application role may not read custody tables: only the custody store, over its own pool, answers.
+    const appRole = new Proxy(pool, { get: (target, key) => key === 'query'
+        ? (sql: unknown, ...rest: unknown[]) => /outside_custody_accounts/.test(String(typeof sql === 'string' ? sql : (sql as any)?.text))
+            ? Promise.reject(Object.assign(new Error('permission denied for table outside_custody_accounts'), { code: '42501' }))
+            : (target.query as any)(sql, ...rest)
+        : Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) }) as Pool;
+    const custody = new OutsideCustodyStore(pool as never, Buffer.alloc(32, 7));
+    registerDefinitionActions({ pool: appRole, outsideCustodyHeld: name => custody.heldConnections(name), agentsDir, retiredDir, secretsDir, providerKeys: new ProviderKeyFiles(secretsDir, { uid: process.getuid!(), gid: process.getgid!() }), ceiling: async () => ceiling, memory: () => 0, compose, backup,
         roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }),
         storage: storage ? { prepareDelete: async (name) => ({ delete: async () => { await pool.query('DELETE FROM owned_memory WHERE agent=$1', [name]); } }) } : undefined,
     });
@@ -145,6 +153,15 @@ it('accepts a bearer declaration with no token file when its credential is stage
     const plain: any = await runAction('outside.connections.save', { sessionToken: sessions.owner, name: 'bookkeeper', expectedDefinitionHash: held.definitionHash,
         expectedAccessRevision: held.accessRevision, connections: [declaration] }, ctx());
     expect(plain.connections).toEqual([declaration]);
+});
+it('refuses a key saved as a tool name without echoing it into the refusal', async () => {
+    const { loaded, access, sessions } = await connectionFixture();
+    const pasted = 'q7Zx1Lm9Tr4Vb8Nc2Wd5Ye3Hf6Jg0Ks';
+    const error: any = await connectionCall(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision,
+        [{ ...declaration, tools: { allow: [pasted], read: [] } }]).then(() => undefined, e => e);
+    expect(error).toBeDefined();
+    expect(String(error.message)).toMatch(/looks like a key or password/);
+    expect(JSON.stringify([error.message, error.findings])).not.toContain(pasted);
 });
 it('lets the owner and a named editor change only outside declarations, while use-only, cross-member, stale and secret-shaped requests refuse', async () => {
     const { loaded, access, sessions } = await connectionFixture();

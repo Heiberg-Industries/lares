@@ -324,8 +324,14 @@ describe("renderEnvironment — keyed summary parts", () => {
       "configured signature without needing approval, since none of that changes anything. A draft is " +
       "saved in the owner's real mailbox",
     );
-    // ...and the union view (no deployedTools at all) renders the same paragraph.
-    expect(bulletFor(renderEnvironment(crm), "gmail")).toEqual(full);
+    // The mailbox only writes drafts, so the send tools are not handed over and the persona says so: no tool name,
+    // no "waits for Approve" sentence about sending, and an up-front "I cannot send".
+    expect(full).not.toMatch(/gmail_send|meeting_followup_send|Sending puts real mail/);
+    expect(full).toContain("only writes drafts: I cannot send mail from it");
+    // The union view (no deployedTools at all) describes every tool the fleet knows, sending included.
+    const union = bulletFor(renderEnvironment(crm), "gmail");
+    expect(union).toContain("Sending puts real mail in a real inbox");
+    expect(union).not.toContain("only writes drafts");
   });
 
   it("a read-only installation is told nothing about drafting, sending or CRM writes", () => {

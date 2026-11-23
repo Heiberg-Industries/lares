@@ -1986,6 +1986,7 @@ def import_worker_evidence(root_path, shared_endpoints=None, firewall_hashes=Non
         "exact stage and apply replays recover receipts while current custody and editor grants remain valid",
         "changed apply replay selectors are denied without changing the receipt or active head",
         "historical acceptance survives editor logout and current edit grant revocation blocks replay",
+        "the custody store alone reports which token connections hold a credential; the application role is refused the table",
         "durable result decrypts under generated key/AAD and rejects changed request identity",
         "executable definition, ownership and applied state remain unchanged",
         "signed broker executes exact approvals and refuses stale or mismatched work without peer dispatch",

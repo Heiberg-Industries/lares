@@ -38,6 +38,7 @@ import {
   type VaultArea,
 } from "./manifest.js";
 import type { AgentDefinition } from "./definition.js";
+import { ENGINE_MAILBOX_POLICY, withheldByMailboxPolicy, type MailboxPolicy } from "./mailbox-policy.js";
 
 /** The one capability whose grant is narrowed a second time, by area (ADR-0017 rule 1). */
 const VAULT_CAPABILITY = "vault";
@@ -110,7 +111,7 @@ const WRITE_CLASS_SCOPE: Scope = "write-with-confirm";
 export function grantedToolNames(
   catalogue: Catalogue,
   d: AgentDefinition,
-  opts: { alwaysPresent?: readonly string[] } = {},
+  opts: { alwaysPresent?: readonly string[]; mailboxPolicy?: MailboxPolicy } = {},
 ): string[] {
   const always = new Set(opts.alwaysPresent ?? ALWAYS_PRESENT);
   const out: string[] = [];
@@ -121,6 +122,9 @@ export function grantedToolNames(
 
   for (const [name, entry] of Object.entries(catalogue)) {
     if (always.has(name)) { out.push(name); continue; }
+    // A tool whose only job is to send mail is not handed over while the mailbox only writes drafts: the agent
+    // would offer it, raise a card, and fail after the owner approved (`mailbox-policy.ts`).
+    if (withheldByMailboxPolicy(name, opts.mailboxPolicy ?? ENGINE_MAILBOX_POLICY)) continue;
 
     const grant = grantFor(d, entry.capability);
     if (!grant || grant.scope === "none") continue;

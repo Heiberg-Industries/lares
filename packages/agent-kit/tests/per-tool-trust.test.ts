@@ -122,7 +122,8 @@ describe("the definition check", () => {
   it("refuses a trusted tool that is not marked as only looking things up, with a plain reason", () => {
     const found = check(entry({ trusted: [grant({ tool: "create_note" })] })).filter((f) => f.check === "outside-tools");
     expect(found).toHaveLength(1);
-    expect(found[0]!.message).toMatch(/create_note/);
+    expect(found[0]!.message).toMatch(/run without asking/);
+    expect(found[0]!.message).not.toContain("create_note");
     expect(found[0]!.message).toMatch(/changes something always asks/);
   });
 });

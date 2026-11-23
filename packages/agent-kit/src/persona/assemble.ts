@@ -2,6 +2,7 @@ import { areaOfTool } from "../always-ask.js";
 import type { AgentManifest, Scope, AutonomyLevel } from "../manifest.js";
 import { autonomyOf, grantedVaultAreas, skillToolsFor } from "../manifest.js";
 import type { OutsideToolDeclaration } from "../definition.js";
+import { withheldByMailboxPolicy } from "../mailbox-policy.js";
 import { docFor, renderSummary } from "./capability-docs.js";
 import type { CapabilityRule } from "./capability-docs.js";
 
@@ -38,7 +39,7 @@ function rulesFor(rules: CapabilityRule[] | undefined, deployed: Set<string> | u
   const out: string[] = [];
   for (const r of rules ?? []) {
     if (typeof r === "string") out.push(r);
-    else if (!deployed || r.tools.some((t) => deployed.has(t))) out.push(r.text);
+    else if (deployed ? r.tools.some((t) => deployed.has(t)) && !r.absent?.some((t) => deployed.has(t)) : !r.absent) out.push(r.text);
   }
   return out;
 }
@@ -51,7 +52,8 @@ export function renderEnvironment(m: AgentManifest, opts: RenderOptions = {}): s
   // read_url's capability doc) would tell an agent it lacks a tool it actually holds — the
   // false denial this whole section exists to end, generated rather than hand-written this time.
   const canSearchTheWeb = m.framework_tools.includes("web_search");
-  const deployed = opts.deployedTools ? new Set(opts.deployedTools) : undefined;
+  // A tool the mailbox policy withholds is not handed to the agent, so the persona neither lists it nor describes it.
+  const deployed = opts.deployedTools ? new Set(opts.deployedTools.filter((t) => !withheldByMailboxPolicy(t))) : undefined;
   // THE AREA NARROWING, ALONGSIDE THE DEPLOYED-TOOLS ONE (ADR-0017 rule 1).
   //
   // `deployedTools` is a FILE-name list, and it counts an `agent-kit__*` disable sentinel as a

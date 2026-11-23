@@ -561,6 +561,15 @@ export class OutsideCustodyStore {
     this.mainPool = runtime?.mainPool;
     this.routeLifecycle = runtime?.lifecycle;
   }
+  /**
+   * Names of an agent's connections whose credential is held (active, or staged and awaiting review). A narrow read
+   * over this store's own database role; it returns names only, never any credential material.
+   */
+  async heldConnections(resourceId:string):Promise<string[]>{
+    const rows=await this.pool.query(
+      `SELECT connection_name FROM outside_custody_accounts WHERE resource_id=$1 AND state='active' AND (active_revision IS NOT NULL OR candidate_revision IS NOT NULL)`,[resourceId]);
+    return rows.rows.map(row=>String(row.connection_name));
+  }
   #assertOpen(refuse:()=>never=denied):void{if(this.lifecycle!=="open")refuse();}
   #assertMainNamespace(client:PoolClient,deadlineAtMs:number):void{
     this.#assertOpen(requestDenied);

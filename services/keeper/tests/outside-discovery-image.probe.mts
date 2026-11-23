@@ -1102,6 +1102,16 @@ async function runConfigured():Promise<void>{
     partial.checks.push('historical acceptance survives editor logout and current edit grant revocation blocks replay');
     partial.checks.push('authenticated publication, current editor acceptance and exact custodian preview/stage/apply complete');
 
+    // Saving an outside tool that needs a token asks which connections already hold a credential. The application
+    // role must not read that table (a release names its grants), so only the custody store may answer.
+    let applicationReadDenied=false;
+    try{await main.query('SELECT connection_name FROM outside_custody_accounts WHERE resource_id=$1',[agent]);}
+    catch(error){applicationReadDenied=(error as {code?:string}).code==='42501';}
+    assert(applicationReadDenied,'the application role was allowed to read the outside custody accounts table');
+    const heldNames=await store.heldConnections(agent);
+    assert(heldNames.length===1&&heldNames[0]==='fixture','the custody store did not report the held token connection by name');
+    assert(!JSON.stringify(heldNames).includes(need('FIXTURE_BEARER')),'the held-connection answer carried credential material');
+    partial.checks.push('the custody store alone reports which token connections hold a credential; the application role is refused the table');
     const head=await proof.query('SELECT generation::text,active_revision::text,candidate_revision::text,consent_generation::text,state FROM outside_custody_accounts WHERE account_id=$1',[accountId]);
     assert(head.rows.length===1&&head.rows[0].generation==='2'&&head.rows[0].active_revision===String(staged.credentialRevision)&&
       head.rows[0].candidate_revision===null&&head.rows[0].consent_generation==='2'&&head.rows[0].state==='active','applied candidate head differs from the exact consented revision');

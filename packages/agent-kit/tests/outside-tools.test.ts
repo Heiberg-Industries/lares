@@ -73,6 +73,16 @@ describe("validateDefinition: outside tools", () => {
     expect(messages(check({ outsideTools: [entry({ tools: { allow: ["lookup"], read: ["lookup", "other"] } })] }))).toMatch(/not in allow/);
   });
 
+  it("refuses a key-shaped tool name and never echoes any tool name in a refusal", () => {
+    const key = "ak" + "q7Zx1Lm9Tr4Vb8Nc2Wd5Ye3Hf6Jg0Ks";
+    const text = messages(check({ outsideTools: [entry({ tools: { allow: ["lookup", key], read: [key, "stray_tool_name"] } })] }));
+    expect(text).toMatch(/looks like a key or password/);
+    expect(text).not.toContain(key);
+    expect(text).not.toContain("stray_tool_name");
+    const readOnly = messages(check({ outsideTools: [entry({ tools: { allow: ["lookup", "changes_something"], read: ["lookup"] } })] }));
+    expect(readOnly).not.toContain("changes_something");
+  });
+
   it("requires a grant of the outside capability", () => {
     const f = check({ grants: [{ capability: "gmail", scope: "write-with-confirm" }], autonomy: { gmail: "gated" } });
     expect(messages(f)).toMatch(/holds no "outside" grant/);
@@ -82,7 +92,7 @@ describe("validateDefinition: outside tools", () => {
 
   it("under a read grant, every allowed tool must be marked read", () => {
     const grants = [{ capability: "outside", scope: "read" }];
-    expect(messages(check({ grants, autonomy: { outside: "gated" } }))).toMatch(/create_note/);
+    expect(messages(check({ grants, autonomy: { outside: "gated" } }))).toMatch(/not marked read/);
     const ok = check({ grants, autonomy: { outside: "gated" }, outsideTools: [entry({ tools: { allow: ["lookup"], read: ["lookup"] } })] });
     expect(ok).toEqual([]);
   });

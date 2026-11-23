@@ -12,6 +12,8 @@
   },
   "exports": {
     "./vault-files": "./src/vault-files.ts",
+    "./secret-shaped": "./src/secret-shaped.ts",
+    "./mailbox-policy": "./src/mailbox-policy.ts",
     "./confirm-markers": "./src/confirm-markers.ts",
     "./tracks": "./src/tracks.ts",
     "./vault-note-write": "./src/vault-note-write.ts",
