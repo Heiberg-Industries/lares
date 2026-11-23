@@ -491,7 +491,7 @@ export class AgentLifecycle {
             this.outsideControllerEpoch !== ready.epoch || this.outsideRouteReady !== ready ||
             this.outsideConsumer()?.address !== selected.address || this.config.runtime.proxyUrl !== proxyUrl)
             throw new KeeperRefusedError('Outside route is unavailable');
-        return { policyHash: derived.policyHash, sourceAddress: selected.address, proxyUrl: this.config.runtime.proxyUrl };
+        return { policyHash: derived.policyHash, sourceAddress: selected.address, proxyUrl: new URL(proxyUrl).href };
     }
     /** Review is usable only while this process holds the shared definition namespace and
      * the exact currently acknowledged route remains selected by root configuration. */
@@ -514,7 +514,7 @@ export class AgentLifecycle {
             const derived = this.destinationPolicy(destination, ready.basePolicyHash, ready.hosts);
             if (derived.policyHash !== expectedPolicyHash) throw new KeeperRefusedError('Outside route changed; review the destination again');
             const state = { active: true, destination, policyHash: expectedPolicyHash, sourceAddress: ready.sourceAddress,
-                proxyUrl: this.config.runtime.proxyUrl, epoch: ready.epoch, stage: ready.stage, deadlineAtMs, namespaceClient };
+                proxyUrl: new URL(this.config.runtime.proxyUrl).href, epoch: ready.epoch, stage: ready.stage, deadlineAtMs, namespaceClient };
             let lease!: OutsideRouteLease;
             lease = Object.freeze({ assertCurrent: async () => {
                 const current = this.outsideRouteLeases.get(lease as object);

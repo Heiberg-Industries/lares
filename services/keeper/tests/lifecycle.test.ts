@@ -723,6 +723,7 @@ it('refuses an outside destination that is not in the applied route list and cha
  await l.saved('bookkeeper',outside('https://tools.example.org/mcp'));
  const first=await l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000);
  expect(first.sourceAddress).toBe('172.18.0.24');
+ expect(first.proxyUrl).toBe('http://proxy:8888/');
  await expect(l.reviewOutsideRoute('https://other.example.org/mcp',Date.now()+5000)).rejects.toThrow('Outside destination is unavailable');
  // A second host changes the base policy, so a review taken before it is no longer current.
  await l.saved('bookkeeper',{...outside('https://tools.example.org/mcp'),outsideTools:[outside('https://tools.example.org/mcp').outsideTools[0]!,
