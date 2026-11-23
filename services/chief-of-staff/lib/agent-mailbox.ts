@@ -26,6 +26,7 @@
 import { Common, google } from 'googleapis';
 import { DatabaseError, type Pool } from 'pg';
 import { z } from 'zod';
+import { MAILBOX_SEND_REFUSAL } from '@lares/agent-kit/mailbox-policy';
 import { AccountAccessError, PgAccountStore } from '@lares/agent-kit/account-store';
 import { AccountCredentialError, rotateAccountCredential } from '@lares/agent-kit/account-credentials';
 import { PgAgentMailboxStore, type AgentMailboxBinding, type AgentMailboxReason } from '@lares/agent-kit/agent-mailbox-store';
@@ -251,7 +252,7 @@ export async function agentMailbox(job: string, deps: AgentMailboxDeps = {}): Pr
     };
     const gmail: GmailClient = {
       ...opened.gmail,
-      send: async () => refuse('This agent writes drafts only; send it from Gmail'),
+      send: async () => refuse(MAILBOX_SEND_REFUSAL),
       draft: async input => { await stillOrRefuse(); return opened.gmail.draft(input); },
       updateDraftRaw: async (id, raw, threadId) => { await stillOrRefuse(); return opened.gmail.updateDraftRaw(id, raw, threadId); },
     };
@@ -335,7 +336,7 @@ async function openClients(pool: Pool, binding: AgentMailboxBinding, deps: Agent
       }
       const jobAuth = client('', work); jobAuth.setCredentials({ access_token: access as string });
       const gmailMessages = wrapGmailApi(personalGmailApi(cfg, jobAuth, access as string), mailbox);
-      const gmail = makeGmailClient({ ...gmailMessages, send: async () => refuse('This agent writes drafts only; send it from Gmail') });
+      const gmail = makeGmailClient({ ...gmailMessages, send: async () => refuse(MAILBOX_SEND_REFUSAL) });
       const calendar = makeCalendarClient(wrapCalendarApi(personalCalendarApi(cfg, jobAuth, access as string)));
       const drive = info.scopes.includes(DRIVE_READONLY)
         ? { files: google.drive({ version: 'v3', auth: jobAuth }).files } as DriveApi : null;

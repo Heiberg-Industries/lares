@@ -183,6 +183,7 @@ async function main(): Promise<void> {
             namespaceGuard, administrator: config.credentials?.administrator,
             syncChanged: sync ? async actor => { await sync.apply(actor, { start: true }); } : undefined,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,
+            outsideCustodyHeld: outsideCustody ? name => outsideCustody!.heldConnections(name) : undefined,
             ceiling: async () => { const value = await readSetting(pool, "agents.ceiling"); return typeof value === "number" ? value : NaN; },
             compose: lifecycle ?? {stop:async()=>{throw new Error("Lifecycle configuration required");}},
             storage:lifecycle,

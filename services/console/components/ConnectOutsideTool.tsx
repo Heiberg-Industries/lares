@@ -4,6 +4,7 @@ import { Button } from "@lares/ui/primitives/button";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { Input } from "@lares/ui/primitives/input";
 import { Select } from "@lares/ui/primitives/select";
+import { SECRET_AS_NAME_MESSAGE, looksLikeSecret } from "@lares/agent-kit/secret-shaped";
 import { useRef, useState, type FormEvent } from "react";
 import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSwitchOnTrust,
   type ConnectIdentity, type ConnectStep, type ConnectTool } from "../app/actions/outside-connect";
@@ -83,6 +84,7 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
     if (!needsToken) {
       const names = toolNamesOf(toolText);
       if (names.length === 0) { setError("This server needs no token, so Lares cannot ask it what it offers. Type the names of the tools you want the agent to use."); return; }
+      if (names.some(looksLikeSecret)) { setError(SECRET_AS_NAME_MESSAGE); return; }
       setServerName(""); setRows(names.map(n => ({ name: n, use: true, kind: "change", free: false, seen: false }))); setPhase("confirm"); return;
     }
     if (!consent) { setError("Tick the box to allow sending the token to this address."); return; }
@@ -176,7 +178,7 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
       <Field label="Token (if the server needs one)" hint="Leave empty if the server asks for no login. The agent never sees the token; Lares keeps it locked away.">
         <Input type="password" autoComplete="off" maxLength={4096} value={token} onChange={e => setToken(e.target.value)} /></Field>
       <p className="lares-muted">Servers that use a sign-in page instead of a token will be connected here in a later version.</p>
-      {!needsToken && <Field label="Tools the agent may use" hint="With no token Lares cannot ask the server for its tool list. Type the tool names, separated by commas."><Input value={toolText} onChange={e => setToolText(e.target.value)} /></Field>}
+      {!needsToken && <Field label="Tools the agent may use" hint="With no token Lares cannot ask the server for its tool list. Type the tool names, separated by commas. A key or password goes in the Token field above, never here."><Input value={toolText} onChange={e => setToolText(e.target.value)} /></Field>}
       <FieldGroup legend="Agents that get these tools">
         {agents.map(agent => <Choice key={agent.name}><Checkbox checked={ticked.includes(agent.name)}
           onChange={e => setTicked(list => e.target.checked ? [...list, agent.name] : list.filter(n => n !== agent.name))} /> {agent.displayName}</Choice>)}

@@ -313,3 +313,17 @@ describe("grantedToolNames — the vault area gate", () => {
     expect(names).toEqual(["set_language", "studio_ideate"]);
   });
 });
+
+describe("a drafts-only mailbox is not handed a send tool", () => {
+  const send = { capability: "gmail", tool: { description: "send", approval: { request: async () => ({}) } } } as any;
+  const draft = { capability: "gmail", tool: { description: "draft", approval: { request: async () => ({}) } } } as any;
+  const pool = { gmail_draft: draft, gmail_send: send, meeting_followup_send: send };
+  const definition = { grants: [{ capability: "gmail", scope: "write-with-confirm" }], autonomy: { gmail: "gated" }, skills: [] } as any;
+
+  it("offers the draft tool and withholds every tool that sends, so no send card can be raised", () => {
+    expect(grantedToolNames(pool, definition)).toEqual(["gmail_draft"]);
+  });
+  it("offers the send tools again where the mailbox allows sending", () => {
+    expect(grantedToolNames(pool, definition, { mailboxPolicy: "send-allowed" })).toEqual(["gmail_draft", "gmail_send", "meeting_followup_send"]);
+  });
+});

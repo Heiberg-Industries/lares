@@ -56,6 +56,18 @@ describe("ConnectOutsideTool form", () => {
     expect(screen.queryByLabelText(/^Tools the agent may use/)).toBeTruthy();
   });
 
+  it("refuses a key pasted into the tool names field, tells the owner where it belongs, and never shows it back", () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    const pasted = "q7Zx1Lm9Tr4Vb8Nc2Wd5Ye3Hf6Jg0Ks";
+    fireEvent.change(address(), { target: { value: "https://mcp.example.org/api" } });
+    fireEvent.change(screen.getByLabelText(/^Tools the agent may use/), { target: { value: `find_rate, ${pasted}` } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toMatch(/Token field/);
+    expect(document.body.textContent).not.toContain(pasted);
+    expect(mocks.declare).not.toHaveBeenCalled();
+  });
+
   it("fills the name from the address, keeps it unique, and lets the owner change it", async () => {
     render(<ConnectOutsideTool agents={agents} initialAgent="alpha" takenNames={["example"]} />);
     const name = screen.getByLabelText(/^Name/) as HTMLInputElement;

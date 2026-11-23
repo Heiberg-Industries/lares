@@ -15,6 +15,7 @@ import { tsBasenames } from "./persona/deployed-tools.js";
 import { assertRoleToolsAreDeployed } from "./persona/index.js";
 import { assertNoUngatedWrites, isDisabledSentinel } from "./write-shape-lint.js";
 import { deliveryFindings } from "./delivery.js";
+import { SECRET_AS_NAME_MESSAGE, looksLikeSecret } from "./secret-shaped.js";
 import { OUTSIDE_CAPABILITY, checkOutsideUrl, outsideSecretName } from "./outside-tools.js";
 
 export interface ValidationFinding { check: string; message: string }
@@ -207,13 +208,17 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
     }
     for (const t of outside) {
       const allow = new Set(t.tools.allow);
+      // Tool names come from the owner's own input, so a refusal names the FIELD and a count, never the values.
+      if ([...t.tools.allow, ...t.tools.read, ...(t.tools.trusted ?? []).map((x) => x.tool)].some(looksLikeSecret)) {
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": ${SECRET_AS_NAME_MESSAGE}` });
+      }
       const stray = t.tools.read.filter((x) => !allow.has(x));
       if (stray.length > 0) {
-        out.push({ check: "outside-tools", message: `outside tool "${t.name}": read lists ${stray.join(", ")}, which are not in allow — read must be a subset of allow` });
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": ${stray.length} name(s) in the read list are not in allow — read must be a subset of allow` });
       }
       const notRead = (t.tools.trusted ?? []).map((x) => x.tool).filter((x) => !t.tools.read.includes(x));
       if (notRead.length > 0) {
-        out.push({ check: "outside-tools", message: `outside tool "${t.name}": ${notRead.join(", ")} cannot run without asking, because it is not marked as only looking things up — a tool that changes something always asks you first` });
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": ${notRead.length} tool(s) set to run without asking are not marked as only looking things up — a tool that changes something always asks you first` });
       }
       if (new Set((t.tools.trusted ?? []).map((x) => x.tool)).size !== (t.tools.trusted ?? []).length) {
         out.push({ check: "outside-tools", message: `outside tool "${t.name}": a tool is listed twice under run-without-asking` });
@@ -222,7 +227,7 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
         const reads = new Set(t.tools.read);
         const writes = t.tools.allow.filter((x) => !reads.has(x));
         if (writes.length > 0) {
-          out.push({ check: "outside-tools", message: `outside tool "${t.name}": the grant is read-only but ${writes.join(", ")} is allowed and not marked read — list it under read or widen the grant to write-with-confirm` });
+          out.push({ check: "outside-tools", message: `outside tool "${t.name}": the grant is read-only but ${writes.length} allowed tool(s) are not marked read — list them under read or widen the grant to write-with-confirm` });
         }
       }
       const url = checkOutsideUrl(t.url);
@@ -249,7 +254,7 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
   // answer does not change from one conversation to the next.
   if (opts.toolSources) {
     const dynamic: Record<string, readonly string[]> = { [POOL_SOURCE]: opts.toolSources.catalogue };
-    for (const t of outside) dynamic[`the outside tool "${t.name}" in this definition`] = t.tools.allow.map((x) => `${t.name}__${x}`);
+    for (const t of outside) dynamic[`the outside tool "${t.name}" in this definition`] = t.tools.allow.filter((x) => !looksLikeSecret(x)).map((x) => `${t.name}__${x}`);
     for (const c of toolNameCollisions(opts.toolSources.authored, dynamic)) {
       out.push({
         check: "tool-names",

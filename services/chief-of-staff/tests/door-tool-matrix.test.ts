@@ -261,8 +261,7 @@ const TABLE: readonly Row[] = [
   ["gmail_read",                          R,       H,       R,       R,       R],
   ["gmail_search",                        R,       H,       R,       R,       R],
   ["gmail_signature",                     R,       H,       R,       H,       H],
-  ["gmail_send",                          C,       H,       C,       H,       H],
-  // Found: web chat shows the owner these two and refuses every call (see the `it.fails` below).
+    // Found: web chat shows the owner these two and refuses every call (see the `it.fails` below).
   ["gmail_draft",                         C,       H,       C,       X,       H],
   ["gmail_draft_recipients",              C,       H,       C,       X,       H],
   // Calendar
@@ -322,8 +321,7 @@ const TABLE: readonly Row[] = [
   // Meetings
   ["meeting_followup_auto",               C,       H,       C,       H,       H],
   ["meeting_followup_redraft",            C,       H,       C,       H,       H],
-  ["meeting_followup_send",               C,       H,       C,       H,       H],
-  ["meeting_followup_record_denial",      R,       H,       R,       H,       H],
+    ["meeting_followup_record_denial",      R,       H,       R,       H,       H],
   // Notion proposals
   ["notion_proposals",                    R,       H,       R,       H,       H],
   ["notion_resolve_proposal",             C,       H,       C,       H,       H],
@@ -361,6 +359,8 @@ const OWN_RESOLVER: readonly OwnRow[] = [
 
 /** Baseline tools no door decides. Every other baseline tool must have a row above. */
 const NOT_DOOR_DEPENDENT: Readonly<Record<string, string>> = {
+  gmail_send: "no door decides it: the mailbox only writes drafts, so no door is handed it",
+  meeting_followup_send: "no door decides it: the mailbox only writes drafts, so no door is handed it",
   ask_question: "eve's own tool for asking the person a question; no code in this repository adds, removes or guards it per door",
   todo: "eve's own task list for the model; no code in this repository adds, removes or guards it per door",
   load_skill: "gone on eve 1.0: skills are loaded with eve's own eve__skill; the per-door rows `skill lares-docs`, `skill sales-outreach` and `skill signals` below replace it",
@@ -386,7 +386,6 @@ const NOT_IN_BASELINE: Readonly<Record<string, string>> = {
 const REPRESENTATIVE: ReadonlyArray<readonly [label: string, tool: string]> = [
   ["the mail read", "gmail_read"],
   ["the mail draft", "gmail_draft"],
-  ["the mail send", "gmail_send"],
   ["the calendar read", "calendar_list_events"],
   ["the calendar write", "calendar_create_event"],
   ["the private note read", "agent-kit__vault_read"],
@@ -401,6 +400,8 @@ const SHARED_ROOM_HIDDEN: readonly string[] = TABLE
 
 /** Catalogue tools with no row: the neutral definition grants none of them, so no door shows them. */
 const NOT_GRANTED: Readonly<Record<string, string>> = {
+  gmail_send: "the mailbox only writes drafts, so it is never handed over to any door",
+  meeting_followup_send: "the mailbox only writes drafts, so it is never handed over to any door",
   "agent-kit__transit_plan": "the neutral definition does not grant `transit`; the room rule lists it (public transport)",
   personal_calendar_accounts: "console-only (`privateOnlyTool`); the neutral definition does not grant it",
   personal_calendar_events: "console-only (`privateOnlyTool`); the neutral definition does not grant it",
@@ -1058,7 +1059,8 @@ describe("an unauthorised or unknown speaker", () => {
     // Not a door and not the claimed person: no Keeper pass for notes; the three note tools with no door road are still offered here.
     expect(Object.keys(tools).sort()).toEqual([...(await observe("slackDm")).shown.filter((tool) => !["agent-kit__vault_read", "agent-kit__vault_list"].includes(tool)), ...DOOR_HIDDEN_NOTE_TOOLS].sort());
     expect((await attempt(session, "gmail_read", tools["gmail_read"])).call).toBe(R);
-    expect((await attempt(session, "gmail_send", tools["gmail_send"])).call).toBe(C);
+    // The mailbox only writes drafts, so no door is handed the send tool and no send card can be raised.
+    expect(tools["gmail_send"]).toBeUndefined();
     expect(() => assertApprover(approverFrom(session.session.auth))).toThrow(/not an allowed approver/);
   });
 });
@@ -1092,10 +1094,19 @@ describe("Found: what the table records today, and what should hold instead", ()
       "twenty_company_for_person", "twenty_get_person", "twenty_lookup"]);
   });
 
+  // The mailbox only writes drafts: no door is handed a tool that sends mail, so no "Send email" card can be raised.
+  it("no door is handed a mail-send tool", async () => {
+    for (const key of ["slackDm", "slackRoom", "telegram", "webOwner", "webMember"] as const) {
+      const { shown } = await observe(key);
+      expect(shown, key).not.toContain("gmail_send");
+      expect(shown, key).not.toContain("meeting_followup_send");
+    }
+  });
+
   // The writes that ran with no card in a room, and every card tool: hidden and refused before any card.
   it("Slack · owner · mention in a shared channel: remembering, notes, deadlines and every card tool are hidden and refused", async () => {
     const room = await observe("slackRoom");
-    for (const tool of ["remember", "save_note", "deadline_add", "deadline_reset", "facts_list", "memory_used", "gmail_send",
+    for (const tool of ["remember", "save_note", "deadline_add", "deadline_reset", "facts_list", "memory_used",
       "gmail_signature", "identity_my_addresses", "voice_guide", "digest_run", "agent-kit__signals_recent", "remind_set", "forget"]) {
       expect(room.shown, tool).not.toContain(tool);
       expect(room.reasons[tool], tool).toBe(SHARED_ROOM_REFUSED);
