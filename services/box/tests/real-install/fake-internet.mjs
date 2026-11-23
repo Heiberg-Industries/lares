@@ -91,6 +91,28 @@ function serve(fixture) {
     return json(response, 404, { error: "not_found" });
   }
 
+  // A vendor's MCP server (streamable HTTP, JSON answers) at a neutral public-looking name. It asks for the
+  // bearer token it was given, and records what was asked, never the token.
+  function mcp(request, response, url, body) {
+    if (url.pathname !== "/mcp") return json(response, 404, { error: "not_found" });
+    const presented = (request.headers.authorization ?? "").replace(/^Bearer /, "");
+    if (presented !== settings.mcpToken) { record({ kind: "mcp", method: "(refused)", ok: false }); return json(response, 401, { error: "bad token" }); }
+    if (request.method !== "POST") { response.writeHead(405, { allow: "POST", "content-length": 0 }); return response.end(); }
+    let message;
+    try { message = JSON.parse(body.toString("utf8")); } catch { return json(response, 400, { error: "not json" }); }
+    record({ kind: "mcp", method: message.method, ok: true });
+    if (message.id === undefined) { response.writeHead(202, { "content-length": 0 }); return response.end(); }
+    let result;
+    if (message.method === "initialize") result = { protocolVersion: "2025-06-18", serverInfo: { name: "Example directory", version: "1" }, capabilities: { tools: {} } };
+    else if (message.method === "tools/list") result = { tools: [{ name: "lookup-company", description: "Look up a company by name", annotations: { readOnlyHint: true },
+      inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } }] };
+    else if (message.method === "tools/call") result = { content: [{ type: "text", text: settings.mcpAnswer }] };
+    else return json(response, 200, { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "no such method" } });
+    const raw = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    response.writeHead(200, { "content-type": "application/json", "mcp-session-id": "fixture-session", "content-length": raw.length });
+    return response.end(raw);
+  }
+
   // The room mentions whose forced tool call has been answered once (see `decide`).
   const forcedOnce = new Set();
   // Text of a message's blocks, whichever of the two shapes the provider API allows it arrived in.
@@ -113,6 +135,7 @@ function serve(fixture) {
       // The room's forced call: say in the reply whether it came back as an error or as a result.
       if (settings.roomForceTool && called?.name === settings.roomForceTool && everything.includes(settings.roomForcePrompt))
         return { text: blocks.filter((block) => block.type === "tool_result").every((block) => block.is_error) ? settings.roomForceErrorReply : settings.roomForceResultReply };
+      if (settings.outsidePrompt && everything.includes(settings.outsidePrompt) && /lookup/.test(called?.name ?? "")) return { text: settings.outsideReply };
       return { text: called?.name === settings.approvalTool ? settings.approvalReply
         : called?.name === settings.noteTool ? settings.noteReply : settings.toolReply };
     }
@@ -130,6 +153,10 @@ function serve(fixture) {
       return { tool: settings.roomForceTool, input: settings.roomForceInput };
     }
     if (settings.roomPrompt && asked.includes(settings.roomPrompt)) return { text: settings.roomReply };
+    if (settings.outsidePrompt && asked.includes(settings.outsidePrompt)) {
+      const tool = toolNames.find((name) => /lookup/.test(name));
+      return tool ? { tool, input: { query: "Example company" } } : { text: "PROOF_NO_USABLE_TOOL" };
+    }
     if (asked.includes(settings.approvalPrompt)) {
       return toolNames.includes(settings.approvalTool) ? { tool: settings.approvalTool, input: settings.approvalInput } : { text: "PROOF_NO_USABLE_TOOL" };
     }
@@ -329,6 +356,7 @@ function serve(fixture) {
       const body = Buffer.concat(chunks);
       if (host === "api.anthropic.com" && url.pathname === "/v1/messages" && request.method === "POST") return provider(request, response, body);
       if (host === "api.anthropic.com" && url.pathname === "/v1/models" && request.method === "GET") return models(request, response);
+      if (settings.mcpHost && host === settings.mcpHost) return mcp(request, response, url, body);
       if (host === settings.uptimeHost) { record({ kind: "uptime", path: url.pathname }); return json(response, 200, { ok: true }); }
       if (["accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com"].includes(host)) return signIn(request, response, url, body);
       if (host === "slack.com" && url.pathname.startsWith("/api/") && request.method === "POST") return slack(request, response, url, body);

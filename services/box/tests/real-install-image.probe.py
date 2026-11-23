@@ -60,7 +60,12 @@ NETWORK = "lares-network"
 REGISTRY_ADDRESS = "10.99.0.2"
 FAKE_ADDRESS = "172.30.0.240"
 ROUTE_ADDRESS = "172.30.0.241"
-FAKE_HOSTS = ("api.anthropic.com", "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com", f"uptime.{DOMAIN}",
+MCP_HOST = "mcp.vendor-fixture.dev"
+MCP_TOKEN = "proof-vendor-token-" + uuid.uuid4().hex
+MCP_ANSWER = "PROOF_OUTSIDE_TOOL_ANSWER"
+OUTSIDE_PROMPT = "PROOF_USE_OUTSIDE_TOOL please look up the company."
+OUTSIDE_REPLY = "PROOF_OUTSIDE_TOOL_DONE"
+FAKE_HOSTS = (MCP_HOST, "api.anthropic.com", "accounts.google.com", "oauth2.googleapis.com", "www.googleapis.com", f"uptime.{DOMAIN}",
               "slack.com", "api.telegram.org")
 TOOL_PROMPT = "PROOF_USE_A_TOOL please look at the tracks."
 FOLLOW_UP_PROMPT = "PROOF_CARRY_ON and what did you find?"
@@ -497,6 +502,7 @@ def start_fake_internet(work: pathlib.Path, tls: dict[str, pathlib.Path], fixtur
     (fixture / "settings.json").write_text(json.dumps({
         "clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET, "subject": "proof-owner-subject", "email": OWNER_EMAIL,
         "providerKey": key_value, "uptimeHost": f"uptime.{DOMAIN}",
+        "mcpHost": MCP_HOST, "mcpToken": MCP_TOKEN, "mcpAnswer": MCP_ANSWER, "outsidePrompt": OUTSIDE_PROMPT, "outsideReply": OUTSIDE_REPLY,
         "toolPrompt": "PROOF_USE_A_TOOL", "followUpPrompt": "PROOF_CARRY_ON", "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
         "toolPreference": ["tracks_list", "vault_list"],
         "approvalPrompt": "PROOF_ASK_APPROVAL", "approvalTool": APPROVAL_TOOL, "approvalInput": APPROVAL_INPUT, "approvalReply": APPROVAL_REPLY,
@@ -2387,6 +2393,7 @@ def main(argv: list[str]) -> int:
         brief_dir = work / "test-briefs"
         brief_dir.mkdir(mode=0o700)
         write_private(settings_file, json.dumps({
+            "mcpUrl": f"https://{MCP_HOST}/mcp", "mcpToken": MCP_TOKEN, "outsidePrompt": OUTSIDE_PROMPT, "outsideReply": OUTSIDE_REPLY,
             "domain": DOMAIN, "agent": AGENT, "memberLimit": MEMBER_LIMIT, "toolPrompt": TOOL_PROMPT, "followUpPrompt": FOLLOW_UP_PROMPT,
             "approvalPrompt": APPROVAL_PROMPT, "approvalReply": APPROVAL_REPLY, "notePrompt": NOTE_PROMPT, "noteReply": NOTE_REPLY, "toolReply": TOOL_REPLY, "followUpReply": FOLLOW_UP_REPLY,
             # Any message the stand-in does not recognise is answered with PROOF_OK.
@@ -2621,6 +2628,35 @@ def main(argv: list[str]) -> int:
                 raise RuntimeError("the model call after the update did not settle in the budget ledger")
             time.sleep(3)
         passed("chat-after-the-update-reached-the-model-and-settled")
+
+        stage("connect an outside tool with a token, through the console, to one working tool call")
+        remember_secrets(MCP_TOKEN)
+        # The agent holds a read-only outside grant, the way the owner's did. This is the one thing set from the host.
+        got = keeper_host_action("definition.get", {"name": AGENT})
+        if got.get("ok") is not True:
+            raise RuntimeError(f"could not read the agent's definition: {str(got)[:300]}")
+        held = got["result"] if "result" in got else got
+        definition = held["definition"]
+        definition["grants"] = [g for g in definition["grants"] if g["capability"] != "outside"] + [{"capability": "outside", "scope": "read"}]
+        definition.setdefault("autonomy", {})["outside"] = "gated"
+        saved_grant = keeper_host_action("definition.save", {"name": AGENT, "definition": definition, "duties": held["duties"], "voice": held["voice"]})
+        if saved_grant.get("ok") is not True:
+            raise RuntimeError(f"could not give the agent a read-only outside grant: {str(saved_grant)[:300]}")
+        deadline = time.monotonic() + 240
+        while not agent_answers():
+            if time.monotonic() > deadline:
+                raise RuntimeError("the agent did not come back after its outside grant was saved")
+            time.sleep(3)
+        passed("agent-holds-a-read-only-outside-grant")
+        browser("connect-outside", settings_file, tls, attempts=DOOR_STEP_ATTEMPTS, timeout=900)
+        mcp_calls = [call for call in fake_calls(fixture) if call["kind"] == "mcp"]
+        if not any(call["method"] == "tools/list" and call["ok"] for call in mcp_calls):
+            raise RuntimeError(f"the vendor's server was never asked for its tools: {mcp_calls}")
+        passed("connect-screen-listed-the-tools-and-finished")
+        browser("outside-call", settings_file, tls, timeout=900)
+        if not any(call["method"] == "tools/call" and call["ok"] for call in fake_calls(fixture) if call["kind"] == "mcp"):
+            raise RuntimeError("the agent's call never reached the vendor's server")
+        passed("one-outside-tool-call-succeeded")
 
         stage("sudo lares doctor")
         doctor = run("lares", "doctor", timeout=180, check=False)

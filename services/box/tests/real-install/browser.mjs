@@ -29,6 +29,28 @@ const steps = {
     await page.waitForURL((url) => url.origin === origin && !url.pathname.startsWith("/sign-in") && !url.pathname.startsWith("/api/auth"), { timeout: STEP_MS });
     if (!(await context.cookies()).some((cookie) => cookie.name === "lares_session")) throw new Error("Signed in, but no session cookie was issued");
   },
+  // The Connect screen for an outside tool with a token, pressed as a person would, to the end.
+  async "connect-outside"(page) {
+    await page.goto(`${origin}/integrations/connect-outside-tool?agent=${settings.agent}`);
+    await page.getByLabel("Server address").fill(settings.mcpUrl, { timeout: 30_000 });
+    await page.getByLabel("Token (if the server needs one)").fill(settings.mcpToken);
+    await page.getByLabel(/I allow Lares to send this token/).check();
+    await page.getByRole("button", { name: "Connect" }).click();
+    await page.getByText(/offers 1 tool/).waitFor({ timeout: 240_000 });
+    await page.getByRole("button", { name: "Connect" }).click();
+    await page.getByText(/^Connected\./).waitFor({ timeout: 480_000 });
+    console.log(`the screen says: ${(await page.getByText(/^Connected\./).first().innerText()).slice(0, 200)}`);
+  },
+  // One question that makes the agent call the connected tool; the person answers its card.
+  async "outside-call"(page) {
+    await page.goto(`${origin}/chat/${settings.agent}`);
+    await page.waitForTimeout(2000);
+    await page.getByText("The agent is still answering").waitFor({ state: "hidden", timeout: STEP_MS });
+    await page.getByPlaceholder(/^Message /).fill(settings.outsidePrompt, { timeout: 60_000 });
+    await page.getByRole("button", { name: "Send message" }).click();
+    await page.locator(".lares-actions button", { hasText: /approve/i }).first().click({ timeout: 240_000 });
+    await page.locator(".lares-message-agent", { hasText: settings.outsideReply }).first().waitFor({ timeout: 240_000 });
+  },
   async "create-agent"(page) {
     await page.goto(`${origin}/agents/new`);
     await page.getByRole("radio", { name: "Chief of staff" }).check({ timeout: 30_000 });
