@@ -223,11 +223,19 @@ const denied = (): never => { throw new Error(REFUSED); };
  * route error that was folded into it. The keeper log prints both through its scrubbed cause summary. */
 export class OutsideRefusal extends Error {
   readonly code: string;
+  /** The underlying error's class and Postgres SQLSTATE only (e.g. "DatabaseError/42501"); never a message or a value. */
+  readonly detail: string | undefined;
   constructor(code: string, cause?: unknown) {
     super(REQUEST_REFUSED, cause === undefined ? undefined : { cause });
     this.name = "OutsideRefusal";
     this.code = code;
+    this.detail = cause === undefined ? undefined : causeDetail(cause);
   }
+}
+function causeDetail(cause: unknown): string {
+  const name = cause instanceof Error ? cause.constructor.name.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "Error" : typeof cause;
+  const state = (cause as { code?: unknown } | null)?.code;
+  return typeof state === "string" && /^[0-9A-Z]{5}$/.test(state) ? `${name}/${state}` : name;
 }
 const requestDenied = (code = "closed", cause?: unknown): never => { throw new OutsideRefusal(code, cause); };
 function wipeRejectedCredentialInput(value:unknown):void{
@@ -240,25 +248,28 @@ function wipeRejectedCredentialInput(value:unknown):void{
  * lookup discovers the organization gate; the locked lookup below is the authority check. */
 export async function lockOutsideHumanSession(db: SourceDatabase, sessionToken: string): Promise<{ memberId: string }> {
   requireSourceTransactionOwner(db);
-  if (typeof sessionToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(sessionToken)) return denied();
+  const step = async <T>(code: string, work: () => Promise<T>): Promise<T> => {
+    try { return await work(); } catch (error) { if (error instanceof OutsideRefusal) throw error; return requestDenied(code, error); }
+  };
+  if (typeof sessionToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(sessionToken)) return requestDenied('session.token-shape');
   const tokenHash = createHash('sha256').update(sessionToken).digest('hex');
-  const discovered = await db.query(`SELECT member_id FROM member_sessions
-    WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, [tokenHash]);
+  const discovered = await step('session.lookup-failed', () => db.query(`SELECT member_id FROM member_sessions
+    WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()`, [tokenHash]));
   const memberId = discovered.rows[0]?.member_id as unknown;
-  if (discovered.rows.length !== 1 || typeof memberId !== 'string' || !memberId) return denied();
-  await gateConsoleOrganisation(db, memberId, undefined, { lock: 'update' });
-  const current = await db.query(`SELECT s.member_id,
+  if (discovered.rows.length !== 1 || typeof memberId !== 'string' || !memberId) return requestDenied('session.not-found');
+  await step('session.org-gate', () => gateConsoleOrganisation(db, memberId, undefined, { lock: 'update' }));
+  const current = await step('session.lock-failed', () => db.query(`SELECT s.member_id,
       isfinite(s.expires_at) AS finite,
       CASE WHEN isfinite(s.expires_at) THEN to_char(s.expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END AS deadline
     FROM member_sessions s JOIN users u ON u.id=s.member_id
     WHERE s.token_hash=$1 AND s.member_id=$2 AND s.revoked_at IS NULL
       AND s.expires_at>clock_timestamp() AND u.status='active' AND u.org_id IS NOT NULL
-    FOR UPDATE OF s`, [tokenHash, memberId]);
+    FOR UPDATE OF s`, [tokenHash, memberId]));
   const row = current.rows[0] as {member_id?:unknown;finite?:unknown;deadline?:unknown}|undefined;
-  if (current.rows.length !== 1 || row?.member_id !== memberId || row.finite !== true ||
-      typeof row.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(row.deadline)) return denied();
-  retainSourceTransactionDeadline(db, row.deadline);
-  await checkConsoleSourceDeadlines(db);
+  if (current.rows.length !== 1 || row?.member_id !== memberId) return requestDenied('session.changed-under-lock');
+  if (row.finite !== true) return requestDenied('session.expiry-not-finite');
+  if (typeof row.deadline !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(row.deadline)) return requestDenied('session.deadline-format');
+  await step('session.deadline-check', async () => { retainSourceTransactionDeadline(db, row.deadline as string); await checkConsoleSourceDeadlines(db); });
   return { memberId };
 }
 
@@ -636,23 +647,33 @@ export class OutsideCustodyStore {
     try {
       const namespaceClient=requireDefinitionNamespace();
       const assertNamespace=()=>this.#assertMainNamespace(namespaceClient,options.deadlineAtMs);
+      let phase='session.transaction';
       const result=await consoleSourceTransaction(this.pool, async source => {
         this.#assertOpen(requestDenied);
         const db = source as PoolClient;
+        phase='session.lock';
         const { memberId } = await lockOutsideHumanSession(db, sessionToken);
+        phase='session.namespace';
         assertNamespace();
+        phase='session.work';
         const result = await work(db, memberId);
+        phase='session.namespace';
         assertNamespace();
+        phase='session.deadline-check';
         await checkConsoleSourceDeadlines(db);
+        phase='session.namespace';
         assertNamespace();
         return result;
-      }, undefined, options);
+      }, undefined, options).catch(error=>{
+        if(error instanceof OutsideRefusal||error instanceof KeeperRefusedError||error instanceof SourceAuthorityUnavailable||error instanceof OutsideCustodyRecoveryRequired)throw error;
+        return requestDenied(phase==='session.work'?'session.work-failed':phase,error);
+      });
       assertNamespace();
       return result;
     } catch (error) {
       if(error instanceof SourceAuthorityUnavailable&&options.operationId)throw new OutsideCustodyRecoveryRequired(options.operationId);
       if (error instanceof SourceAuthorityUnavailable || error instanceof OutsideCustodyRecoveryRequired) throw error;
-      if(error instanceof OutsideRefusal)throw error;return requestDenied('session.failed',error);
+      if(error instanceof OutsideRefusal||error instanceof KeeperRefusedError)throw error;return requestDenied('session.namespace',error);
     } finally { release(); }
   }
 

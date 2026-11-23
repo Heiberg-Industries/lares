@@ -7,15 +7,19 @@ import {Readable} from 'node:stream';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import {quiet} from './helpers/quiet-pool.js';
+import {PgMemberStore} from '@lares/agent-kit/member-store';
 import {provisionEngineDatabasePrivileges} from '../../box/lib/database-privileges.js';
 
 const http=vi.hoisted(()=>({request:vi.fn()}));
 vi.mock('undici',()=>({request:http.request,ProxyAgent:class{destroy(){return Promise.resolve();}},Client:class{}}));
 import {OutsideCustodyStore,OutsideRefusal} from '../lib/outside-custody.js';
+import {KeeperRefusedError} from '../lib/actions.js';
 import {plainOutsideRefusal} from '../lib/outside-refusals.js';
 
+const SESSION_MAX_AGE=7*24*60*60;
 const KEY=Buffer.alloc(32,41),owner='token-connect-owner',org='token-connect-org';
-const token='T'.repeat(43),incarnation='00000000-0000-4000-8000-000000000204',admissionNonce='N'.repeat(43),sessionId='token-connect-session';
+let token='';
+const incarnation='00000000-0000-4000-8000-000000000204',admissionNonce='N'.repeat(43),sessionId='token-connect-session';
 const appPassword=Buffer.from('token-connect-app-role-disposable');
 const custodyPassword=Buffer.from('token-connect-custody-role-disposable');
 const financialPassword=Buffer.from('token-connect-financial-role-disposable');
@@ -23,7 +27,7 @@ const URL_OF_SERVER='https://mcp.example.com/api/mcp';
 const PENDING='connect-pending';
 const route={policyHash:'d'.repeat(64),sourceAddress:'198.51.100.10',proxyUrl:'http://lares-egress-proxy:8888/'};
 let container:StartedPostgreSqlContainer,admin:Pool,app:Pool,custody:Pool,store:OutsideCustodyStore;
-let version=0,refuseServer=false,serverCalls=0;
+let version=0,refuseServer=false,serverCalls=0,routeReview:(()=>Promise<typeof route>)|undefined;
 const deadline=()=>({deadlineAtMs:Date.now()+10000});
 const hashOf=(n:number)=>createHash('sha256').update(`definition-${n}`).digest('hex');
 
@@ -57,7 +61,7 @@ function fakeServer(){
 }
 
 beforeEach(async()=>{
-  version=0;refuseServer=false;serverCalls=0;
+  version=0;refuseServer=false;serverCalls=0;routeReview=undefined;
   container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
   admin=quiet(new Pool({connectionString:container.getConnectionUri()}));
   const sqlDir=new URL('../../box/sql',import.meta.url).pathname;
@@ -74,15 +78,18 @@ beforeEach(async()=>{
   await admin.query('INSERT INTO orgs(id,display_name) VALUES($1,\'fixture\')',[org]);
   await admin.query(`INSERT INTO users(id,display_name,org_id,org_role,status,automation_mode) VALUES($1,'owner',$2,'owner','active','draft-and-ask')`,[owner,org]);
   await admin.query('INSERT INTO org_member_policy(user_id) VALUES($1)',[owner]);
-  await admin.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$1,$2,clock_timestamp()+interval \'1 hour\')',
-    [owner,createHash('sha256').update(token).digest('hex')]);
+  // The session is made by the console's own sign-in code (the member store), on the console's own database role,
+  // exactly as the real sign-in callback does, not by a hand-written INSERT.
+  await admin.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$1,'')",[owner]);
+  token=(await new PgMemberStore(app).createSession({identity:{issuer:'https://identity.example.invalid',subject:owner},verifiedAt:new Date()},
+    new Date(Date.now()+SESSION_MAX_AGE*1000))).token;
   // The agent exists with no outside connection yet, owned by the member, outside grant read-only.
   await admin.query(`INSERT INTO agent_definitions(name,definition,hash,status) VALUES('worker',$1::jsonb,$2,'valid')`,
     [JSON.stringify({name:'worker',model:'lares-brain',grants:[{capability:'outside',scope:'read'}]}),hashOf(0)]);
   await admin.query(`INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES('worker',$1,$2)`,[owner,org]);
   await admin.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending)
     VALUES('worker','127.0.0.1'::inet,'fixture','owned',$1,$1,'ready','{}'::jsonb,false)`,[incarnation]);
-  const lifecycle={reviewOutsideRoute:async()=>route,withAppliedOutsideRoute:async(_endpoint:string,_hash:string,_deadline:number,
+  const lifecycle={reviewOutsideRoute:async()=>routeReview?routeReview():route,withAppliedOutsideRoute:async(_endpoint:string,_hash:string,_deadline:number,
     work:(lease:{assertCurrent:()=>Promise<typeof route>})=>Promise<unknown>)=>work({assertCurrent:async()=>route})};
   store=new OutsideCustodyStore(custody as never,KEY,{mainPool:app as never,lifecycle:lifecycle as never});
   fakeServer();
@@ -202,3 +209,18 @@ it.fails('connects again after the saved attempts for the name were used up and 
     expectedGeneration:Number(account.generation),operationId:randomUUID()},deadline());
   await wholeConnect('key-4');
 },300_000);
+
+it('says the route is unavailable (not "session failed") when the keeper\'s own route review refuses',async()=>{
+  await saveDefinition([PENDING],[PENDING]);
+  routeReview=async()=>{throw new KeeperRefusedError('Outside route is unavailable');};
+  await expect(lookUpTools('connector','vendor-key-for-the-test')).rejects.toThrow('Outside route is unavailable');
+},180_000);
+
+it('names the step and the error class, never a value, when a database step under the session fails',async()=>{
+  await admin.query("UPDATE member_sessions SET expires_at='infinity'");
+  const error=await store.previewHumanDiscovery(token,{agentName:'worker',connectionName:'connector'},deadline()).then(()=>undefined,(e:unknown)=>e);
+  expect((error as OutsideRefusal).code).toBe('session.expiry-not-finite');
+  await admin.query("UPDATE member_sessions SET expires_at=clock_timestamp()+interval '1 hour'");
+  const plain=plainOutsideRefusal(await store.previewHumanDiscovery('x'.repeat(43),{agentName:'worker',connectionName:'connector'},deadline()).then(()=>undefined,(e:unknown)=>e))!;
+  expect(plain.message).toMatch(/\(check: session\.not-found\)/);
+});
