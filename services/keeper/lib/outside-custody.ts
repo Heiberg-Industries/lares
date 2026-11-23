@@ -234,8 +234,9 @@ export class OutsideRefusal extends Error {
 }
 function causeDetail(cause: unknown): string {
   const name = cause instanceof Error ? cause.constructor.name.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "Error" : typeof cause;
+  const message = cause instanceof Error && /^keeper: [a-z ;,-]{3,80}$/.test(cause.message) ? ` (${cause.message})` : "";
   const state = (cause as { code?: unknown } | null)?.code;
-  return typeof state === "string" && (/^[0-9A-Z]{5}$/.test(state) || /^[a-z][a-z-]{2,40}$/.test(state)) ? `${name}/${state}` : name;
+  return typeof state === "string" && (/^[0-9A-Z]{5}$/.test(state) || /^[a-z][a-z-]{2,40}$/.test(state)) ? `${name}/${state}${message}` : `${name}${message}`;
 }
 const requestDenied = (code = "closed", cause?: unknown): never => { throw new OutsideRefusal(code, cause); };
 function wipeRejectedCredentialInput(value:unknown):void{
