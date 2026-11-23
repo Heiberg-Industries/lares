@@ -35,7 +35,12 @@ Commit titles from 9a0d53ca785a4e1e98b4e6b6fb0ea6752edbfc47 to 8cfd295f12ef257d8
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- An outside tool that needs a token can now be connected. Before, saving it failed with a database permission error, because the keeper asked the wrong database login which connections already hold a token.
+- The Connect screen refuses a tool name that looks like a key, and says the key belongs in the Token field. The keeper no longer repeats refused names in its log.
+- An agent whose mailbox only writes drafts is no longer offered sending. It says up front that it can only write a draft, so it never asks you to approve a send that cannot happen.
+- Nothing breaks: the update adds no database file and changes no setting.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
