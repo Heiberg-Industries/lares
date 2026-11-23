@@ -2636,7 +2636,7 @@ def main(argv: list[str]) -> int:
         if got.get("ok") is not True:
             raise RuntimeError(f"could not read the agent's definition: {str(got)[:300]}")
         held = got["result"] if "result" in got else got
-        definition = held["definition"]
+        definition = json.loads(held["definition"]) if isinstance(held["definition"], str) else held["definition"]
         definition["grants"] = [g for g in definition["grants"] if g["capability"] != "outside"] + [{"capability": "outside", "scope": "read"}]
         definition.setdefault("autonomy", {})["outside"] = "gated"
         saved_grant = keeper_host_action("definition.save", {"name": AGENT, "definition": definition, "duties": held["duties"], "voice": held["voice"]})
