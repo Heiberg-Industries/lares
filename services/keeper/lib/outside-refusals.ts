@@ -21,7 +21,7 @@ export function plainOutsideRefusal(error: unknown): KeeperRefusedError | undefi
   if (!(error instanceof OutsideRefusal)) return undefined;
   const sentence = SENTENCES[error.code]
     ?? "The keeper refused this step before it contacted the server, so nothing was sent. The keeper log names the check.";
-  return new KeeperRefusedError(`${sentence} (check: ${error.code})`);
+  return new KeeperRefusedError(`${sentence} (check: ${error.code}${error.detail ? `; ${error.detail}` : ""})`);
 }
 
 /** Registers a private outside action so a named refusal reaches the screen as a plain sentence. Other errors pass through. */
