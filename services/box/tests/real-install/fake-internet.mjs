@@ -135,7 +135,7 @@ function serve(fixture) {
       // The room's forced call: say in the reply whether it came back as an error or as a result.
       if (settings.roomForceTool && called?.name === settings.roomForceTool && everything.includes(settings.roomForcePrompt))
         return { text: blocks.filter((block) => block.type === "tool_result").every((block) => block.is_error) ? settings.roomForceErrorReply : settings.roomForceResultReply };
-      if (settings.outsidePrompt && everything.includes(settings.outsidePrompt) && /lookup/.test(called?.name ?? "")) return { text: settings.outsideReply };
+      if (settings.outsidePrompt && everything.includes(settings.outsidePrompt) && /__lookup/.test(called?.name ?? "")) return { text: settings.outsideReply };
       return { text: called?.name === settings.approvalTool ? settings.approvalReply
         : called?.name === settings.noteTool ? settings.noteReply : settings.toolReply };
     }
@@ -154,7 +154,8 @@ function serve(fixture) {
     }
     if (settings.roomPrompt && asked.includes(settings.roomPrompt)) return { text: settings.roomReply };
     if (settings.outsidePrompt && asked.includes(settings.outsidePrompt)) {
-      const tool = toolNames.find((name) => /lookup/.test(name));
+      // The connected vendor tool is `<connection>__<tool>`; the agent has its own lookups (a person lookup) that must not be picked instead.
+      const tool = toolNames.find((name) => /__lookup/.test(name));
       return tool ? { tool, input: { query: "Example company" } } : { text: "PROOF_NO_USABLE_TOOL" };
     }
     if (asked.includes(settings.approvalPrompt)) {

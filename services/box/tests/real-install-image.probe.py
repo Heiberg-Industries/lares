@@ -1228,7 +1228,7 @@ def outside_on_doors(work: pathlib.Path, fixture: pathlib.Path, door_values: dic
                 break
             time.sleep(3)
         model_calls = [call for call in fake_calls(fixture)[since:] if call["kind"] == "model" and call.get("outsideTurn")]
-        offered = sorted({name for call in model_calls for name in call["tools"] if "lookup" in name})
+        offered = sorted({name for call in model_calls for name in call["tools"] if "__lookup" in name})
         vendor_calls = len([call for call in fake_calls(fixture) if call["kind"] == "mcp" and call["method"] == "tools/call"]) - vendor_before
         audit_after = int(read_only_query("SELECT count(*) FROM keeper_audit WHERE action = 'outside.run-trusted' AND outcome = 'ok'", release) or 0)
         proof.setdefault("outsideOnDoors", {})[kind] = {"eventStatus": status, "modelCalls": len(model_calls), "toolsOfferedNamedLookup": offered,
