@@ -57,6 +57,7 @@ import {
   CONNECTION_SEARCH_TOOL,
   outsideProblems,
   outsideProblemWording,
+  outsideConnectionOf,
   outsideResultTaint,
   type OutsideDefinitionView,
 } from "@lares/agent-kit/outside-connections";
@@ -117,8 +118,8 @@ export function makeOriginTaint(deps: OriginTaintDeps = {}) {
 
   /** Outside-tool results: taint by prefix (untrusted connections), and one signal when the key was
    *  refused or the server did not answer. Never throws. */
-  async function outsideEffects(event: HookEvent<"call.settled">, ctx: HookContext, toolName: string): Promise<Taint | undefined> {
-    if (toolName !== CONNECTION_SEARCH_TOOL && !toolName.includes("__")) return undefined;
+  async function outsideEffects(event: HookEvent<"call.settled">, ctx: HookContext, toolName: string): Promise<{ taint: Taint | undefined; connection?: string }> {
+    if (toolName !== CONNECTION_SEARCH_TOOL && !toolName.includes("__")) return { taint: undefined };
     const sessionId = (ctx as { session?: { id?: string } } | null)?.session?.id;
     const definition = await definitionFor(sessionId);
     const data = event?.data as { output?: unknown; outcome?: unknown } | undefined;
@@ -131,7 +132,7 @@ export function makeOriginTaint(deps: OriginTaintDeps = {}) {
       const w = outsideProblemWording(definition.name, p);
       await signal(`outside-tool:${key}`, w.summary, w.detail);
     }
-    return outsideResultTaint(toolName, definition);
+    return { taint: outsideResultTaint(toolName, definition), connection: outsideConnectionOf(toolName, definition) };
   }
 
   function warn(where: string, err: unknown): void {
@@ -161,6 +162,7 @@ export function makeOriginTaint(deps: OriginTaintDeps = {}) {
       const asked = callOfCtx(ctx, callId);
       let taint: Taint | undefined;
       let toolName = asked?.name;
+      let connection: string | undefined;
       if (asked === undefined) {
         // Fail closed: a result whose tool we cannot name might be any of them.
         taint = "third_party";
@@ -173,7 +175,7 @@ export function makeOriginTaint(deps: OriginTaintDeps = {}) {
           // Not one of the fixed names: it may still be an outside tool's result. A definition that
           // cannot be read here means no outside tool resolved either, so there is nothing to taint.
           try {
-            taint = await outsideEffects(event, ctx, asked.name);
+            ({ taint, connection } = await outsideEffects(event, ctx, asked.name));
           } catch (err) {
             warn("outside-tool lookup", err);
           }
@@ -189,7 +191,9 @@ export function makeOriginTaint(deps: OriginTaintDeps = {}) {
         console.warn(`origin-taint-hook: ${toolName} returned outside text but the turn could not be identified — every write in it falls back to third_party`);
         return;
       }
-      taintTurn(key, taint);
+      // The source is recorded only for an outside connection's result; the kit accepts it only if the call was
+      // noted as a trusted lookup before it ran. Every other writer is unattributed.
+      taintTurn(key, taint, connection !== undefined ? { connection, callId } : undefined);
     } catch (err) {
       warn("call.settled", err);
     }
