@@ -55,5 +55,6 @@ Release notes say what changed, what breaks and how to upgrade. The newest publi
 ## contributing
 
 - [`pr-ci.md`](pr-ci.md) — What CI runs on a pull request
+- [`solutions/2026-11-24-process-group-exit-depends-on-pid-1.md`](solutions/2026-11-24-process-group-exit-depends-on-pid-1.md) — Lesson: how long a killed process group stays visible depends on PID 1
 - [`website-repository.md`](website-repository.md) — Where the public website lives
 - [`tools/design-preview/README.md`](../tools/design-preview/README.md) — standalone visual and interaction preview; sample state only
