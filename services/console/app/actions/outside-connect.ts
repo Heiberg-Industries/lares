@@ -27,7 +27,9 @@ export type ConnectTool = OutsideDiscoveryDocumentDto["tools"][number];
 export type ConnectIdentity = { accountId: string; agentName: string; connectionName: string; requestId: string; claimOperationId: string };
 /** `currentTrusted` / `previousTools`: what the agent already had for this connection, so a reconnect can show the current switches.
  *  `droppedTrust`: switches the save ended (their tool changed), said out loud on the screen. */
-export type ConnectDeclared = { definitionHash: string; accessRevision: number; applied: boolean; currentTrusted: string[]; previousTools: string[]; droppedTrust: string[] };
+export type ConnectDeclared = { definitionHash: string; accessRevision: number; applied: boolean; currentTrusted: string[]; previousTools: string[]; droppedTrust: string[];
+  /** Tools that change something, left out of this save because the agent's outside access is read-only. Everything else was saved. */
+  conflicts: string[] };
 
 const nameSchema = z.string().regex(/^[a-z][a-z0-9-]{1,30}$/);
 const uuid = z.string().uuid();
@@ -37,7 +39,8 @@ const connectionSchema = z.strictObject({
   allow: z.array(z.string().min(1)).max(200), read: z.array(z.string().min(1)).max(200),
 });
 const stateSchema = z.object({ definitionHash: z.string().regex(/^[a-f0-9]{64}$/), accessRevision: z.number().int().positive(),
-  connections: z.array(outsideToolSchema), applicationStatus: z.enum(["applied", "pending", "unavailable"]) });
+  connections: z.array(outsideToolSchema), applicationStatus: z.enum(["applied", "pending", "unavailable"]),
+  conflicts: z.array(z.object({ connection: z.string(), tool: z.string() })).optional() });
 type State = z.infer<typeof stateSchema>;
 const TIMEOUT = { timeoutMs: 90_000 };
 
@@ -84,9 +87,9 @@ export async function connectListAgents(): Promise<ConnectStep<{ name: string; d
  */
 export async function connectDeclare(input: unknown): Promise<ConnectStep<ConnectDeclared>> {
   await requireConsoleMember();
-  const parsed = z.strictObject({ agent: nameSchema, connection: connectionSchema, provisional: z.boolean(), applyNow: z.boolean().optional() }).safeParse(input);
+  const parsed = z.strictObject({ agent: nameSchema, connection: connectionSchema, provisional: z.boolean(), applyNow: z.boolean().optional(), widen: z.boolean().optional() }).safeParse(input);
   if (!parsed.success) return fail("The connection details are not valid. Check the address, the name and the tool list.");
-  const { agent, connection, provisional } = parsed.data, applyNow = parsed.data.applyNow !== false;
+  const { agent, connection, provisional } = parsed.data, applyNow = parsed.data.applyNow !== false, widen = parsed.data.widen === true;
   return step("The connection could not be saved.", async (who) => {
     const state = await read(who, agent);
     const existing = state.connections.find(c => c.name === connection.name);
@@ -94,7 +97,7 @@ export async function connectDeclare(input: unknown): Promise<ConnectStep<Connec
     // Reconnecting a connection that is already on the agent, at the same address: ask the server through the declaration that is
     // already there, so the switches the owner set are not wiped by a placeholder.
     if (provisional && existing && state.applicationStatus === "applied" && previousTools.length > 0 && existing.url === connection.url && existing.token === connection.token)
-      return { definitionHash: state.definitionHash, accessRevision: state.accessRevision, applied: true, currentTrusted, previousTools, droppedTrust: [] };
+      return { definitionHash: state.definitionHash, accessRevision: state.accessRevision, applied: true, currentTrusted, previousTools, droppedTrust: [], conflicts: [] };
     // The placeholder is marked as a lookup: it never runs, and an agent whose grant allows lookups only would otherwise
     // refuse the very first save, before the server has been asked which tools it offers.
     const next = declarationOf(provisional ? { ...connection, allow: [PENDING_TOOL], read: [PENDING_TOOL] } : connection);
@@ -102,11 +105,15 @@ export async function connectDeclare(input: unknown): Promise<ConnectStep<Connec
     const staging = connection.token ? [connection.name] : [];
     const saved = stateSchema.parse(await keeper<unknown>("outside.connections.save",
       { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: state.definitionHash, expectedAccessRevision: state.accessRevision,
-        connections, ...(staging.length ? { stagingCredentialFor: staging } : {}) }, who.actor, TIMEOUT));
+        connections, ...(staging.length ? { stagingCredentialFor: staging } : {}),
+        // A tool that changes something, on an agent with read-only outside access, is left out and reported instead of refusing the whole save;
+        // the owner's explicit "let it ask first" widens that agent's outside access to write-with-confirm (the keeper requires edit access to the agent).
+        resolveReadOnlyConflicts: true, ...(widen ? { widenOutsideGrant: true } : {}) }, who.actor, TIMEOUT));
     // The keeper keeps a switch only while its tool is still a lookup with the description it was switched on for.
     const after = new Set((saved.connections.find(c => c.name === connection.name)?.tools.trusted ?? []).map(t => t.tool));
     const droppedTrust = provisional ? [] : currentTrusted.filter(t => !after.has(t));
-    const result = (s: State) => ({ definitionHash: s.definitionHash, accessRevision: s.accessRevision, applied: s.applicationStatus === "applied", currentTrusted, previousTools, droppedTrust });
+    const result = (s: State) => ({ definitionHash: s.definitionHash, accessRevision: s.accessRevision, applied: s.applicationStatus === "applied", currentTrusted, previousTools, droppedTrust,
+      conflicts: (saved.conflicts ?? []).filter(c => c.connection === connection.name).map(c => c.tool) });
     if (saved.applicationStatus === "applied" || !applyNow) return result(saved);
     const applied = stateSchema.parse(await keeper<unknown>("outside.connections.apply",
       { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: saved.definitionHash, expectedAccessRevision: saved.accessRevision,

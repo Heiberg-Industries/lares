@@ -8,9 +8,10 @@ import { Switch } from "@lares/ui/primitives/switch";
 import { SECRET_AS_NAME_MESSAGE, looksLikeSecret } from "@lares/agent-kit/secret-shaped";
 import { useRef, useState, type FormEvent } from "react";
 import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSwitchOnTrust,
-  type ConnectIdentity, type ConnectStep, type ConnectTool } from "../app/actions/outside-connect";
+  type ConnectDeclared, type ConnectIdentity, type ConnectStep, type ConnectTool } from "../app/actions/outside-connect";
 import type { OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
 import { suggestConnectionName, toolNamesOf, uniqueConnectionName } from "../lib/outside-connect-words";
+import { readOnlyChoiceWords, whereToolsWork } from "../lib/outside-tools-words";
 
 type Agent = { name: string; displayName: string };
 type Phase = "form" | "working" | "confirm" | "done";
@@ -18,6 +19,8 @@ type Row = { name: string; description?: string; inputSchema?: Record<string, un
 type Item = { label: string; status: "waiting" | "running" | "done" | "failed"; message?: string };
 type Plan = { label: string; run: () => Promise<ConnectStep<unknown>> }[];
 type Settings = { name: string; url: string; description: string; hasToken: boolean; agents: string[] };
+/** A tool that changes something, on an agent whose outside access is read-only: the save left it out and waits for the owner's answer. */
+type ReadOnlyConflict = { agent: string; tools: string[]; confirming: boolean };
 
 /**
  * Connect any outside (MCP) tool server in two presses: Connect, then one confirmation of the tools it
@@ -34,6 +37,8 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
   const [rows, setRows] = useState<Row[]>([]), [serverName, setServerName] = useState("");
   const [items, setItems] = useState<Item[]>([]), [failure, setFailure] = useState<{ message: string; retryable: boolean } | null>(null);
   const [error, setError] = useState(""), [cleanup, setCleanup] = useState(""), [switchResult, setSwitchResult] = useState(""), [dropped, setDropped] = useState<string[]>([]);
+  const [conflict, setConflict] = useState<ReadOnlyConflict | null>(null), [leftOut, setLeftOut] = useState<string[]>([]), [askFirst, setAskFirst] = useState<string[]>([]), [switchNotes, setSwitchNotes] = useState<{ ok: boolean; text: string }[]>([]);
+  const answer = useRef<(a: "leave" | "ask") => void>(() => {});
   const plan = useRef<Plan>([]), next = useRef(0), after = useRef<() => void>(() => {});
   const settings = useRef<Settings | null>(null), seen = useRef<ConnectTool[] | undefined>(undefined);
   // What the agent already had for this connection: a reconnect shows those switches as they are.
@@ -44,7 +49,28 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
   const needsToken = token.trim().length > 0;
 
   function reset() {
-    setPhase("form"); setItems([]); setFailure(null); setRows([]); setError(""); setToken(""); setConsent(false); plan.current = []; next.current = 0; seen.current = undefined; prior.current = { trusted: [], tools: [] }; setDropped([]);
+    setPhase("form"); setItems([]); setFailure(null); setRows([]); setError(""); setToken(""); setConsent(false); plan.current = []; next.current = 0; seen.current = undefined; prior.current = { trusted: [], tools: [] }; setDropped([]); setConflict(null); setLeftOut([]); setAskFirst([]); setSwitchNotes([]);
+  }
+
+  /** Stops the work on one agent until the owner says what to do with tools that change something and cannot be allowed by its read-only access. */
+  function ask(agent: string, tools: string[]): Promise<"leave" | "ask"> {
+    return new Promise(resolve => {
+      answer.current = a => { setConflict(null); resolve(a); };
+      setConflict({ agent, tools, confirming: false });
+    });
+  }
+
+  /** One save of the chosen tools on one agent. A conflict does not fail it: the rest is saved, then the owner chooses per agent. */
+  async function declareWithChoice(agent: string, connection: { name: string; url: string; description: string; token: boolean; allow: string[]; read: string[] }, applyNow: boolean): Promise<ConnectStep<ConnectDeclared>> {
+    let r = await connectDeclare({ agent, provisional: false, connection, ...(applyNow ? {} : { applyNow: false }) });
+    if (r.ok && r.value.conflicts.length) {
+      const tools = r.value.conflicts;
+      if (await ask(agent, tools) === "ask") {
+        r = await connectDeclare({ agent, provisional: false, connection, widen: true, ...(applyNow ? {} : { applyNow: false }) });
+        if (r.ok) setAskFirst(list => [...list, ...tools.map(t => `${t} (${agent})`)]);
+      } else setLeftOut(list => [...list, ...tools.map(t => `${t} (${agent})`)]);
+    }
+    return r;
   }
 
   /** Runs the plan from `from`; stops at the first failure and says which step it was and why. */
@@ -119,11 +145,11 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
     };
     const steps: Plan = [];
     for (const agent of chosen.agents) {
-      if (!chosen.hasToken) { steps.push({ label: `Save the connection on ${agent} and apply it`, run: () => connectDeclare({ agent, provisional: false, connection }) }); continue; }
+      if (!chosen.hasToken) { steps.push({ label: `Save the connection on ${agent} and apply it`, run: () => declareWithChoice(agent, connection, true) }); continue; }
       let identity: ConnectIdentity | undefined, staged: OutsidePendingApplyDto | undefined;
       steps.push(
         { label: `Save the chosen tools on ${agent}`, run: async () => {
-          const r = await connectDeclare({ agent, provisional: false, connection, applyNow: false });
+          const r = await declareWithChoice(agent, connection, false);
           if (r.ok && r.value.droppedTrust.length) setDropped(list => [...list, ...r.value.droppedTrust.map(t => `${t} (${agent})`)]);
           return r;
         } },
@@ -135,6 +161,15 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
         { label: `Lock the token away for ${agent}`, run: async () => {
           if (!staged) return { ok: false as const, message: "The previous step has no result. Start again.", retryable: false };
           return connectActivateCredential({ staged }); } },
+        // The look-up tools the server marks read-only run without asking from the first conversation, as the owner's own recorded choice (the
+        // owner could untick any of them above). The accepted descriptions are already the pin, so no earlier conversation is needed. If
+        // this cannot be done (for example the member may not approve this agent's outside calls) the connection still goes ahead, and asks.
+        { label: `Let ${agent} run the look-up tools without asking`, run: async () => {
+          const names = desiredFree();
+          const r = await connectSwitchOnTrust({ agent, name: chosen.name, tools: names });
+          setSwitchNotes(list => [...list, { ok: r.ok, text: r.ok ? `${agent}: ${r.value.switchedOn.length ? `${r.value.switchedOn.join(", ")} run without asking` : "nothing new runs without asking"}` : `${agent}: ${r.message}` }]);
+          return { ok: true as const, value: null };
+        } },
         { label: `Apply to ${agent}`, run: () => connectApplyAgent({ agent }) },
       );
     }
@@ -197,7 +232,21 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
     </form>}
 
     {phase === "working" && <Progress items={items} />}
-    {phase === "working" && working && <Notice tone="working">Working. This can take a minute while the agent restarts.</Notice>}
+    {phase === "working" && conflict && <div className="lares-stack">
+      <Notice tone="needs-you">{readOnlyChoiceWords(agents.find(a => a.name === conflict.agent)?.displayName ?? conflict.agent, conflict.tools)}</Notice>
+      <div className="lares-actions">
+        {!conflict.confirming && <>
+          <Button type="button" variant="outline" onClick={() => answer.current("leave")}>Leave it out</Button>
+          <Button type="button" onClick={() => setConflict({ ...conflict, confirming: true })}>Let {agents.find(a => a.name === conflict.agent)?.displayName ?? conflict.agent} ask first</Button>
+        </>}
+        {conflict.confirming && <>
+          <p>This widens {agents.find(a => a.name === conflict.agent)?.displayName ?? conflict.agent}&apos;s outside access so it may use tools that change something, always after asking you. It applies to every outside tool of this agent.</p>
+          <Button type="button" onClick={() => answer.current("ask")}>Yes, let it ask first</Button>
+          <Button type="button" variant="outline" onClick={() => setConflict({ ...conflict, confirming: false })}>Back</Button>
+        </>}
+      </div>
+    </div>}
+    {phase === "working" && working && !conflict && <Notice tone="working">Working. This can take a minute while the agent restarts.</Notice>}
     {phase === "working" && failure && <div className="lares-stack">
       <Notice tone="error">Not connected yet. {failure.message}</Notice>
       <div className="lares-actions">
@@ -210,7 +259,7 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
 
     {phase === "confirm" && <div className="lares-stack">
       <h2 className="lares-section-title">{serverName ? `${serverName} offers ${rows.length} tool${rows.length === 1 ? "" : "s"}` : "Tools you chose"}</h2>
-      <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Tools the server itself marks as read-only start as “only looks things up” and with “Run without asking” ticked; the rest start as “changes something” and always ask you first. The ticks are your choice now; Lares switches them on after the agent has read the server's tool list for the first time (the button appears when you are connected), records it as your own decision with the time, and you can change it later on the connection's page. A tool that changes something can never run without asking. If the server later changes a tool's description, that tool stops until you review it again.</p>
+      <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Tools the server itself marks as read-only start as “only looks things up” and with “Run without asking” ticked; the rest start as “changes something” and always ask you first. Untick any of them before you connect. Lares switches the ticked ones on in this same connect, with no conversation needed first, and records it as your own decision with the time. You can change it later on the connection's page. A tool that changes something can never run without asking. If the server later changes a tool's description, that tool stops until you review it again.</p>
       {!serverName && <Notice>Lares has not seen these tools yet. Their descriptions are recorded the first time the agent connects, and a later change pauses the tool.</Notice>}
       <ToolList label="Tools to connect">{rows.map((row, i) => <ToolRow key={row.name} name={row.name} kind={row.kind} description={row.description}
         control={<Switch aria-label={row.name} checked={row.use} onCheckedChange={on => setRows(list => list.map((r, k) => k === i ? { ...r, use: on } : r))} />}>
@@ -227,10 +276,13 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
 
     {phase === "done" && <div className="lares-stack">
       <Progress items={items} />
-      <Notice tone="success">Connected. {settings.current?.agents.join(", ")} can now use {rows.filter(r => r.use).length} tool{rows.filter(r => r.use).length === 1 ? "" : "s"} from {serverName || settings.current?.name}. Tools you did not switch on to run without asking still ask you first. This does not yet prove the server answers: ask the agent to look something up to try it.</Notice>
+      <Notice tone="success">Connected. {settings.current?.agents.join(", ")} can now use {rows.filter(r => r.use).length - leftOut.length} tool{rows.filter(r => r.use).length - leftOut.length === 1 ? "" : "s"} from {serverName || settings.current?.name}. Tools you did not switch on to run without asking still ask you first. This does not yet prove the server answers: ask the agent to look something up to try it.</Notice>
+      <p>{whereToolsWork(rows.filter(r => r.use).length - leftOut.length, desiredFree().length)}</p>
+      {switchNotes.length > 0 && <Notice tone={switchNotes.every(n => n.ok) ? "info" : "needs-you"}>Run without asking: {switchNotes.map(n => n.text).join(". ")}.</Notice>}
+      {leftOut.length > 0 && <Notice tone="info">Left out because the agent&apos;s outside access is read-only: {leftOut.join(", ")}.</Notice>}
+      {askFirst.length > 0 && <Notice tone="info">These tools may now be used, always after asking you first: {askFirst.join(", ")}.</Notice>}
       {dropped.length > 0 && <Notice tone="needs-you">Run without asking was switched off for {dropped.join(", ")} because the tool changed since you switched it on. You can switch it on again below.</Notice>}
-      {(desiredFree().length > 0 || prior.current.trusted.length > 0) && <div className="lares-stack">
-        <p>Run without asking: {desiredFree().length ? desiredFree().join(", ") : "none"}{prior.current.trusted.length ? ` (switched on now: ${prior.current.trusted.join(", ")})` : ""}. A new one can be switched on once the agent has read the server's tool list: ask the agent for a look-up once, then press the button.</p>
+      {(dropped.length > 0 || switchNotes.some(n => !n.ok)) && desiredFree().length > 0 && <div className="lares-stack">
         <div className="lares-actions"><Button type="button" onClick={() => void switchOn()}>Switch on Run without asking</Button></div>
         {switchResult && <Notice>{switchResult}</Notice>}
       </div>}

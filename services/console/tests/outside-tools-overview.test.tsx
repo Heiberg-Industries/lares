@@ -4,7 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { OutsideToolsOverview } from "../components/OutsideToolsOverview";
 
 afterEach(cleanup);
-const declared = [{ agent: "alpha", displayName: "Alpha", servers: [{ name: "rates", needsKey: true, tools: ["find_rate", "book_rate"] }, { name: "empty", needsKey: false, tools: [] }] }];
+const declared = [{ agent: "alpha", displayName: "Alpha", servers: [{ name: "rates", needsKey: true, tools: ["find_rate", "book_rate"], free: 1 }, { name: "empty", needsKey: false, tools: [], free: 0 }] }];
 
 describe("OutsideToolsOverview", () => {
   it("lists each server's tools as rows, not one comma-joined line", () => {
