@@ -36,9 +36,9 @@ Commit titles from ee10c30460d22b3896b03983cb28ab506cc80182 to 355c2965efefb7a7a
 
 ## What changed, and what breaks
 
-- Several lookups in one message. An agent may now run more than one "run without asking" lookup from the same tool in a single message, for example a company search followed by its record and its shareholders. Before, the first result stopped any further lookup in that message, and a chat door (Slack, Telegram) told you to ask again.
-- The safety rule still holds for everything else. If the message has read anything else from outside (mail, a web page, another tool, or a tool that is not set to run without asking), the next lookup asks first on web chat and is refused in words on a chat door, as before.
-- What remains possible: text coming back from a trusted tool can steer further read-only lookups to that same tool, and can include conversation text in those lookups. It cannot reach another tool, send anything, or change anything without the usual checks. Decision record 0019 has the details.
+- Several lookups in one message. An agent may now run more than one "run without asking" lookup on the same connected service in a single message, for example a company search followed by its record and its shareholders. This covers every lookup on that service that you have set to run without asking, not only the one that ran first. Before, the first result stopped any further lookup in that message, and a chat door (Slack, Telegram) told you to ask again.
+- The safety rule still holds for everything else. If the message has read anything else from outside (mail, a web page, another connected service, or a tool that is not set to run without asking), the next lookup asks first on web chat and is refused in words on a chat door, as before.
+- What remains possible: text coming back from a trusted lookup can steer further trusted read-only lookups on that same service, and can include conversation text in those lookups. It cannot reach another service, a tool you have not trusted, send anything, or change anything without the usual checks. Decision record 0019 has the details.
 - No database file and no setting changes.
 
 Model prices were last checked on 18 November 2026.
