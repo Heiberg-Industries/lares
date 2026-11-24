@@ -39,7 +39,15 @@ Commit titles from 2fa8f34eb74ff49823f4c88662086cc2533c6fc7 to ee10c30460d22b389
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- Connecting an outside tool now switches its lookups (the tools the server marks as read-only) to run without asking in the same connect, recorded as the owner's decision with the time. The owner can untick any of them before connecting. They work in private Slack and Telegram chats straight away, with no separate switch-on step. The connection says where its tools work.
+- A tool that changes something, on an agent that may only look things up, no longer fails the whole save. The rest is saved and the owner chooses per tool: leave it out, or let the agent use it after asking first. Only the installation's owner can choose the second; other members see only "leave it out".
+- The installation keeps one directory of the outside servers it knows (name, address, how the server wants you to log in, and setup state). It holds no credentials and gives no agent any permission. The console has no screens for it yet; they come in a later test release.
+- A connection's key status is shown honestly, and a half-set-up connection no longer blocks refreshing or updating agents.
+- Removing an outside connection frees its name, so it can be added again under the same name.
+- Known limits: outside tools are still not offered in shared channels, and a tool that changes something always asks first (the decision record for a deliberate per-tool exception, ADR-0029, is accepted but not built).
+- The update adds one database file (039, the connector directory). It only adds a new table, so existing data is untouched. No setting changes.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
