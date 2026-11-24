@@ -1656,6 +1656,20 @@ describe('a lookup under the owner\'s standing trust',()=>{
   await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
   expect(ids.outsideDispatch).not.toHaveBeenCalled();
  });
+ it('records the accepted descriptions as the pin each time they are read, so a switch can be made and a changed description ends it',async()=>{
+  const {toolPinHash}=await import('../../../packages/agent-kit/src/outside-pins.js');
+  const f=await trustedFixture({pinRow:'missing'});
+  expect((await pool.query('SELECT 1 FROM outside_tool_pins WHERE agent=$1',[agent])).rows).toHaveLength(0);
+  ids.outsideTools.mockResolvedValue([lookupTool]);
+  await runtime('outside.tools',{sessionId:session,memberId:ids.member,admissionNonce,connectionName:'registry'});
+  const pinned=await pool.query('SELECT pin_tools,seen_hash FROM outside_tool_pins WHERE agent=$1 AND tool=$2',[agent,'registry']);
+  expect(pinned.rows).toHaveLength(1);expect(pinned.rows[0].seen_hash).toBeNull();expect(toolPinHash(pinned.rows[0].pin_tools[0])).toBe(toolPinHash(lookupTool));
+  // The trust made for those words now runs; after the owner accepts new words, it no longer matches and the call is refused.
+  expect(await runtime('outside.run-trusted',{...f.binding,call:f.call})).toMatchObject({result:expect.anything()});
+  ids.outsideTools.mockResolvedValue([{...lookupTool,description:'New words.'}]);
+  await runtime('outside.tools',{sessionId:session,memberId:ids.member,admissionNonce,connectionName:'registry'});
+  await expect(runtime('outside.run-trusted',{...f.binding,call:{...f.call,callId:randomUUID()}})).rejects.toThrow();
+ });
  describe('on a chat door: the claimed person in a private chat, no console session',()=>{
   const doorInput=(kind:string,f:{call:unknown},over:Record<string,unknown>={})=>({door:kind,principal:DOOR_PRINCIPAL,claimRevision:DOOR_REVISION,chat:'private',sessionId:'door_session_1',call:f.call,...over});
   it.each(DOOR_KINDS)('%s: runs a trusted lookup under the claim, asks custody as a door call for Keeper\'s own owner, and audits the door',async(kind)=>{

@@ -20,7 +20,7 @@ import { requireBoundExactApproval } from '@lares/agent-kit/approval-execution';
 import { outsideApprovalAdapter } from '@lares/agent-kit/outside-approval';
 import { openRepair } from '@lares/agent-kit/repairs';
 import { outsideToolsInEffect, trustGrantFor } from '@lares/agent-kit/outside-tools';
-import { entryConfigHash, toolPinHash } from '@lares/agent-kit/outside-pins';
+import { entryConfigHash, toolPinHash, allowedTools, descriptionsHash, keptTools, pgPinStore } from '@lares/agent-kit/outside-pins';
 import { autonomyOf } from '@lares/agent-kit/manifest';
 import { outsidePayloadHash } from '@lares/agent-kit/outside-execution-receipts';
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
@@ -178,6 +178,22 @@ async function trackArea(db:AuthorityPool,agent:string,incarnation:string,proof:
   return use ? await use(client,meta) : meta;
  });
  return execution;
+}
+/** What custody has accepted for a connection IS what the owner reviewed, so it is what "run without asking" is bound to.
+ *  Recorded each time the accepted descriptions are read (the same pin the owner's switch takes its fingerprint from, and
+ *  `outside.run-trusted` compares against). Nothing else writes it. A changed description gives a different pin, so a switch
+ *  made for the old words stops matching. Never throws: with no pin recorded a switch cannot be made and a call asks. */
+async function recordAcceptedPin(pool:AuthorityPool,agent:string,connectionName:string,accepted:ReadonlyArray<{name:string;description?:string;inputSchema?:unknown}>):Promise<void>{
+ try{
+  const rows=await pool.query("SELECT applied_definition FROM agent_resources WHERE name=$1 AND applied_definition IS NOT NULL",[agent]);
+  if(rows.rows.length!==1)return;
+  const entry=outsideToolsInEffect(parseDefinition(rows.rows[0].applied_definition)).find(e=>e.name===connectionName);
+  if(!entry)return;
+  const store=pgPinStore(pool as never),configHash=entryConfigHash(entry),pinHash=descriptionsHash(accepted,entry.tools.allow),kept=keptTools(allowedTools(accepted,entry.tools.allow));
+  const stored=await store.get(agent,connectionName);
+  if(stored===undefined||stored.configHash!==configHash||stored.pinHash!==pinHash)await store.put(agent,connectionName,{configHash,pinHash},kept);
+  else await store.matched(agent,connectionName,kept);
+ }catch(error){console.warn(`keeper: could not record the accepted descriptions of ${agent}/${connectionName}: ${error instanceof Error?error.message:'unknown error'}`);}
 }
 export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningKeyFile:string,runtimeSecretsDir:string,runtimeSocket:string,socketOptions:VaultBrokerSocketOptions={}):Promise<()=>Promise<void>>{
  if(socketOptions.vaultFilesForTests){const temporary=tmpdir()+sep,paths=[socketOptions.vaultFilesForTests.root,socketOptions.vaultFilesForTests.originRoot];
@@ -385,7 +401,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    const tools=await socketOptions.outsideCustody.acceptedRuntimeTools({agent,incarnation,sessionId:input.sessionId,
     memberId:owner,approverMemberId:owner,admissionNonce:'',policyRevision:0,door:true},
     String(active.rows[0]!.hash),input.connectionName,{deadlineAtMs:requestDeadline,assertCurrent:assertNotAborted});
-   await check();assertNotAborted();return {tools};
+   await check();assertNotAborted();await recordAcceptedPin(pool,agent,input.connectionName,tools);return {tools};
   }
   if(op==='outside.tools'){
    if(!socketOptions.outsideCustody||typeof input.sessionId!=='string'||typeof input.memberId!=='string'||
@@ -398,7 +414,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     String(active.rows[0]!.hash),input.connectionName,{deadlineAtMs:requestDeadline,assertCurrent:assertNotAborted});
    await requireConsoleSessionBinding({agent,incarnation,sessionId:input.sessionId,memberId:input.memberId,
     admissionNonce:input.admissionNonce},pool as never);
-   assertNotAborted();return {tools};
+   assertNotAborted();await recordAcceptedPin(pool,agent,input.connectionName,tools);return {tools};
   }
   if(op==='tracks.list-scheduled'){
    const expectedOwner=input.ownerMemberId,personId=input.personId;
