@@ -23,6 +23,14 @@ owner_bootstrap = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(owner_bootstrap)
 
+# How long the timeout tests let the preflight stop logic wait for a killed process group to
+# disappear. A killed child whose parent already exited stays visible to os.killpg(pgid, 0) until
+# PID 1 reaps it, and a sandbox whose PID 1 reaps orphans slowly needs about 1.7 s for that, far
+# longer than the 0.1-0.2 s these tests used to allow. The wait ends as soon as the group is gone,
+# so a roomy value costs nothing where PID 1 reaps promptly. The tests keep a tiny
+# PREFLIGHT_TIMEOUT_SECONDS: that is what makes the timeout fire quickly.
+TEST_STOP_GRACE_SECONDS = 3
+
 
 class OwnerBootstrapSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -60,6 +68,20 @@ class OwnerBootstrapSafetyTests(unittest.TestCase):
             patch.object(owner_bootstrap, "is_root_owned", return_value=True),
             patch.object(owner_bootstrap.os, "fchown", return_value=None),
         )
+
+    @staticmethod
+    def stop_spy():
+        """Return (results, patcher): the real stop_preflight_process runs, and each of its
+        outcomes is recorded. A test that expects PreflightCleanupUnconfirmed uses this to show
+        the process group WAS stopped, so the exception can only come from the container cleanup."""
+        results: list[bool] = []
+        real_stop = owner_bootstrap.stop_preflight_process
+
+        def record(process: subprocess.Popen[bytes]) -> bool:
+            results.append(real_stop(process))
+            return results[-1]
+
+        return results, patch.object(owner_bootstrap, "stop_preflight_process", side_effect=record)
 
     def test_nonroot_refusal_and_protected_path_checks(self) -> None:
         with patch.object(owner_bootstrap.os, "geteuid", return_value=501):
@@ -224,17 +246,20 @@ class OwnerBootstrapSafetyTests(unittest.TestCase):
         env.update({"LARES_PREFIX": str(self.prefix), "LARES_OWNER_BOOTSTRAP_CIDFILE": str(cidfile), "CONTAINER_ID": cid})
         with patch.dict(os.environ, {"CONTAINER_ID": cid}), \
              patch.object(owner_bootstrap, "PREFLIGHT_TIMEOUT_SECONDS", 0.1), \
-             patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", 0.2), \
+             patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", TEST_STOP_GRACE_SECONDS), \
              patch.object(owner_bootstrap, "remove_preflight_container", side_effect=remove_exact):
             with self.assertRaisesRegex(RuntimeError, "timed out; settings were not changed"):
                 owner_bootstrap.run_preflight(script, self.prefix, cidfile)
         self.assertEqual(cleanup, [cid])
 
+        # The process stops, but the container removal is not confirmed: the run must say so.
+        stopped, spy = self.stop_spy()
         with patch.object(owner_bootstrap, "PREFLIGHT_TIMEOUT_SECONDS", 0.1), \
-             patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", 0.2), \
-             patch.object(owner_bootstrap, "remove_preflight_container", return_value=False):
+             patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", TEST_STOP_GRACE_SECONDS), \
+             patch.object(owner_bootstrap, "remove_preflight_container", return_value=False), spy:
             with self.assertRaises(owner_bootstrap.PreflightCleanupUnconfirmed):
                 owner_bootstrap.run_preflight(script, self.prefix, cidfile)
+        self.assertEqual(stopped, [True], "the process group was stopped; only the cleanup is unconfirmed")
 
     def test_timeout_kills_sigterm_ignoring_descendant_before_confirming_cleanup(self) -> None:
         pidfile = self.prefix / "descendant.pid"
@@ -256,7 +281,7 @@ class OwnerBootstrapSafetyTests(unittest.TestCase):
         with patch.dict(os.environ, {"CHILD_PID_FILE": str(pidfile)}), \
              patch.object(owner_bootstrap.subprocess, "Popen", side_effect=record_popen), \
              patch.object(owner_bootstrap, "PREFLIGHT_TIMEOUT_SECONDS", 0.2), \
-             patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", 0.1), \
+             patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", TEST_STOP_GRACE_SECONDS), \
              patch.object(owner_bootstrap, "remove_preflight_container", return_value=True):
             with self.assertRaisesRegex(RuntimeError, "timed out; settings were not changed"):
                 owner_bootstrap.run_preflight(script, self.prefix, cidfile)
@@ -272,10 +297,19 @@ class OwnerBootstrapSafetyTests(unittest.TestCase):
             with self.subTest(body=body[:10]):
                 cidfile.unlink(missing_ok=True)
                 script.write_text(body, encoding="utf-8")
+                stopped, spy = self.stop_spy()
+                # is_root_owned is patched so an empty file (written by this non-root test user) is
+                # judged on its emptiness, not rejected earlier for being owned by the wrong user.
                 with patch.object(owner_bootstrap, "PREFLIGHT_TIMEOUT_SECONDS", 0.1), \
-                     patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", 0.1):
+                     patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", TEST_STOP_GRACE_SECONDS), \
+                     patch.object(owner_bootstrap, "is_root_owned", return_value=True), \
+                     patch.object(owner_bootstrap.subprocess, "run") as docker, spy:
                     with self.assertRaises(owner_bootstrap.PreflightCleanupUnconfirmed):
                         owner_bootstrap.run_preflight(script, self.prefix, cidfile)
+                # The exception must come from the missing/empty id, not from a process that would
+                # not stop (a slow-reaping init looks like that), and no container was targeted.
+                self.assertEqual(stopped, [True])
+                docker.assert_not_called()
 
     def test_run_timeout_preserves_settings_and_releases_lock_for_retry(self) -> None:
         cid = "c" * 64
@@ -286,7 +320,7 @@ class OwnerBootstrapSafetyTests(unittest.TestCase):
              geteuid, root_owned, fchown, \
              patch.object(owner_bootstrap, "__file__", str(self.prefix / "owner-bootstrap.py")), \
              patch.object(owner_bootstrap, "PREFLIGHT_TIMEOUT_SECONDS", 0.1), \
-             patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", 0.2), \
+             patch.object(owner_bootstrap, "PREFLIGHT_STOP_GRACE_SECONDS", TEST_STOP_GRACE_SECONDS), \
              patch.object(owner_bootstrap, "remove_preflight_container", return_value=True):
             with self.assertRaisesRegex(RuntimeError, "timed out; settings were not changed"):
                 owner_bootstrap.run(self.prefix, self.receipt_a)

@@ -28,9 +28,11 @@ const selection = {
 };
 
 describe("root owner bootstrap config writer", () => {
+  // The Python suite waits out real process-stop windows. On a sandbox whose PID 1 reaps orphans
+  // slowly that takes about 15 s, well past vitest's 5 s default.
   it("covers privileged refusal, atomic replacement, timeout cleanup, and competing writers", () => {
     execFileSync("python3", ["-B", safetyTests], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  });
+  }, 60_000);
 
   it("preserves unrelated settings and exact opaque tuple values in the selected env setting", () => {
     const original = "GOOGLE_CLIENT_ID=client\nGOOGLE_CLIENT_SECRET=still-secret\n";
