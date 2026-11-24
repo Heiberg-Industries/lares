@@ -183,7 +183,7 @@ const OUTSIDE_CUSTODY_UPDATE_COLUMNS: Readonly<Record<string, readonly string[]>
   member_sessions: ["created_at"],
   vault_areas: ["created_at"],
   vault_backing_stores: ["created_at"],
-  outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
+  outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at", "connection_name"],
   private_metadata_devices: ["state", "revoked_at"],
   outside_execution_approvals: ["consumed_at"],
 };

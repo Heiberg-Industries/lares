@@ -57,13 +57,13 @@ it('removes held credential material only for the selected exact account generat
   const accountId='00000000-0000-4000-8000-000000000011';
   const held={agentName:'worker',connectionName:'connector',credentialStatus:{state:'active',reviewPending:false,applyPending:false,
     accountId,generation:4,hasCredentialMaterial:true,activeRevision:3,candidateRevision:null,discoveryRevision:4}};
-  const removed={agentName:'worker',connectionName:'connector',credentialStatus:{state:'revoked',reviewPending:false,applyPending:false,
-    accountId,generation:5,hasCredentialMaterial:false,activeRevision:null,candidateRevision:null,discoveryRevision:4}};
+  const removed={agentName:'worker',connectionName:'connector',credentialStatus:{state:'unavailable',reviewPending:false,applyPending:false,
+    accountId:null,generation:null,hasCredentialMaterial:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}};
   actions.targets.mockResolvedValueOnce([held]).mockResolvedValueOnce([removed]);
   actions.remove.mockResolvedValue({removed:true,generation:5});
   render(<OutsideDiscoverySection memberId="member-a"/>);
   fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove held credential'}));
-  await screen.findByText('Keeper confirmed that use is stopped and the held credential material is removed. Non-secret audit receipts remain. Reconnect requires a fresh review and consent.');
+  await screen.findByText('Keeper confirmed that use is stopped and the held credential material is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.');
   expect(actions.remove).toHaveBeenCalledWith({accountId,agentName:'worker',connectionName:'connector',expectedGeneration:4});
   expect(screen.queryByRole('button',{name:'Stop use and remove held credential'})).toBeNull();
 });
@@ -71,20 +71,20 @@ it('removes held credential material only for the selected exact account generat
 it.each(['normal response','uncertain response reconciliation'] as const)('clears only matching recovery after %s so reload can reconnect',async resultPath=>{
   const held={agentName:'worker',connectionName:'connector',credentialStatus:{state:'active',reviewPending:false,applyPending:false,
     accountId:tuple.accountId,generation:4,hasCredentialMaterial:true,activeRevision:3,candidateRevision:null,discoveryRevision:4}};
-  const removed={agentName:'worker',connectionName:'connector',credentialStatus:{state:'revoked',reviewPending:false,applyPending:false,
-    accountId:tuple.accountId,generation:5,hasCredentialMaterial:false,activeRevision:null,candidateRevision:null,discoveryRevision:4}};
+  const removed={agentName:'worker',connectionName:'connector',credentialStatus:{state:'unavailable',reviewPending:false,applyPending:false,
+    accountId:null,generation:null,hasCredentialMaterial:false,activeRevision:null,candidateRevision:null,discoveryRevision:null}};
   actions.targets.mockResolvedValueOnce([held]).mockResolvedValueOnce([removed]).mockResolvedValue([removed]);
   actions.inspect.mockResolvedValue({state:'complete',document});
   if(resultPath==='normal response')actions.remove.mockResolvedValue({removed:true,generation:5});
   else actions.remove.mockRejectedValue(new Error('lost reply after removal committed'));
   const reconnectPreview={...preview,requestId:'00000000-0000-4000-8000-000000000008',claimOperationId:'00000000-0000-4000-8000-000000000009',
-    expectedGeneration:5,consentGeneration:3};
+    expectedGeneration:0,consentGeneration:1};
   actions.preview.mockResolvedValueOnce(reconnectPreview);
   sessionStorage.setItem(recoveryKey('member-a'),JSON.stringify(tuple));
   const view=render(<OutsideDiscoverySection memberId="member-a"/>);
   await screen.findByText('Exact current tool descriptions are ready for your review. No credential has been staged.');
   fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove held credential'}));
-  await screen.findByText('Keeper confirmed that use is stopped and the held credential material is removed. Non-secret audit receipts remain. Reconnect requires a fresh review and consent.');
+  await screen.findByText('Keeper confirmed that use is stopped and the held credential material is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.');
   expect(sessionStorage.getItem(recoveryKey('member-a'))).toBeNull();
   expect(screen.queryByText('Recovery reference saved for worker · connector.')).toBeNull();
 

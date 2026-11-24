@@ -454,10 +454,10 @@ it('removes held revisions under the runtime role, retains receipts, and reconne
   const callBefore={callId:randomUUID(),connectionName:'connector',toolName:'lookup',input:{query:'before-removal'}};
   const staleCall={callId:randomUUID(),connectionName:'connector',toolName:'lookup',input:{query:'stale-after-removal'}};
   const newCall={callId:randomUUID(),connectionName:'connector',toolName:'lookup',input:{query:'after-reconnect'}};
-  const approval=async(call:typeof callBefore,revision:number)=>admin.query(`INSERT INTO outside_execution_approvals(call_id,request_id,session_id,member_id,
+  const approval=async(call:typeof callBefore,revision:number,account=accountId)=>admin.query(`INSERT INTO outside_execution_approvals(call_id,request_id,session_id,member_id,
     approver_member_id,agent,incarnation,definition_hash,connection_name,account_id,credential_revision,tool_name,payload_hash,expires_at)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,clock_timestamp()+interval '1 minute')`,[call.callId,randomUUID(),sessionId,
-    owner,owner,'worker',incarnation,Buffer.from('a'.repeat(64),'hex'),'connector',accountId,revision,'lookup',Buffer.from(outsidePayloadHash('lookup',call.input),'hex')]);
+    owner,owner,'worker',incarnation,Buffer.from('a'.repeat(64),'hex'),'connector',account,revision,'lookup',Buffer.from(outsidePayloadHash('lookup',call.input),'hex')]);
   await approval(callBefore,1);await approval(staleCall,1);
   let peerCalls=0;
   http.request.mockImplementation(async(_url:string,options:{body:Buffer})=>{
@@ -516,20 +516,23 @@ it('removes held revisions under the runtime role, retains receipts, and reconne
       expectedActivationReviewHash:activation.reviewHash},deadline())).rejects.toThrow();
 
     const preview=await store.previewHumanDiscovery(token,{agentName:'worker',connectionName:'connector'},deadline());
-    expect(preview).toMatchObject({accountId,expectedGeneration:4,expectedCandidateRevision:null,consentGeneration:4});
-    const document=await store.consentAndDiscover(token,{requestId:preview.requestId,operationId:preview.claimOperationId,accountId,
+    // Remove retired the old account, so the same plain name starts a brand-new one with fresh counters.
+    const freshAccountId=preview.accountId;
+    expect(freshAccountId).not.toBe(accountId);
+    expect(preview).toMatchObject({expectedGeneration:0,expectedCandidateRevision:null,consentGeneration:1});
+    const document=await store.consentAndDiscover(token,{requestId:preview.requestId,operationId:preview.claimOperationId,accountId:freshAccountId,
       agentName:'worker',connectionName:'connector',expectedGeneration:preview.expectedGeneration,
       expectedCandidateRevision:preview.expectedCandidateRevision,expectedDefinitionHash:preview.definitionHash,
       expectedAccessRevision:preview.accessRevision,expectedDestinationHash:preview.destinationHash,
       expectedRoutePolicyHash:preview.routePolicyHash,consentGeneration:preview.consentGeneration,credential:Buffer.from('fresh-token')},deadline());
     expect(document.tools).toHaveLength(1);
-    const review=await store.previewHumanDescriptorReview(token,{accountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,
+    const review=await store.previewHumanDescriptorReview(token,{accountId:freshAccountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,
       claimOperationId:preview.claimOperationId},deadline());
-    const published=await store.publishDiscoveredDescriptorReview(token,{accountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,
+    const published=await store.publishDiscoveredDescriptorReview(token,{accountId:freshAccountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,
       claimOperationId:preview.claimOperationId,operationId:randomUUID(),expectedGeneration:review.expectedGeneration,expectedDescriptorHash:review.descriptorHash},deadline());
-    const accepted=await store.acceptPublishedDescriptorReview(token,{accountId,publicationId:published.publicationId,operationId:randomUUID(),
+    const accepted=await store.acceptPublishedDescriptorReview(token,{accountId:freshAccountId,publicationId:published.publicationId,operationId:randomUUID(),
       expectedPublicationHash:published.publicationHash},deadline());
-    const activationSelectors={accountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,claimOperationId:preview.claimOperationId,
+    const activationSelectors={accountId:freshAccountId,agentName:'worker',connectionName:'connector',requestId:preview.requestId,claimOperationId:preview.claimOperationId,
       publicationId:published.publicationId,acceptanceId:accepted.acceptanceId,expectedGeneration:review.expectedGeneration,
       expectedCandidateRevision:review.expectedCandidateRevision,expectedConsentGeneration:review.expectedConsentGeneration,
       expectedDefinitionHash:review.expectedDefinitionHash,expectedAccessRevision:review.expectedAccessRevision,
@@ -541,15 +544,15 @@ it('removes held revisions under the runtime role, retains receipts, and reconne
       activationReviewId:freshActivation.reviewId,expectedActivationReviewHash:freshActivation.reviewHash,
       stageOperationId:freshStage.operationId,candidateRevision:freshStage.credentialRevision!};
     await store.apply(token,applyInput,deadline());
-    expect(freshStage.credentialRevision).toBeGreaterThan(3);
-    expect((await admin.query('SELECT active_revision::text FROM outside_custody_accounts WHERE account_id=$1',[accountId])).rows[0]?.active_revision)
+    expect(freshStage.credentialRevision).toBe(2); // fresh counters on the new account
+    expect((await admin.query('SELECT active_revision::text FROM outside_custody_accounts WHERE account_id=$1',[freshAccountId])).rows[0]?.active_revision)
       .toBe(String(freshStage.credentialRevision));
     await expect(store.dispatchApproved(binding,staleCall,{deadlineAtMs:Date.now()+10000})).rejects.toThrow();
     expect(peerCalls).toBe(6);
-    await approval(newCall,freshStage.credentialRevision!);
+    await approval(newCall,freshStage.credentialRevision!,freshAccountId);
     await expect(store.dispatchApproved(binding,newCall,{deadlineAtMs:Date.now()+10000})).resolves.toMatchObject({content:[{text:'Fixture result'}]});
     expect(peerCalls).toBe(9);
     expect((await admin.query('SELECT count(*)::int AS count FROM outside_custody_operations WHERE account_id=$1',[accountId])).rows[0]?.count)
-      .toBeGreaterThan(10);
+      .toBeGreaterThan(4);
   }finally{http.request.mockReset();}
 });
