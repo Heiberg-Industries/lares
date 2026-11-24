@@ -178,10 +178,21 @@ describe("ConnectOutsideTool", () => {
     expect(screen.getByText(/Left out because the agent's outside access is read-only: push_lead \(alpha\)/)).toBeTruthy();
   });
 
-  it("a read-only agent: \"Let it ask first\" needs a second, explicit confirm and then saves with the widening", async () => {
+  it("a read-only agent, a viewer who is not the owner: only \"Leave it out\" and a line saying the owner can allow it", async () => {
     mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: [] }));
     mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: false, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: ["push_lead"] }));
     render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    await fillToken();
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByRole("button", { name: "Leave it out" });
+    expect(screen.queryByRole("button", { name: /ask first/ })).toBeNull();
+    expect(screen.getByText(/Only the owner can allow this/)).toBeTruthy();
+  });
+
+  it("a read-only agent: \"Let it ask first\" needs a second, explicit confirm and then saves with the widening", async () => {
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: [] }));
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: false, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: ["push_lead"] }));
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" canWiden />);
     await fillToken();
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     fireEvent.click(await screen.findByRole("button", { name: "Let Alpha ask first" }));

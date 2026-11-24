@@ -180,7 +180,7 @@ async function main(): Promise<void> {
         }});
         if(financialPool)registerMemberRemovalAction({pool:financialPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId,nativeCustody});
         registerDefinitionActions({
-            namespaceGuard, administrator: config.credentials?.administrator,
+            namespaceGuard, administrator: config.credentials?.administrator, designatedOwnerId: config.designatedOwnerId,
             syncChanged: sync ? async actor => { await sync.apply(actor, { start: true }); } : undefined,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,
             outsideCustodyHeld: outsideCustody ? name => outsideCustody!.heldConnections(name) : undefined,

@@ -97,7 +97,7 @@ function register(ceiling = 2, storage = true) {
             : (target.query as any)(sql, ...rest)
         : Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) }) as Pool;
     const custody = new OutsideCustodyStore(pool as never, Buffer.alloc(32, 7));
-    registerDefinitionActions({ pool: appRole, outsideCustodyHeld: name => custody.heldConnections(name), agentsDir, retiredDir, secretsDir, providerKeys: new ProviderKeyFiles(secretsDir, { uid: process.getuid!(), gid: process.getgid!() }), ceiling: async () => ceiling, memory: () => 0, compose, backup,
+    registerDefinitionActions({ designatedOwnerId: 'connection-owner', pool: appRole, outsideCustodyHeld: name => custody.heldConnections(name), agentsDir, retiredDir, secretsDir, providerKeys: new ProviderKeyFiles(secretsDir, { uid: process.getuid!(), gid: process.getgid!() }), ceiling: async () => ceiling, memory: () => 0, compose, backup,
         roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }),
         storage: storage ? { prepareDelete: async (name) => ({ delete: async () => { await pool.query('DELETE FROM owned_memory WHERE agent=$1', [name]); } }) } : undefined,
     });
@@ -1112,11 +1112,15 @@ it('a read-only agent: asked to report conflicts, the keeper saves everything va
     expect(now.outsideTools!.map(c => c.tools.allow)).toEqual([['find_rate'], ['look']]);
     expect(now.grants.find(g => g.capability === 'outside')!.scope).toBe('read');
 });
-it('a read-only agent: the owner\'s explicit answer widens it to write-with-confirm, only for a member who may edit it', async () => {
+it('a read-only agent: only the designated owner may widen it to write-with-confirm, and an editor who asks changes nothing', async () => {
     const { loaded, access, sessions } = await connectionFixture('read');
+    await expect(connectionCallWith(sessions.editor, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { resolveReadOnlyConflicts: true, widenOutsideGrant: true })).rejects.toThrow(/Only the owner can widen/);
+    const untouched = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition;
+    expect(untouched.grants.find(g => g.capability === 'outside')!.scope).toBe('read');
+    expect(untouched.outsideTools).toBeUndefined();
     await expect(connectionCallWith(sessions.user, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { resolveReadOnlyConflicts: true, widenOutsideGrant: true })).rejects.toThrow();
     await expect(connectionCallWith(sessions.stranger, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { widenOutsideGrant: true })).rejects.toThrow();
-    const saved: any = await connectionCallWith(sessions.editor, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { resolveReadOnlyConflicts: true, widenOutsideGrant: true });
+    const saved: any = await connectionCallWith(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { resolveReadOnlyConflicts: true, widenOutsideGrant: true });
     expect(saved.conflicts).toBeUndefined();
     expect(saved.connections[0].tools.allow).toEqual(['find_rate', 'set_rate']);
     const now = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition;

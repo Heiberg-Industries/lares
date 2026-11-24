@@ -78,6 +78,8 @@ export interface DefinitionOptions {
     /** Where an agent's own model-provider key file lives; deleting the agent removes it. Defaults to the keeper-owned directory. */
     providerKeys?: ProviderKeyFiles;
     ceiling(): Promise<number>;
+    /** The installation's designated owner: the only member who may widen an agent's outside access. Absent: nobody may. */
+    designatedOwnerId?: string;
     /** The installation administrator's identity (the only non-host caller who may change the limit). */
     administrator?: string;
     /** Total server memory in bytes; defaults to os.totalmem(). 0 or less means unknown. */
@@ -432,6 +434,12 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             const initial = await connectionSnapshot(client, input, true);
             if (!input.connections) refused('Connection changes are required.');
             // Who switched a tool on, and when, is written here by the keeper, never from the browser.
+            if (input.widenOutsideGrant) {
+                // Raising what outside tools may do is the owner's decision alone, not an editor's: checked here, against the signed-in session's own member.
+                const who = o.designatedOwnerId === initial.member.id
+                    ? (await client.query<{ status: string; org_role: string }>('SELECT status,org_role FROM users WHERE id=$1', [initial.member.id])).rows[0] : undefined;
+                if (!who || who.status !== 'active' || who.org_role !== 'owner') refused("Only the owner can widen an agent's outside access.");
+            }
             const stamped = await restampTrust(input.name, input.connections, ctx.actor, async () => { try { await requireConsoleAgentUse(input.name, initial.member.id, o.pool as never); return true; } catch { return false; } });
             if (new Set(stamped.map(connection => connection.name)).size !== stamped.length)
                 refused('Connection names must be unique.');

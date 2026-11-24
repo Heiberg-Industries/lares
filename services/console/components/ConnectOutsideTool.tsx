@@ -28,7 +28,7 @@ type ReadOnlyConflict = { agent: string; tools: string[]; confirming: boolean };
  * this page's memory while the owner reads the confirmation, is sent to the keeper (never to the agent),
  * and is dropped as soon as the work ends, fails for good or is cancelled.
  */
-export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { agents: Agent[]; initialAgent?: string; takenNames?: string[] }) {
+export function ConnectOutsideTool({ agents, initialAgent, takenNames = [], canWiden = false }: { agents: Agent[]; initialAgent?: string; takenNames?: string[]; canWiden?: boolean }) {
   const first = agents.find(a => a.name === initialAgent)?.name ?? agents[0]?.name;
   const [phase, setPhase] = useState<Phase>("form");
   const [url, setUrl] = useState(""), [token, setToken] = useState(""), [name, setName] = useState(""), [description, setDescription] = useState("");
@@ -237,8 +237,9 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
       <div className="lares-actions">
         {!conflict.confirming && <>
           <Button type="button" variant="outline" onClick={() => answer.current("leave")}>Leave it out</Button>
-          <Button type="button" onClick={() => setConflict({ ...conflict, confirming: true })}>Let {agents.find(a => a.name === conflict.agent)?.displayName ?? conflict.agent} ask first</Button>
+          {canWiden && <Button type="button" onClick={() => setConflict({ ...conflict, confirming: true })}>Let {agents.find(a => a.name === conflict.agent)?.displayName ?? conflict.agent} ask first</Button>}
         </>}
+        {!conflict.confirming && !canWiden && <p className="lares-muted">Only the owner can allow this, by widening the agent&apos;s outside access.</p>}
         {conflict.confirming && <>
           <p>This widens {agents.find(a => a.name === conflict.agent)?.displayName ?? conflict.agent}&apos;s outside access so it may use tools that change something, always after asking you. It applies to every outside tool of this agent.</p>
           <Button type="button" onClick={() => answer.current("ask")}>Yes, let it ask first</Button>
