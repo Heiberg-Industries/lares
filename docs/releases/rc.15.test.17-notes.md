@@ -36,7 +36,12 @@ Commit titles from ee10c30460d22b3896b03983cb28ab506cc80182 to 355c2965efefb7a7a
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- Several lookups in one message. An agent may now run more than one "run without asking" lookup from the same tool in a single message, for example a company search followed by its record and its shareholders. Before, the first result stopped any further lookup in that message, and a chat door (Slack, Telegram) told you to ask again.
+- The safety rule still holds for everything else. If the message has read anything else from outside (mail, a web page, another tool, or a tool that is not set to run without asking), the next lookup asks first on web chat and is refused in words on a chat door, as before.
+- What remains possible: text coming back from a trusted tool can steer further read-only lookups to that same tool, and can include conversation text in those lookups. It cannot reach another tool, send anything, or change anything without the usual checks. Decision record 0019 has the details.
+- No database file and no setting changes.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
