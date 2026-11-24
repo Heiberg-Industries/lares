@@ -45,6 +45,7 @@ const AGENT_PROVIDER_KEYS_FILENAME = "035_agent_provider_keys.sql";
 const AGENT_ACCOUNT_BINDINGS_FILENAME = "036_agent_account_bindings.sql";
 const PERSON_VOICE_PROFILES_FILENAME = "037_person_voice_profiles.sql";
 const APPROVAL_CARD_RECORD_FILENAME = "038_approval_card_record.sql";
+const OUTSIDE_CONNECTORS_FILENAME = "039_outside_connectors.sql";
 
 /** Every table the numbered migrations create, plus the ledger. The list is written out so that a table the old
  *  history had and the baseline lost (outside_tool_pins once did) fails here, not on a fresh install. */
@@ -61,6 +62,7 @@ const EXPECTED_TABLES = [
   "agent_doors",
   "agent_notes",
   "agent_provider_keys",
+  "outside_connectors",
   "agent_account_bindings",
   "agent_registry",
   "person_voice_profiles",
@@ -201,7 +203,7 @@ describe("the baseline on a fresh database", () => {
     try {
       await ensureLedger(pool);
       const first = await runMigrations(pool, SQL);
-      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME, CONVERSATION_AUDIENCE_FILENAME, OUTSIDE_EXECUTION_APPROVALS_FILENAME, TRACK_ROUTING_FILENAME, TRACK_DECLINE_FILENAME, PRIVATE_METADATA_DEVICES_FILENAME, AGENT_PROVIDER_KEYS_FILENAME, AGENT_ACCOUNT_BINDINGS_FILENAME, PERSON_VOICE_PROFILES_FILENAME, APPROVAL_CARD_RECORD_FILENAME]);
+      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME, CONVERSATION_AUDIENCE_FILENAME, OUTSIDE_EXECUTION_APPROVALS_FILENAME, TRACK_ROUTING_FILENAME, TRACK_DECLINE_FILENAME, PRIVATE_METADATA_DEVICES_FILENAME, AGENT_PROVIDER_KEYS_FILENAME, AGENT_ACCOUNT_BINDINGS_FILENAME, PERSON_VOICE_PROFILES_FILENAME, APPROVAL_CARD_RECORD_FILENAME, OUTSIDE_CONNECTORS_FILENAME]);
       expect(first.refused).toEqual([]);
       const second = await runMigrations(pool, SQL);
       expect(second.applied).toEqual([]);
@@ -278,7 +280,7 @@ describe("adopting the baseline", () => {
     const rows = await listApplied(db.pool);
     expect(rows.map((r) => [r.filename, r.how])).toEqual([[BASELINE_FILENAME, "adopted"]]);
     // Later files still run after adoption: the baseline is skipped, later numbered files are applied.
-    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME, CONVERSATION_AUDIENCE_FILENAME, OUTSIDE_EXECUTION_APPROVALS_FILENAME, TRACK_ROUTING_FILENAME, TRACK_DECLINE_FILENAME, PRIVATE_METADATA_DEVICES_FILENAME, AGENT_PROVIDER_KEYS_FILENAME, AGENT_ACCOUNT_BINDINGS_FILENAME, PERSON_VOICE_PROFILES_FILENAME, APPROVAL_CARD_RECORD_FILENAME], refused: [] });
+    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME, CONVERSATION_AUDIENCE_FILENAME, OUTSIDE_EXECUTION_APPROVALS_FILENAME, TRACK_ROUTING_FILENAME, TRACK_DECLINE_FILENAME, PRIVATE_METADATA_DEVICES_FILENAME, AGENT_PROVIDER_KEYS_FILENAME, AGENT_ACCOUNT_BINDINGS_FILENAME, PERSON_VOICE_PROFILES_FILENAME, APPROVAL_CARD_RECORD_FILENAME, OUTSIDE_CONNECTORS_FILENAME], refused: [] });
     // Adoption is one-time: the ledger now holds the baseline, so a second adoption refuses.
     await expect(adoptMigrations(db.pool, SQL, { through: BASELINE_FILENAME })).rejects.toThrow(/one-time/);
   });
@@ -336,6 +338,22 @@ describe("adopting the baseline", () => {
     ]);
     await expect(db.pool.query("UPDATE approval_asks SET kind = 'other' WHERE request_id = 'old'")).rejects.toThrow(/approval_asks_kind_check/);
     await db.pool.query("TRUNCATE approval_asks CASCADE");
+  });
+
+  it("the connector-directory file runs twice, keeps its rows, and frees a retired name", async () => {
+    const sql = readFileSync(join(SQL, OUTSIDE_CONNECTORS_FILENAME), "utf8");
+    await db.pool.query(sql);
+    await db.pool.query("INSERT INTO outside_connectors (slug, display_name, url, auth_kind, created_by) VALUES ('registry', 'Registry', 'https://tools.example.org/mcp', 'token', 'owner')");
+    await db.pool.query(sql);
+    expect((await db.pool.query("SELECT slug, state, description, catalogue FROM outside_connectors")).rows)
+      .toEqual([{ slug: "registry", state: "setup", description: "", catalogue: null }]);
+    await expect(db.pool.query("INSERT INTO outside_connectors (slug, display_name, url, auth_kind, created_by) VALUES ('registry', 'Again', 'https://b.example.org/', 'none', 'owner')")).rejects.toThrow(/outside_connectors_live_slug_idx/);
+    await expect(db.pool.query("INSERT INTO outside_connectors (slug, display_name, url, auth_kind, created_by) VALUES ('plain', 'Plain', 'http://b.example.org/', 'none', 'owner')")).rejects.toThrow(/outside_connectors_url_check/);
+    await expect(db.pool.query("INSERT INTO outside_connectors (slug, display_name, url, auth_kind, created_by) VALUES ('odd', 'Odd', 'https://b.example.org/', 'oauth', 'owner')")).rejects.toThrow(/auth_kind_check/);
+    await expect(db.pool.query("UPDATE outside_connectors SET state = 'retired'")).rejects.toThrow(/retired_whole/);
+    await db.pool.query("UPDATE outside_connectors SET state = 'retired', retired_at = now()");
+    await db.pool.query("INSERT INTO outside_connectors (slug, display_name, url, auth_kind, created_by) VALUES ('registry', 'Again', 'https://b.example.org/', 'none', 'owner')");
+    await db.pool.query("TRUNCATE outside_connectors");
   });
 
   it("refuses when the old history is not whole, and leaves the ledger alone", async () => {

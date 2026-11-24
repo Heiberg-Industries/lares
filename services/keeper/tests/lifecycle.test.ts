@@ -439,7 +439,7 @@ beforeAll(async()=>{
  await pool.query("GRANT lares_workflow_owner TO lares_workflow_provisioner");
  await pool.query("CREATE ROLE lares_workflow LOGIN NOINHERIT PASSWORD 'test-only-workflow'");
  for(const name of ['001_baseline.sql','007_member_identity_sessions.sql','008_connected_accounts.sql','012_connected_account_credentials.sql',
-   '013_console_turn_authority.sql','014_agent_access_grants.sql','035_agent_provider_keys.sql']) await pool.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
+   '013_console_turn_authority.sql','014_agent_access_grants.sql','035_agent_provider_keys.sql','039_outside_connectors.sql']) await pool.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
  await pool.query('CREATE DATABASE empty_workflow OWNER lares_workflow_owner');
  const template=quiet(new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,'/empty_workflow')}));
  await template.query('CREATE SCHEMA workflow AUTHORIZATION lares_workflow_owner; CREATE TABLE workflow.memory(value text)');await template.query('ALTER TABLE workflow.memory OWNER TO lares_workflow_owner');await template.end();
@@ -710,6 +710,46 @@ it('derives the outside route hosts from saved outside tools and nothing else',a
  await l.saved('bookkeeper',definition);
  expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org');
  expect(squid()).not.toContain('tools.example.org');
+});
+it('opens the route to a saved directory connector with no agent yet, exactly its host, and closes it when the connector is retired',async()=>{
+ config.egress.legacyConsumers.push({name:'outside-route',address:'172.18.0.24',hosts:['static.example.org']});
+ const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async()=>{}};
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const squid=()=>readFileSync(join(config.egressDir,'squid.conf'),'utf8');
+ const routeAcl=()=>squid().split('\n').find(line=>line.startsWith('acl dst_outside-route '));
+ const add=(slug:string,url:string,state='setup')=>pool.query("INSERT INTO outside_connectors(slug,display_name,url,auth_kind,created_by,state) VALUES($1,$1,$2,'none','owner',$3)",[slug,url,state]);
+ await pool.query('DELETE FROM outside_connectors');
+ try{
+  await l.create('bookkeeper',definition);
+  await l.saved('bookkeeper',definition);
+  expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org');
+  await expect(l.reviewOutsideRoute('https://newcomer.example.org/mcp',Date.now()+5000)).rejects.toThrow('Outside destination is unavailable');
+  // Setup and connected records each add their host, once, in the fixed order; nothing else changes the list.
+  await add('newcomer','https://newcomer.example.org/mcp');
+  await add('settled','https://settled.example.org/mcp','connected');
+  await l.resealNow();
+  expect(routeAcl()).toBe('acl dst_outside-route dstdomain newcomer.example.org settled.example.org static.example.org');
+  const first=await l.reviewOutsideRoute('https://newcomer.example.org/mcp',Date.now()+5000);
+  expect(first.sourceAddress).toBe('172.18.0.24');
+  // The agent's own list never gets a directory host: the route is the only place it opens.
+  expect(squid().split('\n').find(line=>line.startsWith('acl dst_bookkeeper '))??'').not.toContain('newcomer.example.org');
+  // An agent that also names the host adds nothing twice.
+  const withAgent={...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},
+   outsideTools:[{name:'registry',url:'https://settled.example.org/mcp',description:'Looks up.',token:false,tools:{allow:['lookup'],read:['lookup']}}]};
+  await l.saved('bookkeeper',withAgent);
+  expect(routeAcl()).toBe('acl dst_outside-route dstdomain newcomer.example.org settled.example.org static.example.org');
+  // Retiring a connector removes its host, and a review taken before no longer matches. The agent's own host stays.
+  await pool.query("UPDATE outside_connectors SET state='retired',retired_at=now() WHERE slug IN ('newcomer','settled')");
+  await l.saved('bookkeeper',withAgent);
+  expect(routeAcl()).toBe('acl dst_outside-route dstdomain settled.example.org static.example.org');
+  await l.saved('bookkeeper',definition);
+  expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org');
+  expect(squid()).not.toContain('newcomer.example.org');
+  await expect(l.withAppliedOutsideRoute('https://newcomer.example.org/mcp',first.policyHash,Date.now()+5000,async()=> 'ran')).rejects.toThrow('Outside destination is unavailable');
+  // A plain-http record opens nothing: only https addresses are route hosts, and the table refuses the rest.
+  await expect(add('plain','http://registry-svc:3000/mcp')).rejects.toThrow();
+ }finally{await pool.query('DELETE FROM outside_connectors');}
 });
 for(const configured of ['http://proxy:8888','http://proxy:8888/'])
 it(`returns the reviewed proxy address with a trailing slash when the config names it as ${configured}`,async()=>{

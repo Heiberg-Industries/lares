@@ -210,6 +210,16 @@ describe("engine database privilege foundation", () => {
     expect((await app.query("DELETE FROM agent_provider_keys WHERE agent='key-fixture-agent'")).rowCount).toBe(1);
   });
 
+  it("lets only the application login read and write the connector directory",async()=>{
+    expect((await app.query("INSERT INTO outside_connectors(slug,display_name,url,auth_kind,created_by) VALUES('dir-fixture','Directory fixture','https://tools.example.org/mcp','token','owner')")).rowCount).toBe(1);
+    expect((await app.query("UPDATE outside_connectors SET display_name='Renamed' WHERE slug='dir-fixture'")).rowCount).toBe(1);
+    await expectDenied(()=>financial.query("SELECT slug FROM outside_connectors"));
+    await expectDenied(()=>financial.query("INSERT INTO outside_connectors(slug,display_name,url,auth_kind,created_by) VALUES('dir-other','x','https://a.example.org/','none','owner')"));
+    await expectDenied(()=>outsideCustody.query("SELECT slug FROM outside_connectors"));
+    await expectDenied(()=>outsideCustody.query("UPDATE outside_connectors SET display_name='x'"));
+    expect((await app.query("DELETE FROM outside_connectors WHERE slug='dir-fixture'")).rowCount).toBe(1);
+  });
+
   it("lets the application login read and write which account an agent works on, and keeps custody out",async()=>{
     await admin.query("INSERT INTO orgs(id,display_name) VALUES('binding-org','Binding fixture')");
     await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('binding-member','Fixture member','binding-org','member','active')");

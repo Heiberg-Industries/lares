@@ -51,8 +51,8 @@ export const ENGINE_TABLE_PRIVILEGES = {
     "person_voice_profiles",
   ],
   financial: FINANCIAL_TABLES,
-  // Written by the application role only; the financial role reads three named columns of it.
-  applicationOnly: ["agent_provider_keys"],
+  // Written by the application role only; the financial role reads three named columns of agent_provider_keys and nothing of the rest.
+  applicationOnly: ["agent_provider_keys", "outside_connectors"],
   outsideCustody: ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations", "outside_execution_approvals", "private_metadata_devices"],
   ledger: LEDGER_TABLES,
 } as const;
