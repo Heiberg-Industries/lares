@@ -35,7 +35,12 @@ Commit titles from 915a62ded49ece6e86b9e108d23355d538e79d86 to 09f9f637448733818
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- An outside tool that needs a token can now be connected on a real install. Before, every attempt was refused before the server was contacted, because the installed proxy address has no trailing slash and the keeper's checks expected one. The keeper now hands out the address in one standard form; no check was loosened.
+- The full install test now signs in through the console's real sign-in and connects a token tool to a lookup-only agent, through to one successful tool call.
+- Known limit, unchanged: each connection name keeps a fixed number of saved attempts that is never freed, so use a new name if an old one was tried several times.
+- Nothing breaks: the update adds no database file and changes no setting.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
