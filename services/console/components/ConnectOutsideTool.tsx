@@ -1,9 +1,10 @@
 "use client";
-import { Choice, Field, FieldGroup, Notice } from "@lares/ui/patterns";
+import { Choice, Field, FieldGroup, Notice, ToolList, ToolRow } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { Input } from "@lares/ui/primitives/input";
 import { Select } from "@lares/ui/primitives/select";
+import { Switch } from "@lares/ui/primitives/switch";
 import { SECRET_AS_NAME_MESSAGE, looksLikeSecret } from "@lares/agent-kit/secret-shaped";
 import { useRef, useState, type FormEvent } from "react";
 import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSwitchOnTrust,
@@ -191,57 +192,57 @@ export function ConnectOutsideTool({ agents, initialAgent, takenNames = [] }: { 
         </div>
       </details>
       {needsToken && <Choice><Checkbox checked={consent} onChange={e => setConsent(e.target.checked)} /> I allow Lares to send this token to the address above, up to once per agent plus once to read the tool list.</Choice>}
-      {error && <p role="alert">{error}</p>}
+      {error && <Notice tone="error">{error}</Notice>}
       <div className="lares-actions"><Button type="submit">Connect</Button></div>
     </form>}
 
     {phase === "working" && <Progress items={items} />}
-    {phase === "working" && working && <p role="status">Working. This can take a minute while the agent restarts.</p>}
+    {phase === "working" && working && <Notice tone="working">Working. This can take a minute while the agent restarts.</Notice>}
     {phase === "working" && failure && <div className="lares-stack">
-      <Notice>Not connected yet. {failure.message}</Notice>
+      <Notice tone="error">Not connected yet. {failure.message}</Notice>
       <div className="lares-actions">
         {failure.retryable && <Button type="button" onClick={() => void run(next.current)}>Try again</Button>}
         <Button type="button" variant="outline" onClick={() => { reset(); }}>Start over</Button>
         <Button type="button" variant="outline" onClick={() => void removeHalfDone()}>Remove the half-set-up connection</Button>
       </div>
-      {cleanup && <p role="status">{cleanup}</p>}
+      {cleanup && <Notice>{cleanup}</Notice>}
     </div>}
 
     {phase === "confirm" && <div className="lares-stack">
       <h2 className="lares-section-title">{serverName ? `${serverName} offers ${rows.length} tool${rows.length === 1 ? "" : "s"}` : "Tools you chose"}</h2>
       <p>Pick the tools the agent may use, and say whether each only looks things up or changes something. Tools the server itself marks as read-only start as “only looks things up” and with “Run without asking” ticked; the rest start as “changes something” and always ask you first. The ticks are your choice now; Lares switches them on after the agent has read the server's tool list for the first time (the button appears when you are connected), records it as your own decision with the time, and you can change it later on the connection's page. A tool that changes something can never run without asking. If the server later changes a tool's description, that tool stops until you review it again.</p>
-      {!serverName && <p>Lares has not seen these tools yet. Their descriptions are recorded the first time the agent connects, and a later change pauses the tool.</p>}
-      <ul className="lares-data-list">{rows.map((row, i) => <li key={row.name} className="lares-stack">
-        <Choice><Checkbox checked={row.use} onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, use: e.target.checked } : r))} /> <strong>{row.name}</strong></Choice>
-        {row.description && <p>{row.description}</p>}
+      {!serverName && <Notice>Lares has not seen these tools yet. Their descriptions are recorded the first time the agent connects, and a later change pauses the tool.</Notice>}
+      <ToolList label="Tools to connect">{rows.map((row, i) => <ToolRow key={row.name} name={row.name} kind={row.kind} description={row.description}
+        control={<Switch aria-label={row.name} checked={row.use} onCheckedChange={on => setRows(list => list.map((r, k) => k === i ? { ...r, use: on } : r))} />}>
         <Select aria-label={`What ${row.name} does`} value={row.kind} disabled={!row.use} onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, kind: e.target.value as Row["kind"], free: e.target.value === "read" ? r.free : false } : r))}>
           <option value="change">Changes something</option><option value="read">Only looks things up</option>
         </Select>
         {row.seen && <Choice><Checkbox checked={row.free && row.kind === "read"} disabled={!row.use || row.kind !== "read"}
           onChange={e => setRows(list => list.map((r, k) => k === i ? { ...r, free: e.target.checked } : r))} /> Run without asking{row.free && row.kind === "read" ? " — the server says this only looks things up" : ""}</Choice>}
         {row.inputSchema && <details><summary>What it asks for</summary><pre>{JSON.stringify(row.inputSchema, null, 2)}</pre></details>}
-      </li>)}</ul>
-      {error && <p role="alert">{error}</p>}
+      </ToolRow>)}</ToolList>
+      {error && <Notice tone="error">{error}</Notice>}
       <div className="lares-actions"><Button type="button" onClick={finish}>Connect</Button><Button type="button" variant="outline" onClick={() => void cancelConfirmation()}>Cancel</Button></div>
     </div>}
 
     {phase === "done" && <div className="lares-stack">
       <Progress items={items} />
-      <Notice>Connected. {settings.current?.agents.join(", ")} can now use {rows.filter(r => r.use).length} tool{rows.filter(r => r.use).length === 1 ? "" : "s"} from {serverName || settings.current?.name}. Tools you did not switch on to run without asking still ask you first. This does not yet prove the server answers: ask the agent to look something up to try it.</Notice>
-      {dropped.length > 0 && <Notice>Run without asking was switched off for {dropped.join(", ")} because the tool changed since you switched it on. You can switch it on again below.</Notice>}
+      <Notice tone="success">Connected. {settings.current?.agents.join(", ")} can now use {rows.filter(r => r.use).length} tool{rows.filter(r => r.use).length === 1 ? "" : "s"} from {serverName || settings.current?.name}. Tools you did not switch on to run without asking still ask you first. This does not yet prove the server answers: ask the agent to look something up to try it.</Notice>
+      {dropped.length > 0 && <Notice tone="needs-you">Run without asking was switched off for {dropped.join(", ")} because the tool changed since you switched it on. You can switch it on again below.</Notice>}
       {(desiredFree().length > 0 || prior.current.trusted.length > 0) && <div className="lares-stack">
         <p>Run without asking: {desiredFree().length ? desiredFree().join(", ") : "none"}{prior.current.trusted.length ? ` (switched on now: ${prior.current.trusted.join(", ")})` : ""}. A new one can be switched on once the agent has read the server's tool list: ask the agent for a look-up once, then press the button.</p>
         <div className="lares-actions"><Button type="button" onClick={() => void switchOn()}>Switch on Run without asking</Button></div>
-        {switchResult && <p role="status">{switchResult}</p>}
+        {switchResult && <Notice>{switchResult}</Notice>}
       </div>}
       <div className="lares-actions"><Button type="button" variant="outline" onClick={reset}>Connect another</Button></div>
     </div>}
   </section>;
 }
 
+const STEP_TONE = { waiting: "info", running: "working", done: "success", failed: "error" } as const;
+
 function Progress({ items }: { items: Item[] }) {
-  const mark = { waiting: "○", running: "…", done: "✓", failed: "✗" } as const;
   return <ol className="lares-stack" aria-label="Progress">{items.map((item, i) => <li key={i} data-status={item.status}>
-    <span aria-hidden="true">{mark[item.status]}</span> {item.label}{item.message && <> — <span role="alert">{item.message}</span></>}
+    <Notice tone={STEP_TONE[item.status]}>{item.label}{item.message && <> — {item.message}</>}</Notice>
   </li>)}</ol>;
 }

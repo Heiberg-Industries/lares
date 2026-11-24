@@ -49,8 +49,10 @@ describe("OutsideToolsSection", () => {
     expect(html).toContain("Every call asks you first.");
     expect(html).toContain("Needs a key: yes");
     expect(html).toContain("Needs a key: no");
-    expect(html).toContain("Lookups it may use: find_rate");
-    expect(html).toContain("book_rate");
+    expect(html).toContain('aria-label="Tools rates may use"');
+    expect(html).toMatch(/find_rate<\/strong><span class="lares-kind-badge" data-kind="read">Looks things up/);
+    expect(html).toMatch(/book_rate<\/strong><span class="lares-kind-badge" data-kind="change">Changes something/);
+    expect(html).not.toContain("find_rate, book_rate");
     expect(html).not.toContain("Switched off");
     expect(html).not.toContain("Locked");
   });

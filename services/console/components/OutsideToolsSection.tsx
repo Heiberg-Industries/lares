@@ -1,6 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
+import { ToolList, ToolRow } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { acceptOutsideDescriptions } from "../app/actions/definition";
 import type { DescribedTool, OutsideToolEvidence, OutsideToolLock } from "../lib/outside-tools";
@@ -135,8 +136,6 @@ export function OutsideToolsSection({
       )}
       <ul className="lares-data-list">
         {tools.map((t) => {
-          const lookups = t.tools.allow.filter((a) => t.tools.read.includes(a));
-          const others = t.tools.allow.filter((a) => !t.tools.read.includes(a));
           const lock = locks?.available ? locks.value[t.name] : undefined;
           return (
             <li key={t.name}>
@@ -149,12 +148,11 @@ export function OutsideToolsSection({
                   : "Every call asks you first."}
               </p>
               <p>{keyLine(t.token, evidence?.keys, t.name)}</p>
-              <p>
-                Lookups it may use: {lookups.length ? lookups.join(", ") : "none"}
-              </p>
-              <p>
-                Other tools it may use (these change things): {others.length ? others.join(", ") : "none"}
-              </p>
+              {t.tools.allow.length > 0 ? (
+                <ToolList label={`Tools ${t.name} may use`}>
+                  {t.tools.allow.map(a => <ToolRow key={a} name={a} kind={t.tools.read.includes(a) ? "read" : "change"} />)}
+                </ToolList>
+              ) : <p className="lares-muted">No tools allowed.</p>}
               {lock && (
                 <div role="group" aria-label={`${t.name} locked`}>
                   <p>

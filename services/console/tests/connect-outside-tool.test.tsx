@@ -123,6 +123,19 @@ describe("ConnectOutsideTool", () => {
     expect(document.body.textContent).not.toContain("tok-SECRET");
   });
 
+  it("shows each offered tool as a row with a kind badge and a switch, and each message in its own tone", async () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    await fillToken();
+    const list = screen.getByRole("list", { name: "Tools to connect" });
+    expect([...list.querySelectorAll(".lares-kind-badge")].map(b => b.textContent)).toEqual(["Looks things up", "Changes something"]);
+    expect(screen.getAllByRole("switch").map(sw => sw.getAttribute("aria-checked"))).toEqual(["true", "true"]);
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText(/Connected\./);
+    const tones = [...document.querySelectorAll(".lares-notice")].map(n => n.getAttribute("data-tone"));
+    expect(tones.filter(t => t === "success").length).toBeGreaterThan(1);
+    expect(tones).not.toContain("error");
+  });
+
   it("offers the switch-on only for lookups the owner left ticked, and calls the keeper's action for them once connected", async () => {
     render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
     await fillToken();
