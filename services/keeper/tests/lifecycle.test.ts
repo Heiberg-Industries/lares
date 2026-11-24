@@ -711,22 +711,18 @@ it('derives the outside route hosts from saved outside tools and nothing else',a
  expect(routeAcl()).toBe('acl dst_outside-route dstdomain static.example.org');
  expect(squid()).not.toContain('tools.example.org');
 });
-it('returns the same reviewed proxy address whether the config names it with or without a trailing slash',async()=>{
- const seen:string[]=[];
- for(const configured of ['http://proxy:8888','http://proxy:8888/']){
-  config.runtime.proxyUrl=configured;
-  config.egress.legacyConsumers=[{name:'outside-route',address:'172.18.0.24',hosts:[]}];
-  const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async()=>{}};
-  const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
-   outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
-  const name=configured.endsWith('/')?'slashed':'bare';
-  const withTool={...definition,name,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},
-   outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Looks up companies.',token:true,tools:{allow:['lookup'],read:['lookup']}}]};
-  await l.create(name,{...definition,name});
-  await l.saved(name,withTool);
-  seen.push((await l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000)).proxyUrl);
- }
- expect(seen).toEqual(['http://proxy:8888/','http://proxy:8888/']);
+for(const configured of ['http://proxy:8888','http://proxy:8888/'])
+it(`returns the reviewed proxy address with a trailing slash when the config names it as ${configured}`,async()=>{
+ config.runtime.proxyUrl=configured;
+ config.egress.legacyConsumers.push({name:'outside-route',address:'172.18.0.24',hosts:[]});
+ const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async()=>{}};
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const withTool={...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},
+  outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Looks up companies.',token:true,tools:{allow:['lookup'],read:['lookup']}}]};
+ await l.create('bookkeeper',definition);
+ await l.saved('bookkeeper',withTool);
+ expect((await l.reviewOutsideRoute('https://tools.example.org/mcp',Date.now()+5000)).proxyUrl).toBe('http://proxy:8888/');
 });
 it('refuses an outside destination that is not in the applied route list and changes the policy hash when the list changes',async()=>{
  config.egress.legacyConsumers.push({name:'outside-route',address:'172.18.0.24',hosts:[]});
