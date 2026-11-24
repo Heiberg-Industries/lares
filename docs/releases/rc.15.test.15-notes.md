@@ -36,7 +36,13 @@ Commit titles from 09f9f637448733818f572f25c0a25d680d3c0187 to 2fa8f34eb74ff4982
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- Connected outside tools now work in a private Slack or Telegram chat with the person who claimed the door, for the lookup tools switched to run without asking. Before, outside tools were offered only in the console's web chat. Tools that would need an approval card still work only in web chat.
+- Switching a lookup tool to run without asking now works right after connecting: the keeper records the descriptions the owner accepted.
+- Outside tool lists and status messages in the console have a cleaner, consistent look.
+- Known limits: outside tools are not offered in shared channels yet, and each connection name keeps a fixed number of saved attempts (fixed on main for the next release).
+- Nothing breaks: the update adds no database file and changes no setting.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
