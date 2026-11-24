@@ -15,6 +15,13 @@ describe("OutsideToolsOverview", () => {
     expect(screen.queryByRole("list", { name: "Tools on empty" })).toBeNull();
   });
 
+  it("says a key held in custody is kept in Lares, and never reports it as a missing file", () => {
+    const evidence = { alpha: { keys: { available: true, value: { rates: "custody" } }, locks: { available: true, value: {} } } };
+    render(<OutsideToolsOverview declared={declared as never} evidence={evidence as never} />);
+    expect(document.body.textContent).toContain("Key kept in Lares.");
+    expect(document.body.textContent).not.toContain("Key file missing");
+  });
+
   it("keeps the unreadable and empty messages", () => {
     const { rerender } = render(<OutsideToolsOverview declared={null} evidence={{}} />);
     expect(screen.getByRole("status").textContent).toMatch(/could not be read/);

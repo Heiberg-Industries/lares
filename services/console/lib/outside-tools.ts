@@ -24,9 +24,11 @@ export interface OutsideToolLock {
   seenTools: DescribedTool[] | null;
 }
 
+export type KeyState = "custody" | "file" | "missing";
+
 export interface OutsideToolEvidence {
-  /** Per tool that needs a key: true present, false missing, null the keeper could not tell. */
-  keys: Reading<Record<string, boolean | null>>;
+  /** Per tool that needs a key: held in custody or as a legacy file, missing, or null (the keeper could not tell). */
+  keys: Reading<Record<string, KeyState | null>>;
   locks: Reading<Record<string, OutsideToolLock>>;
 }
 
@@ -49,10 +51,10 @@ async function keys(name: string): Promise<OutsideToolEvidence["keys"]> {
   try {
     const raw = await keeper<{ tools?: unknown }>("outside.status", { name }, actor);
     if (!Array.isArray(raw?.tools)) return { available: false };
-    const value: Record<string, boolean | null> = {};
-    for (const t of raw.tools as Array<{ tool?: unknown; needsKey?: unknown; keyPresent?: unknown }>) {
+    const value: Record<string, KeyState | null> = {};
+    for (const t of raw.tools as Array<{ tool?: unknown; needsKey?: unknown; keyPresent?: unknown; keyHeldIn?: unknown }>) {
       if (typeof t?.tool !== "string" || t.needsKey !== true) continue;
-      value[t.tool] = typeof t.keyPresent === "boolean" ? t.keyPresent : null;
+      value[t.tool] = t.keyPresent === true ? (t.keyHeldIn === "custody" ? "custody" : "file") : t.keyPresent === false ? "missing" : null;
     }
     return { available: true, value };
   } catch {

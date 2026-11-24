@@ -1239,6 +1239,9 @@ def agent_refresh(installation: Installation, options: argparse.Namespace) -> in
         if result.get("moved"):
             if result.get("running") is True:
                 say(f"{name} restarted on this release.")
+                for left_out in result.get("leftOut") or []:
+                    say(f"{name}: the outside connection {left_out.get('connection')} was left out, {left_out.get('reason')}. "
+                        "Finish connecting it in the console and it joins the next refresh.")
             else:
                 say(f"{name} did not come back up: {result.get('reason') or 'it did not report healthy in time'}. "
                     f"Start it with: sudo lares agent start {name}")

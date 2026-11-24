@@ -211,7 +211,8 @@ async function main(): Promise<void> {
             aliasPrefix: () => readSetting(pool, "models.alias_prefix"), admin: new GatewayAdmin(gatewayUrl ?? "http://unconfigured.invalid") }));
         registerDoorActions({pool,secretsDir:config.secretsDir,publicOrigin:config.publicDoorOrigin,namespaceGuard});
         registerConversationActions(pool,(name,incarnation,id)=>runtimeReset(config.project,name,incarnation,id));
-        registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir });
+        registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir,
+            outsideCustodyHeld: outsideCustody ? name => outsideCustody!.heldConnections(name) : undefined });
         registerProviderKeyActions({ pool, files: new ProviderKeyFiles(config.secretsDir), designatedOwnerId: config.designatedOwnerId });
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));

@@ -29,7 +29,7 @@ const lock = (over: Partial<OutsideToolLock> = {}): OutsideToolLock => ({
   ...over,
 });
 const evidence = (over: Partial<OutsideToolEvidence> = {}): OutsideToolEvidence => ({
-  keys: { available: true, value: { rates: true } }, locks: { available: true, value: {} }, ...over,
+  keys: { available: true, value: { rates: "file" } }, locks: { available: true, value: {} }, ...over,
 });
 const text = (el: React.ReactElement) => renderToStaticMarkup(el).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
@@ -65,8 +65,11 @@ describe("OutsideToolsSection", () => {
   it("says whether the key file is in place, missing, or could not be checked", () => {
     const present = text(<OutsideToolsSection agent="agent-one" inEffect tools={[rates]} evidence={evidence()} />);
     expect(present).toContain("Needs a key: yes. Key file in place.");
-    const missing = text(<OutsideToolsSection agent="agent-one" inEffect tools={[rates]} evidence={evidence({ keys: { available: true, value: { rates: false } } })} />);
+    const missing = text(<OutsideToolsSection agent="agent-one" inEffect tools={[rates]} evidence={evidence({ keys: { available: true, value: { rates: "missing" } } })} />);
     expect(missing).toContain("Key file missing: the agent cannot use this tool until the key is placed on the server.");
+    const custody = text(<OutsideToolsSection agent="agent-one" inEffect tools={[rates]} evidence={evidence({ keys: { available: true, value: { rates: "custody" } } })} />);
+    expect(custody).toContain("Needs a key: yes. Key kept in Lares.");
+    expect(custody).not.toContain("Key file");
     const unknown = text(<OutsideToolsSection agent="agent-one" inEffect tools={[rates]} evidence={evidence({ keys: { available: false } })} />);
     expect(unknown).toContain("Key status unavailable: the keeper could not be asked.");
     expect(unknown).not.toContain("missing");
@@ -114,12 +117,12 @@ describe("OutsideToolsSection", () => {
 describe("getOutsideToolEvidence", () => {
   it("asks the keeper for key presence and reads only locked rows", async () => {
     mocks.actor.mockResolvedValue("owner@example.com");
-    mocks.keeper.mockResolvedValue({ tools: [{ tool: "rates", needsKey: true, keyPresent: false }, { tool: "notes", needsKey: false }, { tool: "other", needsKey: true, keyPresent: null }] });
+    mocks.keeper.mockResolvedValue({ tools: [{ tool: "rates", needsKey: true, keyPresent: false }, { tool: "notes", needsKey: false }, { tool: "other", needsKey: true, keyPresent: null }, { tool: "held", needsKey: true, keyPresent: true, keyHeldIn: "custody" }, { tool: "old", needsKey: true, keyPresent: true, keyHeldIn: "file" }] });
     mocks.query.mockResolvedValue({ rows: [{ tool: "rates", pin_hash: OLD, seen_hash: NEW, seen_at: new Date("2026-10-15T08:30:00Z"), pin_tools: null, seen_tools: [{ name: "find_rate", description: "Finds." }] }] });
     const ev = await getOutsideToolEvidence("agent-one");
     expect(mocks.keeper).toHaveBeenCalledWith("outside.status", { name: "agent-one" }, "owner@example.com");
     expect(mocks.query.mock.calls[0]![0]).toMatch(/seen_hash IS NOT NULL/);
-    expect(ev.keys).toEqual({ available: true, value: { rates: false, other: null } });
+    expect(ev.keys).toEqual({ available: true, value: { rates: "missing", other: null, held: "custody", old: "file" } });
     expect(ev.locks).toEqual({ available: true, value: { rates: { pinHash: OLD, seenHash: NEW, seenAt: "2026-10-15T08:30:00.000Z", pinTools: null, seenTools: [{ name: "find_rate", description: "Finds.", inputSchema: null }] } } });
   });
 
