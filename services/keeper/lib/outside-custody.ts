@@ -223,7 +223,7 @@ const denied = (): never => { throw new Error(REFUSED); };
  * route error that was folded into it. The keeper log prints both through its scrubbed cause summary. */
 export class OutsideRefusal extends Error {
   readonly code: string;
-  /** The underlying error's class and Postgres SQLSTATE only (e.g. "DatabaseError/42501"); never a message or a value. */
+  /** The underlying error's class and its fixed code only (a Postgres SQLSTATE, or a keeper reason label) (e.g. "DatabaseError/42501"); never a message or a value. */
   readonly detail: string | undefined;
   constructor(code: string, cause?: unknown) {
     super(REQUEST_REFUSED, cause === undefined ? undefined : { cause });
@@ -234,8 +234,9 @@ export class OutsideRefusal extends Error {
 }
 function causeDetail(cause: unknown): string {
   const name = cause instanceof Error ? cause.constructor.name.replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "Error" : typeof cause;
+  const message = cause instanceof Error && /^keeper: [a-z ;,-]{3,80}$/.test(cause.message) ? ` (${cause.message})` : "";
   const state = (cause as { code?: unknown } | null)?.code;
-  return typeof state === "string" && /^[0-9A-Z]{5}$/.test(state) ? `${name}/${state}` : name;
+  return typeof state === "string" && (/^[0-9A-Z]{5}$/.test(state) || /^[a-z][a-z-]{2,40}$/.test(state)) ? `${name}/${state}${message}` : `${name}${message}`;
 }
 const requestDenied = (code = "closed", cause?: unknown): never => { throw new OutsideRefusal(code, cause); };
 function wipeRejectedCredentialInput(value:unknown):void{
@@ -1255,7 +1256,7 @@ export class OutsideCustodyStore {
             !/^[a-f0-9]{64}$/.test(input.expectedDestinationHash)||!/^[a-f0-9]{64}$/.test(input.expectedRoutePolicyHash)||
             !Number.isSafeInteger(input.consentGeneration)||input.consentGeneration<1||input.consentGeneration>Number.MAX_SAFE_INTEGER)return requestDenied('claim.input-shape');
         progress.stage='claim-authority';
-        const result=await this.#withHumanSession(sessionToken,async(db,memberId)=>{
+        const claimWork=async(db:PoolClient,memberId:string)=>{
           this.#assertOpen(requestDenied);
           progress.stage='claim-capture';
           const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName,
@@ -1358,7 +1359,10 @@ export class OutsideCustodyStore {
             candidateRevision:head?.candidate_revision===null||head?.candidate_revision===undefined?null:number(head.candidate_revision),
             headConsentGeneration,consentGeneration:input.consentGeneration,credentialRevision:revision,requestHash:requestDigest.toString('hex'),
             routePolicyHash:route.policyHash,deadlineAtMs:options.deadlineAtMs} satisfies OutsideClaimIdentityState;
-        },options);
+        };
+        const result=await this.#withHumanSession(sessionToken,(db,memberId)=>claimWork(db,memberId).catch(error=>{
+          if(error instanceof OutsideRefusal||error instanceof KeeperRefusedError||error instanceof SourceAuthorityUnavailable||error instanceof OutsideCustodyRecoveryRequired)throw error;
+          return requestDenied(`claim.${progress.stage??'unknown'}`,error);}),options);
         return this.#mintClaimIdentity(result);
       }catch(error){
         const recovery=outsideDiscoveryRecovery(error,input.operationId,progress.stage);
