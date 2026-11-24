@@ -15,6 +15,7 @@ import {registerDoorActions} from '../lib/doors.js';
 import {registerConversationActions,runtimeReset} from "../lib/conversations.js";
 import { registerOutsideToolActions } from "../lib/outside-tools.js";
 import { ProviderKeyFiles, registerProviderKeyActions } from "../lib/provider-keys.js";
+import { registerOutsideConnectorActions, routeProbe } from "../lib/outside-connectors.js";
 import { readFileSync, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { deployedToolsFor } from "@lares/agent-kit/persona";
@@ -214,6 +215,17 @@ async function main(): Promise<void> {
         registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir,
             outsideCustodyHeld: outsideCustody ? name => outsideCustody!.heldConnections(name) : undefined });
         registerProviderKeyActions({ pool, files: new ProviderKeyFiles(config.secretsDir), designatedOwnerId: config.designatedOwnerId });
+        registerOutsideConnectorActions({ pool, designatedOwnerId: config.designatedOwnerId,
+            ...(outsideCustody && lifecycle ? {
+                reseal: () => lifecycle!.resealNow(),
+                // The check runs under the same route lease discovery uses: the route must be the one
+                // acknowledged for this exact address, and is looked at again just before the request.
+                probe: async url => {
+                    const deadlineAtMs = Date.now() + 15_000;
+                    const review = await lifecycle!.reviewOutsideRoute(url, deadlineAtMs);
+                    return lifecycle!.withAppliedOutsideRoute(url, review.policyHash, deadlineAtMs,
+                        lease => routeProbe(url, review.proxyUrl, deadlineAtMs, () => lease.assertCurrent()));
+                } } : {}) });
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));
         if(financialPool&&financialJournal?.prepared)stops.push(scheduleNightlyLedgerCheck(financialJournal,financialPool));

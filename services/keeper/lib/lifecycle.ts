@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { Pool } from 'pg';
 import { doorsOf, definitionSchema, hashOf, readDefinitionFiles, type AgentDefinition, type DefinitionFileContents } from '@lares/agent-kit/definition';
 import { outsideHttpsHosts, outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
+import { connectorRouteHosts } from './outside-connectors.js';
 import { CAPABILITY_DOCS } from '@lares/agent-kit/persona';
 import { generateEgress } from './egress.js';
 import { renderAgentsCompose, nextAddress, DOOR_FILES, ROLE_DOORS, type AgentContainer } from './compose-agents.js';
@@ -391,12 +392,15 @@ export class AgentLifecycle {
         if (override)
             this.refuseUnknownGrants(override.name, override.definition);
         const { agents, defs } = await this.render(override, omit), c = this.config;
-        // The outside route's hosts are the static root-config hosts plus the https hosts of the
+        // The outside route's hosts are the static root-config hosts, plus the https hosts of the
         // outside tools in the SAVED definitions of the agents that are being planned (the saved
-        // agent included). Nothing else can add one; a retired agent or a removed tool drops its host.
+        // agent included), plus the hosts of directory records a keeper action saved that are being
+        // set up or are connected (so a connector no agent uses yet can be checked). Nothing else can
+        // add one; a retired agent, a removed tool or a retired connector drops its host.
         const selectedRoute = this.outsideConsumer();
         const outsideRoute = selectedRoute ? { ...selectedRoute, hosts: mergeRouteHosts(selectedRoute.hosts,
-            agents.flatMap(a => outsideHttpsHosts(outsideToolsInEffect(defs.get(a.name)!))) ) } : undefined;
+            agents.flatMap(a => outsideHttpsHosts(outsideToolsInEffect(defs.get(a.name)!))),
+            await connectorRouteHosts(this.pool)) } : undefined;
         const e = generateEgress(agents.map(a => ({ name: a.name, address: a.address, grants: defs.get(a.name)!.grants, doors: a.doors.filter(d => d.kind === 'slack' || d.kind === 'telegram') as {
                 kind: 'slack' | 'telegram';
                 enabled: boolean;
