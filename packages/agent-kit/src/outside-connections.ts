@@ -7,9 +7,9 @@ import type { AgentDefinition, OutsideToolDeclaration } from "./definition.js";
 import { registerOutsideConnections, withCardTitle } from "./approval-summary.js";
 import { outsideToolsInEffect, isTrustedRead, outsideToolOfferedOn, OUTSIDE_DOOR_NEEDS_CARD, type OutsideSurface } from "./outside-tools.js";
 import { toolPinHash } from "./outside-pins.js";
-import { asksAfterUntrustedText } from "./tainted-approval.js";
+import { asksAfterUntrustedText, asksAfterUntrustedTextUnlessSameConnection } from "./tainted-approval.js";
 import { isApprovalRecheck } from "./approval-execution.js";
-import type { Taint } from "./origin-taint.js";
+import { noteTrustedLookup, turnKeyFrom, type Taint } from "./origin-taint.js";
 
 /** The slice of a definition this file reads. */
 export type OutsideDefinitionView = Pick<AgentDefinition, "name" | "grants" | "autonomy" | "outsideTools">;
@@ -62,7 +62,7 @@ export function outsideRequestPolicy(
   entry: OutsideToolDeclaration,
   opts: { taintAware?: boolean; telegramApprovals?: boolean; pins?: Readonly<Record<string, string>> } = {},
 ): (ctx: ApprovalContext) => Promise<ApprovalStatus> {
-  const afterUntrusted = asksAfterUntrustedText();
+  const afterUntrusted = asksAfterUntrustedTextUnlessSameConnection(entry.name);
   const telegramOk = opts.telegramApprovals ?? OUTSIDE_TELEGRAM_APPROVALS_PROVEN;
   return async (ctx) => {
     let decision: ApprovalStatus = "user-approval";
@@ -135,6 +135,12 @@ export function outsideResultTaint(toolName: string, definition: OutsideDefiniti
   if (entries.length === 0) return undefined;
   if (toolName === CONNECTION_SEARCH_TOOL) return "third_party";
   return entries.some((e) => toolName.startsWith(`${e.name}__`)) ? "third_party" : undefined;
+}
+
+/** The connection a `<name>__*` result belongs to, or undefined (search output and anything else). */
+export function outsideConnectionOf(toolName: string, definition: OutsideDefinitionView): string | undefined {
+  if (toolName === CONNECTION_SEARCH_TOOL) return undefined;
+  return outsideToolsInEffect(definition).find((e) => toolName.startsWith(`${e.name}__`))?.name;
 }
 
 // ─── Something is wrong ────────────────────────────────────────────────────────────────────
@@ -225,6 +231,18 @@ export interface OutsideRuntimeDeps {
   surface?:OutsideSurface;
 }
 
+/** Records, before the call runs, that this call is a trusted lookup of `connection`, so the taint written
+ *  when its result arrives can be attributed to it. Never throws and never blocks the call. */
+function markTrusted(connection:string,run:(input:unknown,ctx:ToolContext)=>Promise<unknown>){
+  return async (input:unknown,ctx:ToolContext)=>{
+    try{
+      const key=turnKeyFrom(ctx),callId=(ctx as {callId?:unknown}).callId;
+      if(key&&typeof callId==='string')noteTrustedLookup(key,callId,connection);
+    }catch{/* unattributed: the turn reads as mixed */}
+    return run(input,ctx);
+  };
+}
+
 /** Ordinary Eve tools using the accepted catalog. The Keeper independently requires an exact,
  * current, unused receipt on execution. An Eve approval card alone never grants that authority.
  *
@@ -250,7 +268,7 @@ export async function resolveOutsideTools(definition:OutsideDefinitionView,deps:
         tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
           approval:withCardTitle({request:async (ctx:ApprovalContext)=>(await free(ctx))==='not-applicable'?'not-applicable' as const:{type:'denied' as const,reason:OUTSIDE_DOOR_NEEDS_CARD},
             response:()=>({status:'rejected' as const,reason:'an outside lookup on a chat door has no card to answer'})}),
-          execute:deps.executor(entry.name,tool.name,true)});
+          execute:markTrusted(entry.name,deps.executor(entry.name,tool.name,true))});
         continue;
       }
       const authored=deps.approval?.(entry.name,tool.name)??{request:async()=> 'user-approval' as const};
@@ -261,7 +279,7 @@ export async function resolveOutsideTools(definition:OutsideDefinitionView,deps:
       const gated=runsFree?{...authored,request:async (ctx:ApprovalContext)=>
         (isApprovalRecheck(ctx)?authored.request(ctx):(await free(ctx))==='not-applicable'?'not-applicable' as const:authored.request(ctx))}:authored;
       tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
-        approval:withCardTitle(gated),execute:deps.executor(entry.name,tool.name,runsFree)});
+        approval:withCardTitle(gated),execute:runsFree?markTrusted(entry.name,deps.executor(entry.name,tool.name,runsFree)):deps.executor(entry.name,tool.name,runsFree)});
     }
   }
   return Object.keys(tools).length?tools:null;

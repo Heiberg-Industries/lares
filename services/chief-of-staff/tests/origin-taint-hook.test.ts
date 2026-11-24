@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { parseDefinition } from "@lares/agent-kit/definition";
-import { currentTaint, resetTaintForTests } from "@lares/agent-kit/origin-taint";
+import { currentTaint, noteTrustedLookup, resetTaintForTests, taintedOnlyByTrustedLookupsOf } from "@lares/agent-kit/origin-taint";
 import { makeOriginTaint, TAINTING_TOOLS } from "../agent/hooks/origin-taint.js";
 
 import { eveSession } from "../../../packages/agent-kit/tests/helpers/eve-session.js";
@@ -234,6 +234,25 @@ describe("outside tools", () => {
     const { h } = withDef(def());
     await feed(h, resultWith("eve__search", [{ connection: "registry", tools: [] }]));
     expect(currentTaint(key)).toBe("third_party");
+  });
+
+  it("records the connection as the source only for a call noted as a trusted lookup", async () => {
+    const { h } = withDef(def());
+    noteTrustedLookup(key, "c1", "registry");
+    await feed(h, resultWith("registry__lookup", "Acme"));
+    expect(taintedOnlyByTrustedLookupsOf(key, "registry")).toBe(true);
+    expect(taintedOnlyByTrustedLookupsOf(key, "other")).toBe(false);
+  });
+
+  it("leaves the turn mixed when the outside call was not noted as trusted, or search or mail followed", async () => {
+    const a = withDef(def());
+    await feed(a.h, resultWith("registry__lookup", "Acme"));
+    expect(taintedOnlyByTrustedLookupsOf(key, "registry")).toBe(false);
+    resetTaintForTests();
+    noteTrustedLookup(key, "c1", "registry");
+    await feed(a.h, resultWith("registry__lookup", "Acme"));
+    await feed(a.h, resultWith("gmail_read", {}));
+    expect(taintedOnlyByTrustedLookupsOf(key, "registry")).toBe(false);
   });
 
   it("does not even read the definition for ordinary tools", async () => {

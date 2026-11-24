@@ -42,7 +42,7 @@
  */
 import type { ApprovalStatus } from "eve/tools/approval";
 
-import { currentTaint, turnKeyFrom, urlReadThisTurn } from "./origin-taint.js";
+import { currentTaint, taintedOnlyByTrustedLookupsOf, turnKeyFrom, urlReadThisTurn } from "./origin-taint.js";
 
 /**
  * Why a link can suddenly ask, in one sentence a human reads.
@@ -91,6 +91,22 @@ export function asksAfterUntrustedTextUnlessNextPage(): (ctx?: unknown) => Promi
         return "not-applicable";
       }
     }
+    return ordinary(ctx);
+  };
+}
+
+/**
+ * `asksAfterUntrustedText`, except for a trusted lookup chained on the connection it already used: when
+ * every piece of outside text this turn has read came from trusted lookups of `connection` (recorded at
+ * the one place taint is written, `origin-taint.ts`), a further trusted lookup of the same connection does
+ * not ask. Mail, a link, another connection, an untrusted tool, a call with no source, or no turn key all
+ * go through the ordinary policy. The caller applies this only to a tool that is already a trusted read.
+ */
+export function asksAfterUntrustedTextUnlessSameConnection(connection: string): (ctx?: unknown) => Promise<ApprovalStatus> {
+  const ordinary = asksAfterUntrustedText();
+  return async (ctx?: unknown): Promise<ApprovalStatus> => {
+    const key = turnKeyFrom(ctx);
+    if (key && taintedOnlyByTrustedLookupsOf(key, connection)) return "not-applicable";
     return ordinary(ctx);
   };
 }
