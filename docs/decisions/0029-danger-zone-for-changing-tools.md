@@ -1,7 +1,7 @@
 # ADR 0029 — Outside tools that change something may run without asking only through a per-tool danger zone
 
 **Date:** 2026-11-24
-**Status:** Proposed (not built; the owner approves this record before any code is written)
+**Status:** Accepted 2026-11-24 (not built yet)
 **Supersedes:** —
 **Amends / reconciles:** ADR-0019, the rule that a tool which changes something always asks the owner first (for the part that says "can never be switched on"). The rest of ADR-0019 stands.
 
@@ -31,7 +31,7 @@ Other facts that bound the design:
 2. **One place to override.** A red section, "Danger zone", at the bottom of an outside connection's page in the console. It lists the connection's tools that change something. It is the only way a changing tool can run without asking.
 3. **Per tool, never blanket.** Each tool is switched on separately. There is no "all tools of this connection" and no "all connections" control.
 4. **The owner types the tool's name to confirm.** The control stays disabled until the typed name matches exactly. This is a deliberate friction, not a security boundary on its own.
-5. **Only the owner, only in the console.** The action is refused for anyone who is not the installation's owner, for any agent, and for any request that does not come from a signed-in console session. A conversation, a card answer, an agent's own definition or a definition import can never set it.
+5. **Only the owner, only in the console.** The action is refused for anyone who is not the installation's designated owner (another owner of the organisation cannot use it either), for any agent, and for any request that does not come from a signed-in console session. A conversation, a card answer, an agent's own definition or a definition import can never set it.
 6. **Audit-logged.** Every switch on and every switch off writes an audit entry with who, when, the connection, the tool and the exact description fingerprint it was bound to.
 7. **Shown, always.** A tool in this state carries a red badge ("Runs without asking: changes something") wherever the tool is listed (the connection page, the agent's page, the overview), and the connection's summary line counts it separately from lookups.
 8. **Bound to the description.** The permission is bound to the same per-tool fingerprint as a lookup's. If the tool's description or input shape changes, it switches off automatically, like every other trust, and the owner is told in the same words used for lookups.
@@ -45,13 +45,12 @@ Other facts that bound the design:
 - **Good:** an owner can run a trusted changing tool unattended without leaving Lares' guard rails; the choice is deliberate, narrow, visible and reversible; every other default stays private.
 - **Cost:** a new stored list on the agent's connection record, a new keeper action restricted to the owner, a console section, an audit entry type and a badge. Tests: the owner-only check, the typed-name confirmation, the automatic switch-off when a description changes, the audit entry, and that a definition import or agent output cannot set it.
 - **Risk:** an owner may switch on a tool and forget it. The red badge and the count on the summary line are there so it stays in view; the automatic switch-off covers the server changing under them.
-- **Not decided here:** a time limit on the permission (it could expire after a set time), and whether a second owner's approval should be required where there are several owners.
 
-## Open questions for the owner
+## Owner's answers (24 November 2026)
 
-1. Should the permission expire after a set time (for example 30 days) and need to be switched on again?
-2. Where an installation has more than one owner, should one owner's switch be enough?
-3. Should the danger zone also appear on the agent's own page, or only on the connection's page?
+1. **No expiry.** The permission stays until the owner switches it off or the tool's description changes; the red badge keeps it in view.
+2. **Only the designated owner.** Where an organisation has several owners, only the installation's designated owner can use the danger zone; no second approval is needed.
+3. **Connection page only.** The switch lives only on the connection's page; the red badge still shows on the agent's page and the overview.
 
 ## Cross-references
 
