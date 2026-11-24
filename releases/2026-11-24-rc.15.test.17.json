@@ -1,0 +1,31 @@
+{
+  "release": "2026-11-24-rc.15.test.17",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:224f95772f4a5543664cadb872344f9e1c55d83130eb8f29e75204ce096fe76e",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:61c08dffb90cdc1363e26325ab12c3fb5af29e4894ff3f271634b0bd8b85a78b",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:f45b6060f858d69106cda82efa81586e3163d1e128d2b7482cf77f166cdaaf3e",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:278f1ac27ce5208e2bb4b1b223a63a8261b8b4f9f4c6cb86c901d3a3517376f2",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:ef8ef90de95f7f7b0c94157109b9f98df52df1a6626df132158ab9b312b5d5a5",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:8ed0d00ff8bcd004e3eba8813f63f08890b34d65218f5d1da2ddea367a1bc3bc",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:8d91bfd24175e2e97807b506fb96f28848754feb7eaf02ed4301c5e69f5738a4"
+  },
+  "sources": {
+    "console": "355c2965efefb7a7a3cd25b305143cf8310b864b",
+    "lares-keeper": "355c2965efefb7a7a3cd25b305143cf8310b864b",
+    "lares-egress-proxy": "355c2965efefb7a7a3cd25b305143cf8310b864b",
+    "lares-firewall-helper": "355c2965efefb7a7a3cd25b305143cf8310b864b",
+    "chief-of-staff": "355c2965efefb7a7a3cd25b305143cf8310b864b",
+    "creative": "355c2965efefb7a7a3cd25b305143cf8310b864b",
+    "sync-jobs": "355c2965efefb7a7a3cd25b305143cf8310b864b"
+  },
+  "migrations": {
+    "box": "039_outside_connectors.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "TO BE WRITTEN BY A PERSON: replace this line with one sentence for each change an operator updating from the previous release must know, or delete it if there is none."
+  ]
+}
