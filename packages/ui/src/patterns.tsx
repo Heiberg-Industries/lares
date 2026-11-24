@@ -1,4 +1,5 @@
 import React, { type ReactNode } from "react";
+import { CircleAlert, CircleCheck, Info, LoaderCircle, TriangleAlert } from "./icons";
 
 export function Mark() {
   return (
@@ -154,21 +155,88 @@ export function EmptyState({
     </div>
   );
 }
+/** What a notice is telling the person. Each tone has one colour and one icon, so a glance says which kind it is. */
+export type NoticeTone = "info" | "working" | "success" | "needs-you" | "error";
+
+const NOTICE_ICON: Record<NoticeTone, ReactNode> = {
+  info: <Info aria-hidden="true" />,
+  working: <LoaderCircle aria-hidden="true" />,
+  success: <CircleCheck aria-hidden="true" />,
+  "needs-you": <TriangleAlert aria-hidden="true" />,
+  error: <CircleAlert aria-hidden="true" />,
+};
+
+/** A message in one of five tones. `error` is shorthand for tone="error". Only an error is announced as an alert; the rest are quiet status text. */
 export function Notice({
   children,
+  tone,
   error = false,
 }: {
   children: ReactNode;
+  tone?: NoticeTone;
   error?: boolean;
 }) {
+  const kind: NoticeTone = tone ?? (error ? "error" : "info");
   return (
     <div
       className="lares-notice"
-      data-error={error || undefined}
-      role={error ? "alert" : "status"}
+      data-tone={kind}
+      data-error={kind === "error" || undefined}
+      role={kind === "error" ? "alert" : "status"}
     >
-      {children}
+      <span className="lares-notice-icon">{NOTICE_ICON[kind]}</span>
+      <div className="lares-notice-body">{children}</div>
     </div>
+  );
+}
+/** A list of tools an agent can use, one ToolRow each. */
+export function ToolList({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <ul className="lares-tool-list" aria-label={label}>
+      {children}
+    </ul>
+  );
+}
+const TOOL_KIND_WORDS = { read: "Looks things up", change: "Changes something" } as const;
+/** One tool: its name, a kind badge, a short description that opens to the full text, and room for a control on the right (a Switch) and for extras underneath. */
+export function ToolRow({
+  name,
+  kind,
+  description,
+  control,
+  children,
+}: {
+  name: string;
+  kind?: "read" | "change";
+  description?: string;
+  control?: ReactNode;
+  children?: ReactNode;
+}) {
+  const long = (description?.length ?? 0) > 120 || (description ?? "").includes("\n");
+  return (
+    <li className="lares-tool-row">
+      <div className="lares-tool-main">
+        <div className="lares-tool-head">
+          <strong className="lares-tool-name">{name}</strong>
+          {kind && (
+            <span className="lares-kind-badge" data-kind={kind}>
+              {TOOL_KIND_WORDS[kind]}
+            </span>
+          )}
+        </div>
+        {description &&
+          (long ? (
+            <details className="lares-tool-description">
+              <summary>{description.split("\n")[0]!.slice(0, 120)}…</summary>
+              <p>{description}</p>
+            </details>
+          ) : (
+            <p className="lares-tool-description">{description}</p>
+          ))}
+        {children}
+      </div>
+      {control && <div className="lares-tool-control">{control}</div>}
+    </li>
   );
 }
 export function StatusBadge({

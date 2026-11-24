@@ -29,4 +29,8 @@ export {
   BookOpen,
   Radio,
   Wrench,
+  Info,
+  LoaderCircle,
+  CircleCheck,
+  TriangleAlert,
 } from "lucide-react";

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ToolList, ToolRow } from "@lares/ui/patterns";
 import type { DeclaredOutside, OutsideToolEvidence } from "../lib/outside-tools";
 import { keyLine } from "../lib/outside-tools-words";
 
@@ -18,7 +19,8 @@ export function OutsideToolsOverview({ declared, evidence }: { declared: Declare
               const locked = ev?.locks.available && ev.locks.value[s.name] !== undefined;
               return (
                 <div key={s.name}>
-                  <p><span className="mono">{s.name}</span>{s.tools.length > 0 && <span className="lares-muted"> · {s.tools.join(", ")}</span>}</p>
+                  <p><span className="mono">{s.name}</span></p>
+                  {s.tools.length > 0 && <ToolList label={`Tools on ${s.name}`}>{s.tools.map(tool => <ToolRow key={tool} name={tool} />)}</ToolList>}
                   <p className="lares-muted">{keyLine(s.needsKey, ev?.keys, s.name)}</p>
                   {locked && <p><strong>Locked: its tool descriptions changed.</strong> Check them on the agent&apos;s page before it runs again.</p>}
                 </div>
