@@ -51,6 +51,15 @@ const steps = {
     await page.locator(".lares-actions button", { hasText: /approve/i }).first().click({ timeout: 240_000 });
     await page.locator(".lares-message-agent", { hasText: settings.outsideReply }).first().waitFor({ timeout: 240_000 });
   },
+  // The owner switches the connected lookup on to run without asking, on the agent's own outside tools page.
+  async "trust-outside"(page) {
+    await page.goto(`${origin}/agents/${settings.agent}/outside-tools`);
+    await page.getByRole("button", { name: "Edit" }).first().click({ timeout: 60_000 });
+    await page.getByRole("checkbox", { name: /lookup-company/ }).check({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Save connections" }).click();
+    await page.getByText(/^Saved\./).waitFor({ timeout: 240_000 });
+    console.log(`the page says: ${(await page.getByText(/^Saved\./).first().innerText()).slice(0, 200)}`);
+  },
   async "create-agent"(page) {
     await page.goto(`${origin}/agents/new`);
     await page.getByRole("radio", { name: "Chief of staff" }).check({ timeout: 30_000 });

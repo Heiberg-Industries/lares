@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { hashOf, parseDefinition } from "../src/definition.js";
 import { validateDefinition } from "../src/definition-validate.js";
-import { checkOutsideUrl, outsideHttpsHosts, outsideSecretName, outsideToolsInEffect } from "../src/outside-tools.js";
+import { checkOutsideUrl, outsideHttpsHosts, outsideSecretName, outsideToolOfferedOn, outsideToolsInEffect } from "../src/outside-tools.js";
 import { assemblePersona } from "../src/persona/index.js";
 
 const ROLE = "I keep the books.\n";
@@ -172,5 +172,20 @@ describe("persona", () => {
   });
   it("is stable: same input, same bytes", () => {
     expect(assemblePersona(input(base()))).toBe(assemblePersona(input(base())));
+  });
+});
+
+describe('where an outside tool is offered', () => {
+  const entry = { tools: { allow: ['lookup', 'change'], read: ['lookup'], trusted: [{ tool: 'lookup', pin: 'p'.repeat(64), by: 'm', at: '2026-11-20T10:00:00.000Z' }] } };
+  it('offers every allowed tool in web chat, where a card asks first', () => {
+    expect(outsideToolOfferedOn('web-chat', entry, 'lookup', undefined)).toBe(true);
+    expect(outsideToolOfferedOn('web-chat', entry, 'change', undefined)).toBe(true);
+    expect(outsideToolOfferedOn('web-chat', entry, 'unlisted', undefined)).toBe(false);
+  });
+  it('offers on a private door chat only a lookup the owner let run without asking, for the description they saw', () => {
+    expect(outsideToolOfferedOn('private-door-chat', entry, 'lookup', 'p'.repeat(64))).toBe(true);
+    expect(outsideToolOfferedOn('private-door-chat', entry, 'lookup', 'q'.repeat(64))).toBe(false);
+    expect(outsideToolOfferedOn('private-door-chat', entry, 'lookup', undefined)).toBe(false);
+    expect(outsideToolOfferedOn('private-door-chat', entry, 'change', 'p'.repeat(64))).toBe(false);
   });
 });

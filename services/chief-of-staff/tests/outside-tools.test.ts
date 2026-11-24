@@ -106,6 +106,62 @@ it('offers no direct connection in either role and no outside tools on native or
  expect(await dyn(resolver,{...context,session:{...context.session,id:'fresh'}})).toBeNull();expect(fake.execute).not.toHaveBeenCalled();
 });
 
+/** A chat door (Slack, Telegram): the claimed person in a private chat is offered only the lookups the owner let run
+ *  without asking, through the door's claim; a card is never raised, and nobody else gets anything. */
+describe('outside tools on a chat door',()=>{
+ const revision='5c1ac4e0-0000-4000-8000-000000000001',person='U0CLAIMED',lookup={name:'lookup',description:'Accepted lookup',inputSchema:{type:'object',properties:{company:{type:'string'}}}};
+ const door=(user:string,channel:string)=>({authenticator:'slack-webhook',principalType:'user',attributes:{user_id:user,channel_id:channel,author_type:'user'}});
+ const doorCtx=(current:unknown,initiator:unknown=current)=>({session:{id:'door_session',turn:{id:'turn-1',sequence:1},auth:{current,initiator}}});
+ const withTrust=async(trusted:boolean)=>{
+  const {toolPinHash}=await import('../../../packages/agent-kit/src/outside-pins.js');
+  const entry={...definition.outsideTools[0]!,tools:{allow:['lookup'],read:['lookup'],...(trusted?{trusted:[{tool:'lookup',pin:toolPinHash(lookup),by:'member-a',at:'2026-11-20T10:00:00.000Z'}]}:{})}};
+  fake.definition.mockResolvedValue({loaded:{definition:{...definition,outsideTools:[entry]},dutiesMd:'',voiceMd:'',hash:'a'.repeat(64)}});
+ };
+ beforeEach(()=>{
+  fake.privateSession.mockResolvedValue(false);
+  vi.stubEnv('LARES_SLACK_PRINCIPAL',person);vi.stubEnv('LARES_SLACK_CLAIM_REVISION',revision);
+  fake.broker.mockImplementation(async op=>op==='outside.tools'?{tools:[lookup]}:op==='outside.run-trusted'?{result:{content:[{type:'text',text:'Example'}]}}:{});
+ });
+ it('offers the lookup the owner switched on to the claimed person, asks Keeper under the claim and never names a member',async()=>{
+  await withTrust(true);
+  const ctx=doorCtx(door(person,'D0DIRECT')),tools=await dyn(resolver,ctx);
+  expect(Object.keys(tools)).toEqual(['registry__lookup']);
+  expect(fake.broker).toHaveBeenCalledWith('outside.tools',{door:'slack',principal:person,claimRevision:revision,chat:'private',sessionId:'door_session',connectionName:'registry'});
+  const call={...ctx,callId:'call-9',toolName:'registry__lookup'};
+  await expect(tools['registry__lookup'].execute({company:'Example'},call)).resolves.toEqual({content:[{type:'text',text:'Example'}]});
+  expect(fake.broker).toHaveBeenLastCalledWith('outside.run-trusted',{door:'slack',principal:person,claimRevision:revision,chat:'private',sessionId:'door_session',
+   call:{callId:'call-9',connectionName:'registry',toolName:'lookup',input:{company:'Example'}}},10_000);
+  // No card, no reservation, no console admission on this path.
+  expect(fake.reserveOrDeny).not.toHaveBeenCalled();expect(fake.execute).not.toHaveBeenCalled();
+ });
+ it('offers a lookup the owner did not switch on to nobody on a door: it would need a card, and a door has none',async()=>{
+  await withTrust(false);
+  expect(await dyn(resolver,doorCtx(door(person,'D0DIRECT')))).toBeNull();
+ });
+ it('offers nothing to another person, in a room, or to a conversation another person started',async()=>{
+  await withTrust(true);
+  expect(await dyn(resolver,doorCtx(door('U0STRANGER','D0DIRECT')))).toBeNull();
+  expect(await dyn(resolver,doorCtx(door(person,'C0ROOM')))).toBeNull();
+  expect(await dyn(resolver,doorCtx(door(person,'D0DIRECT'),door('U0STRANGER','D0DIRECT')))).toBeNull();
+  expect(fake.broker).not.toHaveBeenCalled();
+ });
+ it('runs on a clean turn and, once the turn has read outside text, refuses in words instead of raising a card',async()=>{
+  await withTrust(true);
+  const tools=await dyn(resolver,doorCtx(door(person,'D0DIRECT'))),approval=tools['registry__lookup'].approval;
+  expect(typeof approval.prompt).toBe('function');
+  expect(await approval.request({...doorCtx(door(person,'D0DIRECT')),callId:'c',toolName:'registry__lookup',toolInput:{company:'Acme'}})).toBe('not-applicable');
+  expect(await approval.response({request:{},response:{decision:'approve',principal:{}}})).toMatchObject({status:'rejected'});
+  expect(fake.reserveOrDeny).not.toHaveBeenCalled();
+ });
+ it('refuses to run a call that is not for the tool named, before Keeper is asked',async()=>{
+  await withTrust(true);
+  const ctx=doorCtx(door(person,'D0DIRECT')),tools=await dyn(resolver,ctx);fake.broker.mockClear();
+  await expect(tools['registry__lookup'].execute({},{...ctx,callId:'c',toolName:'registry__other'})).rejects.toThrow('unavailable');
+  await expect(tools['registry__lookup'].execute({},{...ctx,callId:'',toolName:'registry__lookup'})).rejects.toThrow('unavailable');
+  expect(fake.broker).not.toHaveBeenCalled();
+ });
+});
+
 /** The owner's ruling: in the turn an answer to a card was applied in, a NEW outside-tool call (every one
  *  asks first) is refused before its card, its reservation and any contact with the tool or its
  *  connection; the answered card's own approved call still runs once; the next message works as before.

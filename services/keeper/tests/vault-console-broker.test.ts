@@ -1656,6 +1656,60 @@ describe('a lookup under the owner\'s standing trust',()=>{
   await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
   expect(ids.outsideDispatch).not.toHaveBeenCalled();
  });
+ it('records the accepted descriptions as the pin each time they are read, so a switch can be made and a changed description ends it',async()=>{
+  const {toolPinHash}=await import('../../../packages/agent-kit/src/outside-pins.js');
+  const f=await trustedFixture({pinRow:'missing'});
+  expect((await pool.query('SELECT 1 FROM outside_tool_pins WHERE agent=$1',[agent])).rows).toHaveLength(0);
+  ids.outsideTools.mockResolvedValue([lookupTool]);
+  await runtime('outside.tools',{sessionId:session,memberId:ids.member,admissionNonce,connectionName:'registry'});
+  const pinned=await pool.query('SELECT pin_tools,seen_hash FROM outside_tool_pins WHERE agent=$1 AND tool=$2',[agent,'registry']);
+  expect(pinned.rows).toHaveLength(1);expect(pinned.rows[0].seen_hash).toBeNull();expect(toolPinHash(pinned.rows[0].pin_tools[0])).toBe(toolPinHash(lookupTool));
+  // The trust made for those words now runs; after the owner accepts new words, it no longer matches and the call is refused.
+  expect(await runtime('outside.run-trusted',{...f.binding,call:f.call})).toMatchObject({result:expect.anything()});
+  ids.outsideTools.mockResolvedValue([{...lookupTool,description:'New words.'}]);
+  await runtime('outside.tools',{sessionId:session,memberId:ids.member,admissionNonce,connectionName:'registry'});
+  await expect(runtime('outside.run-trusted',{...f.binding,call:{...f.call,callId:randomUUID()}})).rejects.toThrow();
+ });
+ describe('on a chat door: the claimed person in a private chat, no console session',()=>{
+  const doorInput=(kind:string,f:{call:unknown},over:Record<string,unknown>={})=>({door:kind,principal:DOOR_PRINCIPAL,claimRevision:DOOR_REVISION,chat:'private',sessionId:'door_session_1',call:f.call,...over});
+  it.each(DOOR_KINDS)('%s: runs a trusted lookup under the claim, asks custody as a door call for Keeper\'s own owner, and audits the door',async(kind)=>{
+   const f=await trustedFixture();await doorFixture(kind);
+   expect(await runtime('outside.run-trusted',doorInput(kind,f))).toMatchObject({result:{content:[{type:'text',text:'Fixture result'}]}});
+   expect(ids.outsideApprove).toHaveBeenCalledOnce();expect(ids.outsideDispatch).toHaveBeenCalledOnce();
+   expect(ids.outsideApprove.mock.calls[0]![0]).toMatchObject({agent,incarnation,sessionId:'door_session_1',memberId:ids.member,approverMemberId:ids.member,door:true,admissionNonce:''});
+   expect(ids.outsideDispatch.mock.calls[0]![0]).toMatchObject({memberId:ids.member,door:true});
+   const rows=await audits();expect(rows).toHaveLength(1);expect(rows[0]!.input).toMatchObject({door:kind,connection:'registry',tool:'lookup',trustGrantedBy:ids.member});expect(rows[0]!.outcome).toBe('ok');
+  });
+  it.each([
+   ['the wrong person',{principal:'U0SOMEONEELSE'}],['a stale claim',{claimRevision:'6d1c0000-0000-4000-8000-000000000002'}],
+   ['a shared room',{chat:'shared-room'}],['no chat kind',{chat:undefined}],['an unknown door',{door:'carrier-pigeon'}],
+   ['a member named by the agent',{memberId:ids.member}],['an admission sent along',{admissionNonce:'x'.repeat(43)}],
+  ])('refuses %s, before any custody call',async(_name,over)=>{
+   const kind=DOOR_KINDS[0]!,f=await trustedFixture();await doorFixture(kind);
+   await expect(runtime('outside.run-trusted',doorInput(kind,f,over))).rejects.toThrow();
+   expect(ids.outsideApprove).not.toHaveBeenCalled();expect(ids.outsideDispatch).not.toHaveBeenCalled();expect(await audits()).toHaveLength(0);
+  });
+  it('refuses a tool the owner did not switch on, a demoted owner and a door that is no longer claimed, before any custody call',async()=>{
+   const kind=DOOR_KINDS[0]!;
+   let f=await trustedFixture({trust:'none'});await doorFixture(kind);
+   await expect(runtime('outside.run-trusted',doorInput(kind,f))).rejects.toThrow();
+   f=await trustedFixture();await doorFixture(kind);
+   await pool.query("UPDATE users SET org_role='member' WHERE id=$1",[ids.member]);
+   try{await expect(runtime('outside.run-trusted',doorInput(kind,f))).rejects.toThrow();}finally{await pool.query("UPDATE users SET org_role='owner' WHERE id=$1",[ids.member]);}
+   f=await trustedFixture();await pool.query('DELETE FROM agent_door_connections WHERE agent=$1',[agent]);
+   await expect(runtime('outside.run-trusted',doorInput(kind,f))).rejects.toThrow();
+   expect(ids.outsideApprove).not.toHaveBeenCalled();expect(ids.outsideDispatch).not.toHaveBeenCalled();expect(await audits()).toHaveLength(0);
+  });
+  it.each(DOOR_KINDS)('%s: lists the accepted descriptions for the claimed person, and only under a good claim',async(kind)=>{
+   await trustedFixture();await doorFixture(kind);ids.outsideTools.mockResolvedValue([lookupTool]);
+   const ask=(over:Record<string,unknown>={})=>runtime('outside.tools',{door:kind,principal:DOOR_PRINCIPAL,claimRevision:DOOR_REVISION,chat:'private',sessionId:'door_session_1',connectionName:'registry',...over});
+   expect(await ask()).toMatchObject({tools:[lookupTool]});
+   expect(ids.outsideTools.mock.calls[0]![0]).toMatchObject({memberId:ids.member,door:true,sessionId:'door_session_1'});
+   ids.outsideTools.mockClear();
+   for(const over of [{principal:'U0SOMEONEELSE'},{chat:'shared-room'},{memberId:ids.member}])await expect(ask(over)).rejects.toThrow();
+   expect(ids.outsideTools).not.toHaveBeenCalled();
+  });
+ });
  it('refuses when the definition the agent runs under no longer lists the trust',async()=>{
   const f=await trustedFixture();
   const without=definitionSchema.parse({...roleDefinition,outsideTools:[{...roleDefinition.outsideTools![0]!,tools:{allow:['lookup','create_note'],read:['lookup']}}]});

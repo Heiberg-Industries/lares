@@ -5,7 +5,7 @@ import type { ApprovalContext, ApprovalResponseContext, ApprovalResponseDecision
 
 import type { AgentDefinition, OutsideToolDeclaration } from "./definition.js";
 import { registerOutsideConnections, withCardTitle } from "./approval-summary.js";
-import { outsideToolsInEffect, isTrustedRead } from "./outside-tools.js";
+import { outsideToolsInEffect, isTrustedRead, outsideToolOfferedOn, OUTSIDE_DOOR_NEEDS_CARD, type OutsideSurface } from "./outside-tools.js";
 import { toolPinHash } from "./outside-pins.js";
 import { asksAfterUntrustedText } from "./tainted-approval.js";
 import { isApprovalRecheck } from "./approval-execution.js";
@@ -221,6 +221,8 @@ export interface OutsideRuntimeDeps {
   /** `runsFree` is true for a call the owner let run without a card (a trusted lookup). The executor
    *  must then ask Keeper for the trusted run; Keeper re-checks the trust itself. */
   executor:(connectionName:string,toolName:string,runsFree:boolean)=>(input:unknown,ctx:ToolContext)=>Promise<unknown>;
+  /** Where this conversation is; web chat when absent. See `outsideToolOfferedOn`. */
+  surface?:OutsideSurface;
 }
 
 /** Ordinary Eve tools using the accepted catalog. The Keeper independently requires an exact,
@@ -241,7 +243,16 @@ export async function resolveOutsideTools(definition:OutsideDefinitionView,deps:
     const pins:Record<string,string>={};
     for(const tool of accepted)pins[tool.name]=toolPinHash(tool);
     for(const tool of accepted){
-      if(!entry.tools.allow.includes(tool.name))continue;
+      if(!outsideToolOfferedOn(deps.surface??'web-chat',entry,tool.name,pins[tool.name]))continue;
+      if(deps.surface==='private-door-chat'){
+        // No card on a door: the lookup runs only on a clean turn, and after outside text it is refused in words.
+        const free=outsideRequestPolicy(entry,{telegramApprovals:true,pins});
+        tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
+          approval:withCardTitle({request:async (ctx:ApprovalContext)=>(await free(ctx))==='not-applicable'?'not-applicable' as const:{type:'denied' as const,reason:OUTSIDE_DOOR_NEEDS_CARD},
+            response:()=>({status:'rejected' as const,reason:'an outside lookup on a chat door has no card to answer'})}),
+          execute:deps.executor(entry.name,tool.name,true)});
+        continue;
+      }
       const authored=deps.approval?.(entry.name,tool.name)??{request:async()=> 'user-approval' as const};
       const runsFree=isTrustedRead(entry,tool.name,pins[tool.name]);
       // A trusted lookup skips the card only on a clean turn. A card already raised (eve asks the policy
