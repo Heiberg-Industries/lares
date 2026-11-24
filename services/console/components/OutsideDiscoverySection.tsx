@@ -100,8 +100,10 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       if(removalUncertain){
         const exact=items.find(item=>item.agentName===removalUncertain.agentName&&item.connectionName===removalUncertain.connectionName&&
           item.credentialStatus.accountId===removalUncertain.accountId);
-        if(exact?.credentialStatus.state==='revoked'&&!exact.credentialStatus.hasCredentialMaterial&&
-            exact.credentialStatus.generation!==null&&exact.credentialStatus.generation>removalUncertain.generation){
+        // Remove retires the account, so a confirmed removal shows as a free name: no account and nothing held.
+        const freed=items.find(item=>item.agentName===removalUncertain.agentName&&item.connectionName===removalUncertain.connectionName&&
+          item.credentialStatus.accountId===null&&item.credentialStatus.state==='unavailable'&&!item.credentialStatus.hasCredentialMaterial);
+        if(freed){
           clearRemovedRecovery(removalUncertain);setRemovalUncertain(undefined);
           setMessage(`Keeper confirms removal for ${removalUncertain.agentName} · ${removalUncertain.connectionName}; audit receipts remain.`);
         }else if(exact?.credentialStatus.hasCredentialMaterial&&exact.credentialStatus.generation===removalUncertain.generation){
@@ -254,15 +256,17 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     if(!target||!status?.accountId||status.generation===null||!status.hasCredentialMaterial||busy||unresolved||applyUncertain||removalUncertain)return;
     const identity:RemovalIdentity={accountId:status.accountId,agentName:target.agentName,connectionName:target.connectionName,generation:status.generation};
     setBusy(true);setError("");setMessage("");
+    // Remove retires the account, so the name now shows as free: no account, no held material. A different account id or
+    // any held material would mean the removal did not happen for this exact account.
     const confirms=(items:Target[])=>items.find(item=>item.agentName===identity.agentName&&item.connectionName===identity.connectionName&&
-      item.credentialStatus.accountId===identity.accountId&&item.credentialStatus.state==='revoked'&&!item.credentialStatus.hasCredentialMaterial&&
-      item.credentialStatus.generation!==null&&item.credentialStatus.generation>identity.generation);
+      item.credentialStatus.accountId===null&&item.credentialStatus.state==='unavailable'&&!item.credentialStatus.hasCredentialMaterial&&
+      item.credentialStatus.generation===null);
     try{
       await removeOutsideCredential({accountId:status.accountId,agentName:target.agentName,connectionName:target.connectionName,expectedGeneration:status.generation});
       const current=await listOutsideDiscoveryTargets();
       if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
       setTargets(current);
-      if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Keeper confirmed that use is stopped and the held credential material is removed. Non-secret audit receipts remain. Reconnect requires a fresh review and consent.");}
+      if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Keeper confirmed that use is stopped and the held credential material is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.");}
       else{setRemovalUncertain(identity);setError("The removal result could not be matched to this exact account version. Refresh custody status before another action.");}
     }catch{
       if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
@@ -270,7 +274,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
         const current=await listOutsideDiscoveryTargets();
         if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
         setTargets(current);
-        if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Keeper confirmed that use is stopped and the held credential material is removed. Non-secret audit receipts remain. Reconnect requires a fresh review and consent.");}
+        if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Keeper confirmed that use is stopped and the held credential material is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.");}
         else{setRemovalUncertain(identity);setError("Removal could not be confirmed for the exact account version. Refresh custody status before another action; do not repeat an uncertain request.");}
       }catch{setRemovalUncertain(identity);setError("Removal could not be confirmed and current custody status is unavailable. Refresh before taking another action.");}
     }finally{if(version===credentialMutationVersion.current)setBusy(false);}
@@ -313,7 +317,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     </div>
     {selectedTarget?.credentialStatus.hasCredentialMaterial&&<div className="lares-surface lares-stack">
       <strong>Credential custodian controls</strong>
-      <p>This action immediately stops Lares use, invalidates pending work and approval revisions, removes held credential material from live Keeper rows, and keeps non-secret audit receipts. It does not revoke the key at its provider; backups may retain encrypted database snapshots.</p>
+      <p>This action immediately stops Lares use, invalidates pending work and approval revisions, removes held credential material from live Keeper rows, frees the connection name so it can be connected again from scratch, and keeps non-secret audit receipts. It does not revoke the key at its provider; backups may retain encrypted database snapshots.</p>
       <Button type="button" variant="destructive" disabled={busy||unresolved||applyUncertain||!!removalUncertain||!selectedTarget.credentialStatus.accountId||
         selectedTarget.credentialStatus.generation===null} onClick={()=>void removeHeldCredential()}>Stop use and remove held credential</Button>
     </div>}

@@ -23,6 +23,11 @@ const REFUSED = "Outside credential is not available";
 const REQUEST_REFUSED = "Outside credential change could not be confirmed";
 export const MEMBER_PRIVATE_METADATA_CONNECTION='mac-private-metadata';
 const PRIVATE_METADATA_CUSTODY_CONNECTION='mac-private-metadata-device';
+/** Remove retires an account: its name becomes this tombstone, so the plain name is free to connect again while every
+ * receipt stays attached to the same account id. The tombstone is derived from the account id, never from user input. */
+function retiredConnectionName(accountId:string):string{return `retired-${accountId.replace(/-/g,'').slice(0,12)}`;}
+/** A live connection may never be called by a tombstone's shape; otherwise a name lookup could reach a retired account. */
+function looksRetired(connectionName:string):boolean{return /^retired-[0-9a-f]{12}$/.test(connectionName);}
 function custodyConnectionName(connectionName:string):string{return connectionName===MEMBER_PRIVATE_METADATA_CONNECTION?PRIVATE_METADATA_CUSTODY_CONNECTION:connectionName;}
 export function outsideCustodyOwnerForConnection(connectionName:string,admittedMemberId:string,agentOwnerMemberId:string):string{
   return connectionName===MEMBER_PRIVATE_METADATA_CONNECTION?admittedMemberId:agentOwnerMemberId;
@@ -1031,7 +1036,7 @@ export class OutsideCustodyStore {
   async previewHumanDiscovery(sessionToken:string,input:{agentName:string;connectionName:string},options:{deadlineAtMs:number}):Promise<HumanDiscoveryPreview>{
     return this.#inMainNamespace(options,()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
       const capture=await captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName);
-      if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName)return denied();
+      if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName||looksRetired(input.connectionName))return denied();
       const namespaceClient=requireDefinitionNamespace();
       const endpoint=capture.outside.connection.url;
       const route=await this.routeLifecycle!.reviewOutsideRoute(endpoint,options.deadlineAtMs);
@@ -1249,7 +1254,7 @@ export class OutsideCustodyStore {
       const release=this.#beginOperation(requestDenied);
       try{
         const requestId=uuid.parse(input.requestId),operationId=uuid.parse(input.operationId),accountId=uuid.parse(input.accountId);
-        if(!Buffer.isBuffer(input.credential)||input.credential.length<1||input.credential.length>MAX_CREDENTIAL_BYTES||
+        if(looksRetired(input.connectionName)||!Buffer.isBuffer(input.credential)||input.credential.length<1||input.credential.length>MAX_CREDENTIAL_BYTES||
             !Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<0||input.expectedGeneration>Number.MAX_SAFE_INTEGER||
             input.expectedCandidateRevision!==null&&(!Number.isSafeInteger(input.expectedCandidateRevision)||input.expectedCandidateRevision<1)||
             !/^[a-f0-9]{64}$/.test(input.expectedDefinitionHash)||!Number.isSafeInteger(input.expectedAccessRevision)||input.expectedAccessRevision<1||
@@ -2346,7 +2351,7 @@ export class OutsideCustodyStore {
   async removeHumanCredential(sessionToken:string,input:{accountId:string;agentName:string;connectionName:string;operationId:string;expectedGeneration:number},
     options:{deadlineAtMs:number}):Promise<OutsideOperationResult>{
     if(!/^[a-z][a-z0-9-]{1,30}$/.test(input.agentName)||!/^[a-z][a-z0-9-]{1,30}$/.test(input.connectionName)||
-        !Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1||input.expectedGeneration>=Number.MAX_SAFE_INTEGER)return requestDenied('remove.1');
+        looksRetired(input.connectionName)||!Number.isSafeInteger(input.expectedGeneration)||input.expectedGeneration<1||input.expectedGeneration>=Number.MAX_SAFE_INTEGER)return requestDenied('remove.1');
     const operationId=uuid.parse(input.operationId),accountId=uuid.parse(input.accountId);
     return this.#inMainNamespace({...options,operationId},()=>this.#withHumanSession(sessionToken,async(db,memberId)=>{
       // Current agent access is re-evaluated under the signed session transaction. Actor text and
@@ -2355,15 +2360,19 @@ export class OutsideCustodyStore {
       if(capture.actor.memberId!==memberId||capture.agent.name!==input.agentName||capture.outside.connection.name!==input.connectionName)return requestDenied('remove.2');
       const found=await db.query<Head>(`SELECT account_id,owner_member_id,resource_id,connection_name,generation::text,
           active_revision::text,candidate_revision::text,consent_generation::text,state
-        FROM outside_custody_accounts WHERE account_id=$1 AND owner_member_id=$2 AND resource_id=$3 AND connection_name=$4 FOR UPDATE`,
-        [accountId,memberId,input.agentName,input.connectionName]);
+        FROM outside_custody_accounts WHERE account_id=$1 AND owner_member_id=$2 AND resource_id=$3 FOR UPDATE`,
+        [accountId,memberId,input.agentName]);
       const head=found.rows[0];
+      // The account is found by its id, because a removed account carries its tombstone name. Only the live name or
+      // its own tombstone is accepted, and the tombstone is accepted only to replay the exact removal that made it.
+      const retired=head?.connection_name===retiredConnectionName(accountId);
       if(found.rows.length!==1||!head||head.account_id!==accountId||head.owner_member_id!==memberId||head.resource_id!==input.agentName||
-          head.connection_name!==input.connectionName)return requestDenied('remove.3');
+          head.connection_name!==input.connectionName&&!retired)return requestDenied('remove.3');
       const consentGeneration=number(head.consent_generation),generation=number(head.generation);
       const hash=requestHash('revoke',accountId,memberId,input.agentName,input.expectedGeneration,null,null,consentGeneration);
       const prior=await this.priorOperation(db,operationId,hash,accountId,memberId,'revoke',input.expectedGeneration);
       if(prior)return prior;
+      if(retired)return requestDenied('remove.3');
       if(generation!==input.expectedGeneration||head.state!=='active'&&head.state!=='revoked')return requestDenied('remove.4');
       if(head.state==='revoked'&&(head.active_revision!==null||head.candidate_revision!==null))return requestDenied('remove.5');
       await this.capacity(db,accountId,'revoke',false);
@@ -2374,9 +2383,12 @@ export class OutsideCustodyStore {
       const revision=Math.max(number(head.generation),Number(highWater.rows[0]?.revision??'0'),Number(highWater.rows[0]?.receipt??'0'));
       if(!Number.isSafeInteger(revision)||revision<1||revision>=Number.MAX_SAFE_INTEGER)return requestDenied('remove.6');
       const next=revision+1;
+      // Retire: erase the revisions (below) and rename the account to its tombstone in the same transaction. Operations,
+      // evidence and approvals stay attached by account id; the plain name is free for a brand-new account.
       const changed=await db.query(`UPDATE outside_custody_accounts SET generation=$2,active_revision=NULL,candidate_revision=NULL,
-          state='revoked',updated_at=clock_timestamp() WHERE account_id=$1 AND owner_member_id=$3 AND resource_id=$4 AND connection_name=$5
-          AND generation=$6 AND state=$7`,[accountId,next,memberId,input.agentName,input.connectionName,input.expectedGeneration,head.state]);
+          state='revoked',connection_name=$8,updated_at=clock_timestamp() WHERE account_id=$1 AND owner_member_id=$3 AND resource_id=$4 AND connection_name=$5
+          AND generation=$6 AND state=$7`,[accountId,next,memberId,input.agentName,input.connectionName,input.expectedGeneration,head.state,
+          retiredConnectionName(accountId)]);
       if(changed.rowCount!==1)return requestDenied('remove.7');
       await db.query('DELETE FROM outside_custody_revisions WHERE account_id=$1 AND owner_member_id=$2',[accountId,memberId]);
       await checkConsoleSourceDeadlines(db);

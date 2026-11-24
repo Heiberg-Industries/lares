@@ -129,6 +129,7 @@ async function activate(s:Awaited<ReturnType<typeof reviewAndStage>>){
     expectedActivationReviewHash:s.activation.reviewHash,stageOperationId:s.staged.operationId,candidateRevision:s.staged.credentialRevision!},deadline());
 }
 async function oneToolCall(name:string,definitionHash:string){
+  await admin.query('DELETE FROM console_session_bindings WHERE session_id=$1',[sessionId]);
   await admin.query(`INSERT INTO console_session_bindings(agent,incarnation,session_id,admission_nonce,place_id,member_id,
       agent_access_revision,private_surface_revision,source_history_guard_revision,policy_revision)
     SELECT 'worker',$1,$2,$3,'fixture',$4,a.revision,2,1,2 FROM agent_access a WHERE a.agent_name='worker'
@@ -182,10 +183,9 @@ it('connects again after an earlier attempt stopped after the first lookup, then
   expect(await oneToolCall('connector',hashOf(version))).toMatchObject({content:[{text:'Example company AS'}]});
 },180_000);
 
-/** Each connect uses about nine of the keeper's 32 saved operations for a connection, and nothing gives them back, not even
- *  removing the credential. The fourth attempt on one agent and connection name is refused for good. The refusal says which
- *  check fired and the screen gets a true sentence. Freeing the room is a design decision (see the handover); the test below
- *  it is expected to fail until that is decided, and will start passing the day it is fixed. */
+/** Each connect uses about nine of the keeper's 32 saved operations for a connection. Removing the declaration does not give
+ *  them back; only Remove on the credential does (it retires the account and frees the name). So an agent and connection name
+ *  that is connected three times without Remove still runs out on the fourth, with a refusal that names the check. */
 async function useUpTheRoom(){
   for(let n=1;n<=3;n++){await wholeConnect(`key-${n}`);await removeDefinition();}
   await saveDefinition([PENDING],[PENDING]);
@@ -201,13 +201,100 @@ it('names the check when a connection has used up its saved attempts, and says s
   expect(serverCalls).toBeGreaterThan(0);
 },300_000);
 
-it.fails('connects again after the saved attempts for the name were used up and the credential was removed',async()=>{
+/** What the member's Remove does for the connection called `name`: the account the console shows, at its shown generation. */
+async function removeCredential(name='connector'){
+  const account=(await admin.query('SELECT account_id,generation::text AS generation FROM outside_custody_accounts WHERE connection_name=$1 AND state=\'active\'',[name])).rows[0];
+  expect(account).toBeTruthy();
+  const operationId=randomUUID();
+  await store.removeHumanCredential(token,{accountId:account.account_id,agentName:'worker',connectionName:name,
+    expectedGeneration:Number(account.generation),operationId},deadline());
+  return {accountId:account.account_id as string,generation:Number(account.generation),operationId};
+}
+const receiptCount=async(accountId:string)=>(await admin.query('SELECT count(*)::int AS n FROM outside_custody_operations WHERE account_id=$1',[accountId])).rows[0].n as number;
+
+it('connects again after the saved attempts for the name were used up and the credential was removed',async()=>{
   await useUpTheRoom();
   await wholeConnect('key-4','first-lookup').catch(()=>undefined);
-  const account=(await admin.query('SELECT account_id,generation::text AS generation FROM outside_custody_accounts WHERE connection_name=\'connector\'')).rows[0];
-  await store.removeHumanCredential(token,{accountId:account.account_id,agentName:'worker',connectionName:'connector',
-    expectedGeneration:Number(account.generation),operationId:randomUUID()},deadline());
+  await removeCredential();
   await wholeConnect('key-4');
+  expect(await oneToolCall('connector',hashOf(version))).toMatchObject({content:[{text:'Example company AS'}]});
+},300_000);
+
+it('connect, Remove and connect the same plain name five times: fresh counters each time, receipts and approvals kept',async()=>{
+  const retired:{accountId:string;receipts:number;approvals:number}[]=[];
+  for(let cycle=1;cycle<=5;cycle++){
+    await wholeConnect(`key-${cycle}`);
+    expect(await oneToolCall('connector',hashOf(version))).toMatchObject({content:[{text:'Example company AS'}]});
+    // A fresh account every time: generation one's counters, one live row under the plain name.
+    const live=(await admin.query('SELECT account_id,generation::text,active_revision::text FROM outside_custody_accounts WHERE connection_name=\'connector\'')).rows;
+    expect(live).toHaveLength(1);
+    expect(retired.map(r=>r.accountId)).not.toContain(live[0].account_id);
+    expect(await receiptCount(live[0].account_id)).toBeLessThan(16);
+    expect(live[0].active_revision).toBe('3');
+    const approvalsBefore=(await admin.query('SELECT count(*)::int AS n FROM outside_execution_approvals WHERE account_id=$1',[live[0].account_id])).rows[0].n;
+    expect(approvalsBefore).toBe(1);
+    const receiptsBefore=await receiptCount(live[0].account_id);
+
+    const removed=await removeCredential();
+    expect(removed.accountId).toBe(live[0].account_id);
+    // The name is free: nothing under it, nothing held, and the member's list shows no account for it.
+    expect((await admin.query('SELECT 1 FROM outside_custody_accounts WHERE connection_name=\'connector\'')).rowCount).toBe(0);
+    expect(await store.heldConnections('worker')).toEqual([]);
+    // The account is kept under a tombstone with its revisions erased and every receipt and approval still attached.
+    const row=(await admin.query('SELECT connection_name,state,active_revision,candidate_revision FROM outside_custody_accounts WHERE account_id=$1',[removed.accountId])).rows[0];
+    expect(row.connection_name).toMatch(/^retired-[0-9a-f]{12}$/);
+    expect(row).toMatchObject({state:'revoked',active_revision:null,candidate_revision:null});
+    expect((await admin.query('SELECT count(*)::int AS n FROM outside_custody_revisions WHERE account_id=$1',[removed.accountId])).rows[0].n).toBe(0);
+    expect(await receiptCount(removed.accountId)).toBe(receiptsBefore+1);
+    expect((await admin.query('SELECT count(*)::int AS n FROM outside_execution_approvals WHERE account_id=$1',[removed.accountId])).rows[0].n).toBe(approvalsBefore);
+    expect((await admin.query('SELECT count(*)::int AS n FROM outside_execution_approvals a JOIN outside_custody_accounts c USING(account_id) WHERE a.connection_name=\'connector\' AND c.account_id=$1',[removed.accountId])).rows[0].n).toBe(1);
+    retired.push({accountId:removed.accountId,receipts:await receiptCount(removed.accountId),approvals:approvalsBefore});
+    // Earlier removals are untouched by later cycles.
+    for(const r of retired){
+      expect(await receiptCount(r.accountId)).toBe(r.receipts);
+      expect((await admin.query('SELECT count(*)::int AS n FROM outside_execution_approvals WHERE account_id=$1',[r.accountId])).rows[0].n).toBe(r.approvals);
+    }
+  }
+  expect((await admin.query('SELECT count(DISTINCT connection_name)::int AS n FROM outside_custody_accounts')).rows[0].n).toBe(5);
+},600_000);
+
+it('never uses a retired account: an approval made before Remove, a tombstone name, and a replayed removal all fail closed',async()=>{
+  await wholeConnect('key-1');
+  // An approval for one call, made but not yet used, then the credential is removed and the name connected again.
+  await admin.query('DELETE FROM console_session_bindings WHERE session_id=$1',[sessionId]);
+  await admin.query(`INSERT INTO console_session_bindings(agent,incarnation,session_id,admission_nonce,place_id,member_id,
+      agent_access_revision,private_surface_revision,source_history_guard_revision,policy_revision)
+    SELECT 'worker',$1,$2,$3,'fixture',$4,a.revision,2,1,2 FROM agent_access a WHERE a.agent_name='worker'
+    ON CONFLICT DO NOTHING`,[incarnation,sessionId,admissionNonce,owner]);
+  const binding={agent:'worker',incarnation,sessionId,memberId:owner,approverMemberId:owner,admissionNonce,policyRevision:2};
+  const oldCall={callId:randomUUID(),connectionName:'connector',toolName:'lookup-company',input:{query:'Example company'}};
+  await store.approveExecution(binding,oldCall,{requestId:randomUUID(),definitionHash:hashOf(version),expiresAt:Date.now()+60_000},deadline());
+  const removed=await removeCredential();
+  const tombstone=(await admin.query('SELECT connection_name FROM outside_custody_accounts WHERE account_id=$1',[removed.accountId])).rows[0].connection_name as string;
+
+  await wholeConnect('key-2');
+  const callsBefore=serverCalls;
+  // The old approval points at the retired account; the live account of the same name is a different one.
+  await expect(store.dispatchApproved(binding,oldCall,{deadlineAtMs:Date.now()+10_000})).rejects.toThrow();
+  expect(serverCalls).toBe(callsBefore);
+  // Nobody can call, approve or review a connection by a tombstone's name.
+  await expect(oneToolCall(tombstone,hashOf(version))).rejects.toThrow();
+  await expect(store.previewHumanDiscovery(token,{agentName:'worker',connectionName:tombstone},deadline())).rejects.toThrow();
+  await expect(store.removeHumanCredential(token,{accountId:removed.accountId,agentName:'worker',connectionName:tombstone,
+    expectedGeneration:removed.generation+1,operationId:randomUUID()},deadline())).rejects.toThrow();
+  // The old account stays revoked, empty and un-reopenable: Remove cannot be run again on it with a new request.
+  await expect(store.removeHumanCredential(token,{accountId:removed.accountId,agentName:'worker',connectionName:'connector',
+    expectedGeneration:removed.generation,operationId:randomUUID()},deadline())).rejects.toThrow();
+  expect((await admin.query('SELECT state,active_revision FROM outside_custody_accounts WHERE account_id=$1',[removed.accountId])).rows[0])
+    .toEqual({state:'revoked',active_revision:null});
+  // The same removal request sent again (a lost reply) still answers the same, and changes nothing.
+  const receipts=await receiptCount(removed.accountId);
+  await expect(store.removeHumanCredential(token,{accountId:removed.accountId,agentName:'worker',connectionName:'connector',
+    expectedGeneration:removed.generation,operationId:removed.operationId},deadline())).resolves.toMatchObject({kind:'revoke',outcome:'revoked'});
+  expect(await receiptCount(removed.accountId)).toBe(receipts);
+  // The live account is the only one that works.
+  expect(await oneToolCall('connector',hashOf(version))).toMatchObject({content:[{text:'Example company AS'}]});
+  expect(await store.heldConnections('worker')).toEqual(['connector']);
 },300_000);
 
 it('says the route is unavailable (not "session failed") when the keeper\'s own route review refuses',async()=>{

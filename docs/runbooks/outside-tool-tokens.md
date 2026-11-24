@@ -42,11 +42,11 @@ separate actions.
 The current credential custodian can use **Stop use and remove held credential** on the member
 page. Keeper checks the signed current session, current access to the exact agent connection, account
 owner, account identity and displayed generation inside one locked transaction. It then clears the
-active and candidate pointers, advances the account generation, marks the account revoked, and
-deletes the account's live encrypted credential revisions. Pending work and approvals tied to older
-revisions no longer match. Non-secret operation and audit receipts remain with the account, and the
-same account can be reconnected after a fresh review and consent. Revision numbers are never reused
-for that account.
+active and candidate pointers, advances the account generation, marks the account revoked, deletes
+the account's live encrypted credential revisions, and renames the account to a retired tombstone
+name. Pending work and approvals tied to the old account no longer match. Non-secret operation and
+audit receipts remain with the retired account. The plain connection name is free: connecting it
+again starts a brand-new account with fresh counters, after a fresh review and consent.
 
 This removes Lares's held credential material from live Keeper revision rows. It does not remove the
 agent's connection declaration, revoke the credential at its provider, or rewrite prior database
