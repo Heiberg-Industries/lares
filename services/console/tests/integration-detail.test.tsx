@@ -148,7 +148,7 @@ it("lists the outside tools per agent with key and description checks, and links
       { name: "wiki", needsKey: true, tools: ["lookup"] }, { name: "open", needsKey: false, tools: ["ping"] }] },
   ]);
   m.evidence.mockResolvedValue({
-    keys: { available: true, value: { docs: true, maps: false, wiki: null } },
+    keys: { available: true, value: { docs: "file", maps: "missing", wiki: null } },
     locks: { available: true, value: { open: { pinHash: "a", seenHash: "b", seenAt: "2026-10-08T10:00:00.000Z", pinTools: null, seenTools: null } } },
   });
   const html = await show("outside");
@@ -156,7 +156,7 @@ it("lists the outside tools per agent with key and description checks, and links
   expect(html).toContain("Assistant");
   expect(html).toContain("Key file in place.");
   expect(html).toContain("Key file missing");
-  expect(html).toContain("Key status unavailable: the keeper could not check the key file.");
+  expect(html).toContain("Key status unavailable: the keeper could not check the key.");
   expect(html).toContain("Locked: its tool descriptions changed.");
   expect(html).toContain('href="/agents/assistant/outside-tools"');
   expect(html).toContain('href="/integrations/connect-outside-tool"');

@@ -1,9 +1,10 @@
-// The console's view of an agent's outside tools (ADR-0019): whether each one's key file is in
-// place, and the owner's acceptance of new tool descriptions after a locked check.
+// The console's view of an agent's outside tools (ADR-0019): whether each one's key is held (in Keeper
+// custody, or as a legacy key file), and the owner's acceptance of new tool descriptions after a locked check.
 //
-// Key presence is read the way the definition check reads it (definitions.ts, `secretExists`): a
-// regular, non-empty file that is not a link. The file is never opened, so nothing about the key —
-// not its length, not a prefix — can reach the console.
+// A key held in custody is asked of the custody store by connection name (names only). A legacy key file
+// is read the way the definition check reads it (definitions.ts, `secretExists`): a regular, non-empty file
+// that is not a link. Nothing is opened, so nothing about a key — not its length, not a prefix — can reach
+// the console.
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
@@ -21,6 +22,8 @@ export interface OutsideToolKey {
   needsKey: boolean;
   /** Only for a tool that needs a key. null: the keeper could not tell (never "missing" by guess). */
   keyPresent?: boolean | null;
+  /** Where a present key is held. Custody is how a key is held now; a file is the older way. */
+  keyHeldIn?: 'custody' | 'file';
 }
 
 /** true / false from the file's type and size only; null when the folder itself cannot be read. */
@@ -34,7 +37,11 @@ export function keyFilePresent(path: string): boolean | null {
   }
 }
 
-export function registerOutsideToolActions(o: { pool: Pool; agentsDir: string; secretsDir: string }): void {
+export function registerOutsideToolActions(o: {
+  pool: Pool; agentsDir: string; secretsDir: string;
+  /** Names of the agent's connections whose key is held in custody. Absent when custody is off. */
+  outsideCustodyHeld?: (agent: string) => Promise<readonly string[]>;
+}): void {
   registerAction({
     name: 'outside.status',
     input: z.strictObject({ name: z.string().regex(NAME_RE) }),
@@ -42,10 +49,20 @@ export function registerOutsideToolActions(o: { pool: Pool; agentsDir: string; s
       const dir = join(o.agentsDir, name);
       try { plainDirectory(dir); } catch { throw new KeeperRefusedError('No saved definition for this agent'); }
       const { definition } = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: dir } });
+      const wantsKey = (definition.outsideTools ?? []).some(t => t.token);
+      // null: custody could not be asked. Then an absent file is "cannot tell", never "missing".
+      let held: ReadonlySet<string> | null = new Set();
+      if (wantsKey && o.outsideCustodyHeld) {
+        try { held = new Set(await o.outsideCustodyHeld(name)); } catch { held = null; }
+      }
       return {
-        tools: (definition.outsideTools ?? []).map(t => t.token
-          ? { tool: t.name, needsKey: true, keyPresent: keyFilePresent(join(o.secretsDir, outsideSecretName(name, t.name))) }
-          : { tool: t.name, needsKey: false }),
+        tools: (definition.outsideTools ?? []).map((t): OutsideToolKey => {
+          if (!t.token) return { tool: t.name, needsKey: false };
+          if (held?.has(t.name)) return { tool: t.name, needsKey: true, keyPresent: true, keyHeldIn: 'custody' };
+          const file = keyFilePresent(join(o.secretsDir, outsideSecretName(name, t.name)));
+          if (file === true) return { tool: t.name, needsKey: true, keyPresent: true, keyHeldIn: 'file' };
+          return { tool: t.name, needsKey: true, keyPresent: held === null ? null : file };
+        }),
       };
     },
   });

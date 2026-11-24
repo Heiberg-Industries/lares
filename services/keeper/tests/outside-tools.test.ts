@@ -48,7 +48,7 @@ describe('outside.status', () => {
     const c = ctx();
     const result = await runAction('outside.status', { name: 'bookkeeper' }, c);
     expect(result).toEqual({ tools: [
-      { tool: 'keyed', needsKey: true, keyPresent: true },
+      { tool: 'keyed', needsKey: true, keyPresent: true, keyHeldIn: 'file' },
       { tool: 'empty', needsKey: true, keyPresent: false },
       { tool: 'linked', needsKey: true, keyPresent: false },
       { tool: 'open', needsKey: false },
@@ -56,6 +56,20 @@ describe('outside.status', () => {
     const everything = JSON.stringify(result) + JSON.stringify(c.audit.mock.calls);
     // The exact result above already proves no size is returned; a bare length would match ids and timestamps by chance.
     for (const part of [KEY, KEY.slice(0, 6)]) expect(everything).not.toContain(part);
+  });
+
+  it('reports a key held in custody as held, and never as a missing file; an unreadable custody is "cannot tell"', async () => {
+    resetActions();
+    registerOutsideToolActions({ pool, agentsDir, secretsDir, outsideCustodyHeld: async () => ['empty'] });
+    const held = await runAction('outside.status', { name: 'bookkeeper' }, ctx()) as { tools: Array<Record<string, unknown>> };
+    expect(held.tools.find(t => t.tool === 'empty')).toEqual({ tool: 'empty', needsKey: true, keyPresent: true, keyHeldIn: 'custody' });
+    expect(held.tools.find(t => t.tool === 'keyed')).toMatchObject({ keyPresent: true, keyHeldIn: 'file' });
+    expect(held.tools.find(t => t.tool === 'linked')).toEqual({ tool: 'linked', needsKey: true, keyPresent: false });
+    resetActions();
+    registerOutsideToolActions({ pool, agentsDir, secretsDir, outsideCustodyHeld: async () => { throw new Error('permission denied'); } });
+    const blind = await runAction('outside.status', { name: 'bookkeeper' }, ctx()) as { tools: Array<Record<string, unknown>> };
+    expect(blind.tools.find(t => t.tool === 'empty')).toEqual({ tool: 'empty', needsKey: true, keyPresent: null });
+    expect(blind.tools.find(t => t.tool === 'keyed')).toMatchObject({ keyPresent: true });
   });
 
   it('says missing once the file is gone, and refuses an agent with no saved definition', async () => {

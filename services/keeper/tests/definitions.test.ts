@@ -154,6 +154,45 @@ it('accepts a bearer declaration with no token file when its credential is stage
         expectedAccessRevision: held.accessRevision, connections: [declaration] }, ctx());
     expect(plain.connections).toEqual([declaration]);
 });
+it('applies a definition without a connection that still waits for its key, says so, and never shows it as pending forever', async () => {
+    const { loaded, access, sessions } = await connectionFixture();
+    await recordApplied();
+    const waiting = { ...declaration, name: 'half', url: 'https://tools.example.org/half', token: true };
+    // Saving stays strict: with nothing held and nothing staged, the half-set-up entry is refused.
+    await expect(connectionCall(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [declaration, waiting]))
+        .rejects.toThrow(/needs a token but no credential is held/);
+    const staged: any = await runAction('outside.connections.save', { sessionToken: sessions.owner, name: 'bookkeeper', expectedDefinitionHash: loaded.hash,
+        expectedAccessRevision: access.accessRevision, connections: [declaration, waiting], stagingCredentialFor: ['half'] }, ctx());
+    await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,applied_definition,pending)
+        VALUES('bookkeeper','172.18.0.25','lares_half_set_up','legacy',gen_random_uuid(),'ready',$1::jsonb,false)`, [JSON.stringify(loaded.definition)]);
+    const reconcile: AnyMock = vi.fn(async (_name: string, definition: unknown) => {
+        await pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb WHERE name=$1', ['bookkeeper', JSON.stringify(definition)]);
+        recordAppliedDefinition(join(agentsDir, 'bookkeeper'), await readDefinitionFiles(join(agentsDir, 'bookkeeper')));
+        return { pending: false, reason: null, running: true, healthy: true };
+    });
+    Object.assign(compose, { imageState: vi.fn(async () => 'older'), liveStatus: vi.fn(async () => ({ pending: false, running: true, healthy: true })), reconcile });
+    register();
+    // A refresh applies everything else and reports what it left out.
+    const refreshed: any = await runAction('definition.refresh-image', { name: 'bookkeeper' }, ctx(), { host: true });
+    expect(refreshed).toMatchObject({ moved: true, running: true, leftOut: [{ connection: 'half', reason: 'waiting for its key' }] });
+    expect((reconcile.mock.calls[0]![1] as any).outsideTools.map((t: any) => t.name)).toEqual(['rates']);
+    // The saved definition still has the entry, and the connection page does not read "pending" for it.
+    const read: any = await runAction('outside.connections.get', { sessionToken: sessions.owner, name: 'bookkeeper' }, ctx());
+    expect(read.connections.map((t: any) => t.name)).toEqual(['rates', 'half']);
+    expect(read).toMatchObject({ applicationStatus: 'applied', waitingForKey: ['half'] });
+    // The same through reconcile.
+    const reconciled: any = await runAction('definition.reconcile', { name: 'bookkeeper', hash: staged.definitionHash }, ctx());
+    expect(reconciled.leftOut).toEqual([{ connection: 'half', reason: 'waiting for its key' }]);
+    // Once the key is held, nothing is left out and the entry is part of what is applied.
+    await pool.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,candidate_revision,consent_generation,state)
+        VALUES(gen_random_uuid(),'connection-owner','bookkeeper','half',1,1,1,'active')`);
+    const now: any = await runAction('outside.connections.get', { sessionToken: sessions.owner, name: 'bookkeeper' }, ctx());
+    expect(now.applicationStatus).toBe('pending');
+    expect(now.waitingForKey).toBeUndefined();
+    const full: any = await runAction('definition.reconcile', { name: 'bookkeeper', hash: staged.definitionHash }, ctx());
+    expect(full.leftOut).toBeUndefined();
+    expect((reconcile.mock.calls.at(-1)![1] as any).outsideTools.map((t: any) => t.name)).toEqual(['rates', 'half']);
+});
 it('refuses a key saved as a tool name without echoing it into the refusal', async () => {
     const { loaded, access, sessions } = await connectionFixture();
     const pasted = 'q7Zx1Lm9Tr4Vb8Nc2Wd5Ye3Hf6Jg0Ks';

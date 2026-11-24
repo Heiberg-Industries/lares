@@ -7,7 +7,8 @@ export function keyLine(needsKey: boolean, keys: OutsideToolEvidence["keys"] | u
   if (!keys) return "Needs a key: yes";
   if (!keys.available) return "Needs a key: yes. Key status unavailable: the keeper could not be asked.";
   const present = keys.value[tool];
-  if (present === true) return "Needs a key: yes. Key file in place.";
-  if (present === false) return "Needs a key: yes. Key file missing: the agent cannot use this tool until the key is placed on the server.";
-  return "Needs a key: yes. Key status unavailable: the keeper could not check the key file.";
+  if (present === "custody") return "Needs a key: yes. Key kept in Lares.";
+  if (present === "file") return "Needs a key: yes. Key file in place.";
+  if (present === "missing") return "Needs a key: yes. Key file missing: the agent cannot use this tool until the key is placed on the server.";
+  return "Needs a key: yes. Key status unavailable: the keeper could not check the key.";
 }

@@ -5,7 +5,7 @@ import type { Pool, PoolClient } from 'pg';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import { definitionSchema, outsideToolSchema, OUTSIDE_TOOL_NAME_RE, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
-import { stampTrust } from '@lares/agent-kit/outside-tools';
+import { stampTrust, outsideSecretName } from '@lares/agent-kit/outside-tools';
 import { toolPinHash } from '@lares/agent-kit/outside-pins';
 import { requireConsoleAgentUse } from '@lares/agent-kit/console-turn-authority';
 import { currentSession } from '@lares/agent-kit/member-store';
@@ -189,6 +189,33 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         for (const connection of await o.outsideCustodyHeld(name)) held.add(connection);
         return held;
     }
+    // Never expose filesystem exceptions as trusted validation messages.
+    function secretExists(name: string): boolean {
+        try {
+            const s = lstatSync(join(o.secretsDir, name));
+            return s.isFile() && !s.isSymbolicLink() && s.size > 0;
+        }
+        catch {
+            return false;
+        }
+    }
+    // Entries that ask for a key which is held nowhere yet: a connection part-way through being set up.
+    async function waitingForKey(name: string, connections: AgentDefinition['outsideTools']): Promise<string[]> {
+        const asking = (connections ?? []).filter(t => t.token);
+        if (!asking.length) return [];
+        const held = new Set(o.outsideCustodyHeld ? await o.outsideCustodyHeld(name) : []);
+        return asking.filter(t => !held.has(t.name) && !secretExists(outsideSecretName(name, t.name))).map(t => t.name);
+    }
+    // What a refresh or an update applies: the definition without any entry still waiting for its key, so a
+    // half-set-up connection never blocks it. The saved definition is untouched, and saving stays strict.
+    async function withoutWaiting(name: string, definition: AgentDefinition): Promise<{ definition: AgentDefinition; leftOut: Array<{ connection: string; reason: string }> }> {
+        const waiting = new Set(await waitingForKey(name, definition.outsideTools));
+        if (!waiting.size) return { definition, leftOut: [] };
+        const rest = (definition.outsideTools ?? []).filter(t => !waiting.has(t.name));
+        const trimmed = { ...definition } as AgentDefinition & { outsideTools?: AgentDefinition['outsideTools'] };
+        if (rest.length) trimmed.outsideTools = rest; else delete trimmed.outsideTools;
+        return { definition: trimmed, leftOut: [...waiting].map(connection => ({ connection, reason: 'waiting for its key' })) };
+    }
     function validate(input: z.infer<typeof writeInput>, held: ReadonlySet<string> = new Set()): AgentDefinition {
         nameOf(input.name);
         const parsed = definitionSchema.safeParse(input.definition);
@@ -205,16 +232,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             refused('role must be chief-of-staff or creative');
         const info = o.roleInfo(d.role as DefinitionRole);
         if (!d.doors && d.channels.some(kind => !["slack", "telegram"].includes(kind))) refused("unsupported legacy door kind; the email door was removed");
-        const findings = validateDefinition({ outsideCredentialHeld: held, definition: { ...d, doors: d.doors ?? d.channels.map(kind => ({ kind: kind as "slack" | "telegram", enabled: true, settings: {} })) }, ...info, secretExists: (name) => {
-                // Never expose filesystem exceptions as trusted validation messages.
-                try {
-                    const s = lstatSync(join(o.secretsDir, name));
-                    return s.isFile() && !s.isSymbolicLink() && s.size > 0;
-                }
-                catch {
-                    return false;
-                }
-            } });
+        const findings = validateDefinition({ outsideCredentialHeld: held, definition: { ...d, doors: d.doors ?? d.channels.map(kind => ({ kind: kind as "slack" | "telegram", enabled: true, settings: {} })) }, ...info, secretExists });
         if (findings.length)
             throw new KeeperRefusedError(findings.map(f => `[${f.check}] ${f.message}`).join('\n'), findings);
         return d;
@@ -400,7 +418,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 await client.query('BEGIN');
                 try {
                     const snapshot = await connectionSnapshot(client, input, false);
-                    const application = await connectionApplication(client, input.name, snapshot.loaded.definition.outsideTools ?? []);
+                    const application = await connectionApplication(client, input.name, snapshot.loaded.definition.outsideTools ?? [], true);
                     await client.query('COMMIT');
                     return { name: input.name, definitionHash: snapshot.loaded.hash, accessRevision: snapshot.revision, connections: snapshot.loaded.definition.outsideTools ?? [], ...application };
                 } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
@@ -436,15 +454,20 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             return { name: result.name, definitionHash: result.hash, accessRevision: nextRevision, connections, ...application };
         });
     }
-    async function connectionApplication(client: Pick<PoolClient, 'query'> | Pick<Pool, 'query'>, name: string, connections: AgentDefinition['outsideTools']) {
+    // `leaveOutWaiting`: a refresh applies the definition without an entry still waiting for its key, so a read
+    // compares against that same set, or the connection would show "pending" for as long as it waits. A read
+    // right after a save does not, so a newly saved entry still shows as waiting to be applied.
+    async function connectionApplication(client: Pick<PoolClient, 'query'> | Pick<Pool, 'query'>, name: string, connections: AgentDefinition['outsideTools'], leaveOutWaiting = false) {
         const row = await client.query<{ applied_definition: unknown | null }>('SELECT applied_definition FROM agent_resources WHERE name=$1', [name]);
         const applied = row.rows[0]?.applied_definition;
         if (!applied || typeof applied !== 'object' || Array.isArray(applied))
             return { applicationStatus: 'unavailable' as const, appliedConnections: [] };
         const parsed = z.array(outsideToolSchema).safeParse((applied as Record<string, unknown>).outsideTools ?? []);
         if (!parsed.success) return { applicationStatus: 'unavailable' as const, appliedConnections: [] };
-        return { applicationStatus: isDeepStrictEqual(parsed.data, connections ?? []) ? 'applied' as const : 'pending' as const,
-            appliedConnections: parsed.data };
+        const waiting = leaveOutWaiting ? await waitingForKey(name, connections) : [];
+        const expected = (connections ?? []).filter(t => !waiting.includes(t.name));
+        return { applicationStatus: isDeepStrictEqual(parsed.data, expected) ? 'applied' as const : 'pending' as const,
+            appliedConnections: parsed.data, ...(waiting.length ? { waitingForKey: waiting } : {}) };
     }
     function runtimeStarted(result: unknown): boolean {
         if (!result || typeof result !== 'object' || !('running' in result)) return true;
@@ -691,8 +714,10 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         if(loaded.hash!==hash) refused('Definition changed; refresh before applying connection changes');
         const row=await db().query("SELECT hash,status FROM agent_definitions WHERE name=$1",[name]);
         if(row.rows[0]?.hash!==hash||row.rows[0]?.status!=='valid') refused('Save a valid definition before reconciliation');
-        validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd}, await heldOutsideCredentials(name, loaded.definition));
-        return applyWithRecovery(name, loaded.definition);
+        const apply=await withoutWaiting(name, loaded.definition);
+        validate({name,definition:apply.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd}, await heldOutsideCredentials(name, apply.definition));
+        const result=await applyWithRecovery(name, apply.definition);
+        return apply.leftOut.length&&result&&typeof result==='object' ? { ...result, leftOut:apply.leftOut } : result;
     }) });
     // After an update the keeper renders the new release's role image, but a running agent keeps
     // the image it was started from. This restarts it onto the new one, as Apply would, and only
@@ -707,9 +732,10 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         const loaded=await loadDefinition({serviceDir:'unused',env:{LARES_DEFINITION_DIR:active(name)}});
         const row=await db().query("SELECT hash,status FROM agent_definitions WHERE name=$1",[name]);
         if(row.rows[0]?.hash!==loaded.hash||row.rows[0]?.status!=='valid') return { moved:false, state:'pending', reason:left.pending };
-        validate({name,definition:loaded.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd}, await heldOutsideCredentials(name, loaded.definition));
-        const result=await applyWithRecovery(name, loaded.definition) as Record<string,unknown>;
-        return { moved:true, ...result };
+        const apply=await withoutWaiting(name, loaded.definition);
+        validate({name,definition:apply.definition,duties:loaded.dutiesMd,voice:loaded.voiceMd}, await heldOutsideCredentials(name, apply.definition));
+        const result=await applyWithRecovery(name, apply.definition) as Record<string,unknown>;
+        return { moved:true, ...result, ...(apply.leftOut.length?{leftOut:apply.leftOut}:{}) };
     }) });
     registerAction({ name: 'definition.retire', input: nameInput, run: ({ name }, ctx) => locked(async () => {
             const path = active(name);
