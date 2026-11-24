@@ -6,3 +6,4 @@ dist/
 .env
 .env.*
 __pycache__/
+node-compile-cache/
