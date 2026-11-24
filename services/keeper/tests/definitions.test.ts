@@ -62,8 +62,8 @@ async function recordApplied(name = 'bookkeeper') {
     const path = join(agentsDir, name);
     recordAppliedDefinition(path, await readDefinitionFiles(path));
 }
-async function connectionFixture() {
-    await create('bookkeeper', { definition: { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } } });
+async function connectionFixture(scope: 'read' | 'write-with-confirm' = 'write-with-confirm') {
+    await create('bookkeeper', { definition: { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope }], autonomy: { ...GOOD.autonomy, outside: 'gated' } } });
     const loaded = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } });
     const grants = new PgGrantStore(pool);
     const adopted = await grants.adoptAgent('connection-owner', { agentName: 'bookkeeper', expectedDefinitionHash: loaded.hash }, { designatedOwnerMemberId: 'connection-owner' });
@@ -84,6 +84,8 @@ const declaration = { name: 'rates', url: 'https://tools.example.org/mcp', descr
     tools: { allow: ['find_rate'], read: ['find_rate'] } };
 const connectionCall = (sessionToken: string, name: string, expectedDefinitionHash: string, expectedAccessRevision: number, connections: unknown) =>
     runAction('outside.connections.save', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision, connections }, ctx());
+const connectionCallWith = (sessionToken: string, name: string, expectedDefinitionHash: string, expectedAccessRevision: number, connections: unknown, extra: Record<string, unknown>) =>
+    runAction('outside.connections.save', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision, connections, ...extra }, ctx());
 const connectionApplyCall = (sessionToken: string, name: string, expectedDefinitionHash: string, expectedAccessRevision: number) =>
     runAction('outside.connections.apply', { sessionToken, name, expectedDefinitionHash, expectedAccessRevision }, ctx());
 function register(ceiling = 2, storage = true) {
@@ -95,7 +97,7 @@ function register(ceiling = 2, storage = true) {
             : (target.query as any)(sql, ...rest)
         : Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key) }) as Pool;
     const custody = new OutsideCustodyStore(pool as never, Buffer.alloc(32, 7));
-    registerDefinitionActions({ pool: appRole, outsideCustodyHeld: name => custody.heldConnections(name), agentsDir, retiredDir, secretsDir, providerKeys: new ProviderKeyFiles(secretsDir, { uid: process.getuid!(), gid: process.getgid!() }), ceiling: async () => ceiling, memory: () => 0, compose, backup,
+    registerDefinitionActions({ designatedOwnerId: 'connection-owner', pool: appRole, outsideCustodyHeld: name => custody.heldConnections(name), agentsDir, retiredDir, secretsDir, providerKeys: new ProviderKeyFiles(secretsDir, { uid: process.getuid!(), gid: process.getgid!() }), ceiling: async () => ceiling, memory: () => 0, compose, backup,
         roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }),
         storage: storage ? { prepareDelete: async (name) => ({ delete: async () => { await pool.query('DELETE FROM owned_memory WHERE agent=$1', [name]); } }) } : undefined,
     });
@@ -1094,6 +1096,37 @@ it('a save that says nothing about the switches keeps the applied ones whose des
     // An explicit empty list switches everything off, and needs no approver.
     const off: any = await connectionCall(sessions.editor, 'bookkeeper', saved.definitionHash, saved.accessRevision, [entry([])]);
     expect(off.connections[0].tools.trusted).toEqual([]);
+});
+const writesToo = { ...declaration, tools: { allow: ['find_rate', 'set_rate'], read: ['find_rate'] } };
+it('a read-only agent: a tool that changes something still refuses the whole save unless the caller asks for conflicts to be reported', async () => {
+    const { loaded, access, sessions } = await connectionFixture('read');
+    await expect(connectionCall(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo])).rejects.toThrow(/read-only/);
+});
+it('a read-only agent: asked to report conflicts, the keeper saves everything valid and names each left-out tool', async () => {
+    const { loaded, access, sessions } = await connectionFixture('read');
+    const other = { ...declaration, name: 'other', tools: { allow: ['look'], read: ['look'] } };
+    const saved: any = await connectionCallWith(sessions.editor, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo, other], { resolveReadOnlyConflicts: true });
+    expect(saved.conflicts).toEqual([{ connection: 'rates', tool: 'set_rate' }]);
+    expect(saved.connections.map((c: any) => [c.name, c.tools.allow])).toEqual([['rates', ['find_rate']], ['other', ['look']]]);
+    const now = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition;
+    expect(now.outsideTools!.map(c => c.tools.allow)).toEqual([['find_rate'], ['look']]);
+    expect(now.grants.find(g => g.capability === 'outside')!.scope).toBe('read');
+});
+it('a read-only agent: only the designated owner may widen it to write-with-confirm, and an editor who asks changes nothing', async () => {
+    const { loaded, access, sessions } = await connectionFixture('read');
+    await expect(connectionCallWith(sessions.editor, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { resolveReadOnlyConflicts: true, widenOutsideGrant: true })).rejects.toThrow(/Only the owner can widen/);
+    const untouched = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition;
+    expect(untouched.grants.find(g => g.capability === 'outside')!.scope).toBe('read');
+    expect(untouched.outsideTools).toBeUndefined();
+    await expect(connectionCallWith(sessions.user, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { resolveReadOnlyConflicts: true, widenOutsideGrant: true })).rejects.toThrow();
+    await expect(connectionCallWith(sessions.stranger, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { widenOutsideGrant: true })).rejects.toThrow();
+    const saved: any = await connectionCallWith(sessions.owner, 'bookkeeper', loaded.hash, access.accessRevision, [writesToo], { resolveReadOnlyConflicts: true, widenOutsideGrant: true });
+    expect(saved.conflicts).toBeUndefined();
+    expect(saved.connections[0].tools.allow).toEqual(['find_rate', 'set_rate']);
+    const now = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition;
+    expect(now.grants.find(g => g.capability === 'outside')!.scope).toBe('write-with-confirm');
+    // The changing tool is not marked as a lookup, so it can never be switched on to run without asking.
+    expect(now.outsideTools![0]!.tools.read).toEqual(['find_rate']);
 });
 it('definition.create and definition.import refuse a switch from anyone but the host or the administrator', async () => {
     const base = { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } };

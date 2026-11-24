@@ -46,10 +46,24 @@ describe("connect: declare", () => {
       .mockResolvedValueOnce(state({ definitionHash: h("b"), accessRevision: 3, applicationStatus: "pending", connections: [declared([PENDING_TOOL])] }))
       .mockResolvedValueOnce(state({ definitionHash: h("b"), accessRevision: 3, connections: [declared([PENDING_TOOL])] }));
     const result = await connectDeclare({ agent: "worker", provisional: true, connection: { ...connection, allow: [], read: [] } });
-    expect(result).toEqual({ ok: true, value: { definitionHash: h("b"), accessRevision: 3, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [] } });
+    expect(result).toEqual({ ok: true, value: { definitionHash: h("b"), accessRevision: 3, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: [] } });
     expect(calls()).toEqual(["outside.connections.get", "outside.connections.save", "outside.connections.apply"]);
     expect(mocks.keeper.mock.calls[1]![1]).toMatchObject({ sessionToken: session, name: "worker", connections: [declared([PENDING_TOOL], [PENDING_TOOL])], stagingCredentialFor: ["rates"] });
     expect(mocks.keeper.mock.calls[2]![1]).toMatchObject({ stagingCredentialFor: ["rates"] });
+  });
+  it("asks the keeper to save what is valid and report read-only conflicts, and passes the conflicts back as tool names", async () => {
+    mocks.keeper.mockResolvedValueOnce(state())
+      .mockResolvedValueOnce(state({ applicationStatus: "pending", connections: [declared(["find_rate"], ["find_rate"])], conflicts: [{ connection: "rates", tool: "set_rate" }, { connection: "other", tool: "x" }] }));
+    const result = await connectDeclare({ agent: "worker", provisional: false, applyNow: false, connection: { ...connection, allow: ["find_rate", "set_rate"], read: ["find_rate"] } });
+    expect(result).toMatchObject({ ok: true, value: { conflicts: ["set_rate"] } });
+    expect(mocks.keeper.mock.calls[1]![1]).toMatchObject({ resolveReadOnlyConflicts: true });
+    expect(mocks.keeper.mock.calls[1]![1]).not.toHaveProperty("widenOutsideGrant");
+  });
+  it("widens the agent's outside access only when the owner's explicit answer says so", async () => {
+    mocks.keeper.mockResolvedValueOnce(state()).mockResolvedValueOnce(state({ applicationStatus: "pending", connections: [declared(["find_rate", "set_rate"], ["find_rate"])] }));
+    const result = await connectDeclare({ agent: "worker", provisional: false, applyNow: false, widen: true, connection: { ...connection, allow: ["find_rate", "set_rate"], read: ["find_rate"] } });
+    expect(result).toMatchObject({ ok: true, value: { conflicts: [] } });
+    expect(mocks.keeper.mock.calls[1]![1]).toMatchObject({ resolveReadOnlyConflicts: true, widenOutsideGrant: true });
   });
   it("never claims a credential is on the way for a connection that needs none", async () => {
     mocks.keeper.mockResolvedValueOnce(state()).mockResolvedValueOnce(state({ connections: [{ ...declared(["find_rate"]), token: false }] }));
@@ -60,7 +74,7 @@ describe("connect: declare", () => {
     mocks.keeper.mockResolvedValueOnce(state({ connections: [declared([PENDING_TOOL])] }))
       .mockResolvedValueOnce(state({ applicationStatus: "pending", connections: [declared(["find_rate"], ["find_rate"])] }));
     const result = await connectDeclare({ agent: "worker", provisional: false, applyNow: false, connection });
-    expect(result).toEqual({ ok: true, value: { definitionHash: h("a"), accessRevision: 2, applied: false, currentTrusted: [], previousTools: [], droppedTrust: [] } });
+    expect(result).toEqual({ ok: true, value: { definitionHash: h("a"), accessRevision: 2, applied: false, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: [] } });
     expect(calls()).toEqual(["outside.connections.get", "outside.connections.save"]);
     expect(mocks.keeper.mock.calls[1]![1].connections).toEqual([declared(["find_rate"], ["find_rate"])]);
   });
@@ -68,7 +82,7 @@ describe("connect: declare", () => {
     const existing = { ...declared(["find_rate"], ["find_rate"]), tools: { allow: ["find_rate"], read: ["find_rate"], trusted: [{ tool: "find_rate", pin: h("5"), by: "m", at: "2026-11-20T10:00:00.000Z" }] } };
     mocks.keeper.mockResolvedValueOnce(state({ connections: [existing] }));
     const result = await connectDeclare({ agent: "worker", provisional: true, connection: { ...connection, allow: [], read: [] } });
-    expect(result).toEqual({ ok: true, value: { definitionHash: h("a"), accessRevision: 2, applied: true, currentTrusted: ["find_rate"], previousTools: ["find_rate"], droppedTrust: [] } });
+    expect(result).toEqual({ ok: true, value: { definitionHash: h("a"), accessRevision: 2, applied: true, currentTrusted: ["find_rate"], previousTools: ["find_rate"], droppedTrust: [], conflicts: [] } });
     expect(calls()).toEqual(["outside.connections.get"]);
   });
   it("says which switches the keeper ended on the final save (their tool changed), and sends no list so the keeper decides", async () => {

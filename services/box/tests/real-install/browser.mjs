@@ -40,6 +40,9 @@ const steps = {
     await page.getByRole("button", { name: "Connect" }).click();
     await page.getByText(/^Connected\./).waitFor({ timeout: 480_000 });
     console.log(`the screen says: ${(await page.getByText(/^Connected\./).first().innerText()).slice(0, 200)}`);
+    // The lookup the server marks read-only was switched on to run without asking by this same Connect, with no separate step.
+    await page.getByText(/lookup-company run without asking/).waitFor({ timeout: 60_000 });
+    console.log("the screen says the lookup runs without asking");
   },
   // One question that makes the agent call the connected tool; the person answers its card.
   async "outside-call"(page) {
@@ -48,17 +51,11 @@ const steps = {
     await page.getByText("The agent is still answering").waitFor({ state: "hidden", timeout: STEP_MS });
     await page.getByPlaceholder(/^Message /).fill(settings.outsidePrompt, { timeout: 60_000 });
     await page.getByRole("button", { name: "Send message" }).click();
-    await page.locator(".lares-actions button", { hasText: /approve/i }).first().click({ timeout: 240_000 });
-    await page.locator(".lares-message-agent", { hasText: settings.outsideReply }).first().waitFor({ timeout: 240_000 });
-  },
-  // The owner switches the connected lookup on to run without asking, on the agent's own outside tools page.
-  async "trust-outside"(page) {
-    await page.goto(`${origin}/agents/${settings.agent}/outside-tools`);
-    await page.getByRole("button", { name: "Edit" }).first().click({ timeout: 60_000 });
-    await page.getByRole("checkbox", { name: /lookup-company/ }).check({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Save connections" }).click();
-    await page.getByText(/^Saved\./).waitFor({ timeout: 240_000 });
-    console.log(`the page says: ${(await page.getByText(/^Saved\./).first().innerText()).slice(0, 200)}`);
+    // The connected lookup already runs without asking (the Connect screen switched it on), so the answer may come with no card at all.
+    const approve = page.locator(".lares-actions button", { hasText: /approve/i }).first();
+    const reply = page.locator(".lares-message-agent", { hasText: settings.outsideReply }).first();
+    await Promise.race([reply.waitFor({ timeout: 240_000 }), approve.waitFor({ timeout: 240_000 }).then(() => approve.click())]);
+    await reply.waitFor({ timeout: 240_000 });
   },
   async "create-agent"(page) {
     await page.goto(`${origin}/agents/new`);

@@ -14,6 +14,7 @@ import { requireConsoleSessionBinding } from "@lares/agent-kit/console-turn-auth
 import { PgGrantStore, type GrantDatabase } from "@lares/agent-kit/grant-store";
 import { recordOutsideExecutionApproval, consumeOutsideExecutionApproval, outsideExecutionApprovalSchema, outsidePayloadHash, type OutsideExecutionApproval } from "@lares/agent-kit/outside-execution-receipts";
 import { currentMember } from "@lares/agent-kit/member-store";
+import { descriptionsHash, entryConfigHash, keptTools, allowedTools, pgPinStore } from "@lares/agent-kit/outside-pins";
 import { z } from "zod";
 import { KeeperRefusedError } from './actions.js';
 
@@ -1967,9 +1968,27 @@ export class OutsideCustodyStore {
         evidenceKind:'descriptor-acceptance-v1',body:acceptance,expectedGeneration:number(head.generation),resultGeneration:number(head.generation),
         credentialRevision:row.credential_revision===null?null:number(row.credential_revision),outcome:'accepted',
         requestIdentity:{publicationId,expectedPublicationHash:input.expectedPublicationHash}});
+      await this.#seedAcceptedPin(head.resource_id,head.connection_name,body.projection as DescriptorProjection|undefined,
+        (body.capture as {outside?:{connection?:{url?:string}}}|undefined)?.outside?.connection?.url);
       return {acceptanceId:operationId,publicationHash:input.expectedPublicationHash,
         acceptanceHash:createHash('sha256').update(canonicalJson(acceptance)).digest('hex')};
     },options));
+  }
+
+  /** What the owner has just accepted IS the description the tool is pinned to, so each tool's "run without asking" can be bound to it
+   *  in the same connect, before any conversation has read the tool list. Same record, same fingerprints, as the agent's own first
+   *  read (trust on first use) would write; a later change on the server still gives a different pin and stops the tool. It is the
+   *  accepted words themselves that are recorded: nothing the agent or a server said afterwards. Never throws: with no pin the switch
+   *  simply cannot be made yet, which is what happened before. */
+  async #seedAcceptedPin(agent:string,connectionName:string,projection:DescriptorProjection|undefined,url:string|undefined):Promise<void>{
+    try{
+      if(!this.mainPool||!projection||projection.version!==1||projection.connectionName!==connectionName||typeof url!=='string')return;
+      const entry={url,tools:{allow:projection.allow,read:projection.read}},store=pgPinStore(this.mainPool as never);
+      const configHash=entryConfigHash(entry),pinHash=descriptionsHash(projection.tools,projection.allow),kept=keptTools(allowedTools(projection.tools,projection.allow));
+      const stored=await store.get(agent,connectionName);
+      if(stored===undefined||stored.configHash!==configHash||stored.pinHash!==pinHash)await store.put(agent,connectionName,{configHash,pinHash},kept);
+      else await store.matched(agent,connectionName,kept);
+    }catch(error){console.warn(`keeper: could not record the accepted descriptions of ${agent}/${connectionName}: ${error instanceof Error?error.message:'unknown error'}`);}
   }
 
   async previewExecutableActivation(sessionToken:string,input:ActivationSelectors & {operationId:string},options:{deadlineAtMs:number}):Promise<{

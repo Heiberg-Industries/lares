@@ -5,7 +5,7 @@ import type { Pool, PoolClient } from 'pg';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import { definitionSchema, outsideToolSchema, OUTSIDE_TOOL_NAME_RE, parseDefinition, hashOf, loadDefinition, readDefinitionFiles, doorsOf, type AgentDefinition } from '@lares/agent-kit/definition';
-import { stampTrust, outsideSecretName } from '@lares/agent-kit/outside-tools';
+import { stampTrust, outsideSecretName, OUTSIDE_CAPABILITY } from '@lares/agent-kit/outside-tools';
 import { toolPinHash } from '@lares/agent-kit/outside-pins';
 import { requireConsoleAgentUse } from '@lares/agent-kit/console-turn-authority';
 import { currentSession } from '@lares/agent-kit/member-store';
@@ -78,6 +78,8 @@ export interface DefinitionOptions {
     /** Where an agent's own model-provider key file lives; deleting the agent removes it. Defaults to the keeper-owned directory. */
     providerKeys?: ProviderKeyFiles;
     ceiling(): Promise<number>;
+    /** The installation's designated owner: the only member who may widen an agent's outside access. Absent: nobody may. */
+    designatedOwnerId?: string;
     /** The installation administrator's identity (the only non-host caller who may change the limit). */
     administrator?: string;
     /** Total server memory in bytes; defaults to os.totalmem(). 0 or less means unknown. */
@@ -135,6 +137,12 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         connections: z.array(outsideToolSchema),
         // Names of connections whose credential this same Connect action is about to stage in custody.
         stagingCredentialFor: z.array(z.string().regex(OUTSIDE_TOOL_NAME_RE)).max(50).optional(),
+        // A tool that changes something, on an agent whose outside grant is read-only, is left out of THIS save (everything else that is
+        // valid is saved) and reported back as a conflict, instead of refusing the whole save. Off by default: the validator stays strict.
+        resolveReadOnlyConflicts: z.boolean().optional(),
+        // The owner's explicit answer to such a conflict: raise this agent's outside grant from read-only to write-with-confirm (every
+        // change still asks first). Only reachable through this action, which already requires current edit access to the agent.
+        widenOutsideGrant: z.boolean().optional(),
     });
     const outsideConnectionsApplyInput = outsideConnectionsReadInput.extend({
         expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/), expectedAccessRevision: z.number().int().positive(),
@@ -426,10 +434,27 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             const initial = await connectionSnapshot(client, input, true);
             if (!input.connections) refused('Connection changes are required.');
             // Who switched a tool on, and when, is written here by the keeper, never from the browser.
-            const connections = await restampTrust(input.name, input.connections, ctx.actor, async () => { try { await requireConsoleAgentUse(input.name, initial.member.id, o.pool as never); return true; } catch { return false; } });
-            if (new Set(connections.map(connection => connection.name)).size !== connections.length)
+            if (input.widenOutsideGrant) {
+                // Raising what outside tools may do is the owner's decision alone, not an editor's: checked here, against the signed-in session's own member.
+                const who = o.designatedOwnerId === initial.member.id
+                    ? (await client.query<{ status: string; org_role: string }>('SELECT status,org_role FROM users WHERE id=$1', [initial.member.id])).rows[0] : undefined;
+                if (!who || who.status !== 'active' || who.org_role !== 'owner') refused("Only the owner can widen an agent's outside access.");
+            }
+            const stamped = await restampTrust(input.name, input.connections, ctx.actor, async () => { try { await requireConsoleAgentUse(input.name, initial.member.id, o.pool as never); return true; } catch { return false; } });
+            if (new Set(stamped.map(connection => connection.name)).size !== stamped.length)
                 refused('Connection names must be unique.');
             const definition = { ...initial.loaded.definition } as AgentDefinition & { outsideTools?: AgentDefinition['outsideTools'] };
+            let connections = stamped;
+            const conflicts: { connection: string; tool: string }[] = [];
+            const outsideGrant = definition.grants.find(g => g.capability === OUTSIDE_CAPABILITY);
+            if (input.widenOutsideGrant && outsideGrant?.scope === 'read')
+                definition.grants = definition.grants.map(g => g === outsideGrant ? { ...g, scope: 'write-with-confirm' as const } : g);
+            else if (input.resolveReadOnlyConflicts && outsideGrant?.scope === 'read')
+                connections = stamped.map(entry => {
+                    const reads = new Set(entry.tools.read), writes = entry.tools.allow.filter(t => !reads.has(t));
+                    for (const tool of writes) conflicts.push({ connection: entry.name, tool });
+                    return writes.length ? { ...entry, tools: { ...entry.tools, allow: entry.tools.allow.filter(t => reads.has(t)) } } : entry;
+                });
             if (connections.length) definition.outsideTools = connections;
             else delete definition.outsideTools;
             const saveInput = { name: input.name, definition, duties: initial.loaded.dutiesMd, voice: initial.loaded.voiceMd };
@@ -451,7 +476,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
             const result = await finishSave(saveInput, ctx, false, prepared.d, loaded);
             const application = await connectionApplication(o.pool, input.name, connections);
-            return { name: result.name, definitionHash: result.hash, accessRevision: nextRevision, connections, ...application };
+            return { name: result.name, definitionHash: result.hash, accessRevision: nextRevision, connections, ...application, ...(conflicts.length ? { conflicts } : {}) };
         });
     }
     // `leaveOutWaiting`: a refresh applies the definition without an entry still waiting for its key, so a read

@@ -15,7 +15,7 @@ const tokenField = () => document.querySelector('input[type="password"]') as HTM
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.declare.mockResolvedValue(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [] }));
+  mocks.declare.mockResolvedValue(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: [] }));
   mocks.lookUp.mockResolvedValue(ok({ identity, serverName: "Example 1.0", tools }));
   mocks.review.mockResolvedValue(ok({ candidateRevision: 1 }));
   mocks.activate.mockResolvedValue(ok({ credentialRevision: 1 }));
@@ -119,7 +119,11 @@ describe("ConnectOutsideTool", () => {
     expect(mocks.activate).toHaveBeenCalledTimes(1);
     expect(mocks.apply).toHaveBeenCalledWith({ agent: "alpha" });
     expect(screen.getByText(/Tools you did not switch on to run without asking still ask you first/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Switch on Run without asking" })).toBeTruthy();
+    // The lookups were switched on in this same connect, before the apply, with no separate step for the owner.
+    expect(mocks.switchOn).toHaveBeenCalledWith({ agent: "alpha", name: "example", tools: ["find_company"] });
+    expect(mocks.switchOn.mock.invocationCallOrder[0]!).toBeLessThan(mocks.apply.mock.invocationCallOrder[0]!);
+    expect(screen.queryByRole("button", { name: "Switch on Run without asking" })).toBeNull();
+    expect(screen.getByText(/Slack and Telegram private chats: only tools that run without asking \(1 of 1\)/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("tok-SECRET");
   });
 
@@ -136,19 +140,72 @@ describe("ConnectOutsideTool", () => {
     expect(tones).not.toContain("error");
   });
 
-  it("offers the switch-on only for lookups the owner left ticked, and calls the keeper's action for them once connected", async () => {
+  it("switches on only the lookups the owner left ticked, in the same connect", async () => {
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    await fillToken();
+    // The owner unticks the one lookup before connecting: nothing runs without asking.
+    fireEvent.click(screen.getAllByLabelText(/Run without asking/)[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText(/Connected\./);
+    expect(mocks.switchOn).toHaveBeenCalledWith({ agent: "alpha", name: "example", tools: [] });
+  });
+
+  it("still connects when the lookups cannot be switched on, says why, and offers to try again", async () => {
+    mocks.switchOn.mockResolvedValueOnce({ ok: false, message: "Only a member who can approve this agent's outside calls may switch a tool on.", retryable: true });
     render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
     await fillToken();
     fireEvent.click(screen.getByLabelText("push_lead"));
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await screen.findByText(/Connected\./);
+    expect(mocks.apply).toHaveBeenCalledWith({ agent: "alpha" });
+    await screen.findByText(/Only a member who can approve/);
     fireEvent.click(screen.getByRole("button", { name: "Switch on Run without asking" }));
-    await waitFor(() => expect(mocks.switchOn).toHaveBeenCalledWith({ agent: "alpha", name: "example", tools: ["find_company"] }));
+    await waitFor(() => expect(mocks.switchOn).toHaveBeenCalledTimes(2));
     await screen.findByText(/alpha: switched on find_company/);
   });
 
+  it("a read-only agent: the rest is saved and the owner chooses per tool, leaving it out", async () => {
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: [] }));
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: false, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: ["push_lead"] }));
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    await fillToken();
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText(/outside access is read-only, and push_lead changes something/);
+    expect(mocks.lookUp).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Leave it out" }));
+    await screen.findByText(/Connected\./);
+    expect(mocks.declare).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(/Left out because the agent's outside access is read-only: push_lead \(alpha\)/)).toBeTruthy();
+  });
+
+  it("a read-only agent, a viewer who is not the owner: only \"Leave it out\" and a line saying the owner can allow it", async () => {
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: [] }));
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: false, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: ["push_lead"] }));
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
+    await fillToken();
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByRole("button", { name: "Leave it out" });
+    expect(screen.queryByRole("button", { name: /ask first/ })).toBeNull();
+    expect(screen.getByText(/Only the owner can allow this/)).toBeTruthy();
+  });
+
+  it("a read-only agent: \"Let it ask first\" needs a second, explicit confirm and then saves with the widening", async () => {
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: [] }));
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: false, currentTrusted: [], previousTools: [], droppedTrust: [], conflicts: ["push_lead"] }));
+    render(<ConnectOutsideTool agents={agents} initialAgent="alpha" canWiden />);
+    await fillToken();
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Let Alpha ask first" }));
+    expect(mocks.declare).toHaveBeenCalledTimes(2);
+    fireEvent.click(await screen.findByRole("button", { name: "Yes, let it ask first" }));
+    await screen.findByText(/Connected\./);
+    expect(mocks.declare).toHaveBeenCalledTimes(3);
+    expect(mocks.declare.mock.calls[2]![0]).toMatchObject({ agent: "alpha", widen: true, connection: { allow: ["find_company", "push_lead"] } });
+    expect(screen.getByText(/always after asking you first: push_lead \(alpha\)/)).toBeTruthy();
+  });
+
   it("on a reconnect shows the switches as they already are: kept ones ticked, known ones the owner left off stay off", async () => {
-    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: ["find_company"], droppedTrust: [] }));
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: true, currentTrusted: [], previousTools: ["find_company"], droppedTrust: [], conflicts: [] }));
     render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
     await fillToken();
     // find_company is read-only but was already on the agent and left off: it stays off. (A brand-new read-only tool would start on.)
@@ -159,7 +216,7 @@ describe("ConnectOutsideTool", () => {
   it("says out loud which switches the keeper ended", async () => {
     render(<ConnectOutsideTool agents={agents} initialAgent="alpha" />);
     await fillToken();
-    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: false, currentTrusted: ["find_company"], previousTools: ["find_company"], droppedTrust: ["find_company"] }));
+    mocks.declare.mockResolvedValueOnce(ok({ definitionHash: "a".repeat(64), accessRevision: 2, applied: false, currentTrusted: ["find_company"], previousTools: ["find_company"], droppedTrust: ["find_company"], conflicts: [] }));
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
     await screen.findByText(/Run without asking was switched off for find_company \(alpha\) because the tool changed/);
   });

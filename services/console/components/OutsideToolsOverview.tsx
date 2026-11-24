@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ToolList, ToolRow } from "@lares/ui/patterns";
 import type { DeclaredOutside, OutsideToolEvidence } from "../lib/outside-tools";
-import { keyLine } from "../lib/outside-tools-words";
+import { keyLine, whereToolsWork } from "../lib/outside-tools-words";
 
 /** Read only: which agents use outside tool servers, and what the key and descriptions checks know.
  *  `declared` null means the definitions could not be read. Changes happen on each agent's own page. */
@@ -21,6 +21,7 @@ export function OutsideToolsOverview({ declared, evidence }: { declared: Declare
                 <div key={s.name}>
                   <p><span className="mono">{s.name}</span></p>
                   {s.tools.length > 0 && <ToolList label={`Tools on ${s.name}`}>{s.tools.map(tool => <ToolRow key={tool} name={tool} />)}</ToolList>}
+                  {s.tools.length > 0 && <p className="lares-muted">{whereToolsWork(s.tools.length, s.free)}</p>}
                   <p className="lares-muted">{keyLine(s.needsKey, ev?.keys, s.name)}</p>
                   {locked && <p><strong>Locked: its tool descriptions changed.</strong> Check them on the agent&apos;s page before it runs again.</p>}
                 </div>

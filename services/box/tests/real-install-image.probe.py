@@ -2701,11 +2701,11 @@ def main(argv: list[str]) -> int:
             raise RuntimeError("the agent's call never reached the vendor's server")
         passed("one-outside-tool-call-succeeded")
 
-        # The lookup now runs without asking (the owner's own switch on the agent's outside tools page); then a new
-        # conversation on each door uses it. Nothing here is set from the host.
+        # The lookup already runs without asking: the Connect screen switched it on in the same connect (the owner's recorded
+        # choice), with no separate switch-on step and no earlier conversation. A new conversation on each door uses it.
+        # Nothing here is set from the host.
         stage("the connected lookup, asked for in a Slack and a Telegram conversation")
-        browser("trust-outside", settings_file, tls, timeout=900)
-        passed("lookup-switched-on-to-run-without-asking-by-the-owner")
+        passed("connect-switched-the-lookup-on-to-run-without-asking-with-no-separate-step")
         outside_on_doors(work, fixture, door_values, release, deferred)
 
         stage("sudo lares doctor")

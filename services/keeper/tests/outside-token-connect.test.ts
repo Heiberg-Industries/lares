@@ -164,6 +164,22 @@ it('connects a token tool to an agent limited to lookups, from the first save to
   expect(await oneToolCall('connector',hashOf(version))).toMatchObject({content:[{text:'Example company AS'}]});
 },180_000);
 
+it('records the accepted descriptions as the pin when the owner accepts them, so a lookup can run without asking with no conversation first',async()=>{
+  const {checkEntryPin,pgPinStore,toolPinHash}=await import('@lares/agent-kit/outside-pins');
+  await wholeConnect('vendor-key-for-the-test','staged');
+  const entry={name:'connector',url:URL_OF_SERVER,description:'Company lookups',token:true,tools:{allow:['lookup-company'],read:['lookup-company']}};
+  const listed={name:'lookup-company',description:'Look up a company',inputSchema:{type:'object'}};
+  // Nothing but the accept step has run: the pin and the stored description are already there (the switch is bound to exactly these).
+  const row=(await admin.query('SELECT pin_tools,seen_hash FROM outside_tool_pins WHERE agent=\'worker\' AND tool=\'connector\'')).rows[0];
+  expect(row.seen_hash).toBeNull();
+  expect(toolPinHash(row.pin_tools[0])).toBe(toolPinHash(listed));
+  // What the agent later checks at the start of a conversation is the very same fingerprint: it matches, it does not re-pin ...
+  const store=pgPinStore(app as never);
+  expect(await checkEntryPin('worker',entry as never,'t',{store,list:async()=>[listed]})).toBe('match');
+  // ... and a description the server changes afterwards still locks the tool.
+  expect(await checkEntryPin('worker',entry as never,'t',{store,list:async()=>[{...listed,description:'Look up a company, and email it'}]})).toBe('changed');
+});
+
 it('connects again after the server refused the token once, and after Remove the half-set-up connection',async()=>{
   await saveDefinition([PENDING],[PENDING]);
   refuseServer=true;
