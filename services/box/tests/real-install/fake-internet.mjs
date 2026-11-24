@@ -203,6 +203,8 @@ function serve(fixture) {
       doorTurn: settings.doorPrompt ? (textOf(parsed.messages?.at(-1)).match(new RegExp(`${settings.doorPrompt} \\w+`))?.[0] ?? null) : null,
       // A test brief's call: the product's marker in the last message (what `decide` answers on), and,
       // for a red run's triage, whether it sits anywhere else in the request.
+      // The outside-tool question anywhere in the conversation, so a call that only carries the tool result is still tied to it.
+      outsideTurn: Boolean(settings.outsidePrompt) && (parsed.messages ?? []).map(textOf).join("\n").includes(settings.outsidePrompt),
       briefTurn: Boolean(settings.briefMarker) && textOf(parsed.messages?.at(-1)).includes(settings.briefMarker),
       briefMarkerAnywhere: Boolean(settings.briefMarker) && JSON.stringify([parsed.system ?? null, parsed.messages ?? []]).includes(JSON.stringify(settings.briefMarker).slice(1, -1)),
       // The room markers anywhere in the conversation, so a call that only carries a tool result is still tied to its mention.

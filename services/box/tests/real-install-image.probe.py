@@ -1205,6 +1205,49 @@ def door_turn(kind: str, work: pathlib.Path, fixture: pathlib.Path, settings_fil
         passed(f"{kind}-no-error-copy-posted")
 
 
+def outside_on_doors(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, release: dict, deferred: list[str]) -> None:
+    """A new conversation on each chat door, after the outside tool was connected and its lookup switched on to run
+    without asking: the model is offered the tool, its call reaches the vendor's server, and the answer is
+    posted back. This is the proof that a CONNECTED tool reaches the agent in a real door conversation (the
+    web chat call before it goes through the console's own session). A hard failure names the first thing
+    that did not happen."""
+    for kind in ("slack", "telegram"):
+        chat = DOOR_CHAT[kind]
+        reply_methods = ((lambda method: method.startswith("chat.")) if kind == "slack"
+                         else (lambda method: method.startswith(("send", "edit")) and method != "sendChatAction"))
+        since = len(fake_calls(fixture))
+        vendor_before = len([call for call in fake_calls(fixture) if call["kind"] == "mcp" and call["method"] == "tools/call"])
+        audit_before = int(read_only_query("SELECT count(*) FROM keeper_audit WHERE action = 'outside.run-trusted' AND outcome = 'ok'", release) or 0)
+        status = send_door_message(kind, f"{OUTSIDE_PROMPT} ({kind} door)", work, fixture, door_values)
+        deadline = time.monotonic() + 180
+        posts: list[dict] = []
+        while time.monotonic() < deadline:
+            posts = [call for call in fake_calls(fixture)[since:] if call["kind"] == kind and reply_methods(call["method"])
+                     and call.get("channel", call.get("chat")) == chat and OUTSIDE_REPLY in str(call.get("text", ""))]
+            if posts:
+                break
+            time.sleep(3)
+        model_calls = [call for call in fake_calls(fixture)[since:] if call["kind"] == "model" and call.get("outsideTurn")]
+        offered = sorted({name for call in model_calls for name in call["tools"] if "lookup" in name})
+        vendor_calls = len([call for call in fake_calls(fixture) if call["kind"] == "mcp" and call["method"] == "tools/call"]) - vendor_before
+        audit_after = int(read_only_query("SELECT count(*) FROM keeper_audit WHERE action = 'outside.run-trusted' AND outcome = 'ok'", release) or 0)
+        proof.setdefault("outsideOnDoors", {})[kind] = {"eventStatus": status, "modelCalls": len(model_calls), "toolsOfferedNamedLookup": offered,
+                                                         "vendorToolCalls": vendor_calls, "keeperRunTrustedOk": audit_after - audit_before, "replyPosted": bool(posts)}
+        save_proof()
+        problems = []
+        if not offered:
+            problems.append(f"the model was not offered the connected lookup tool in the {kind} conversation ({len(model_calls)} model call(s) seen)")
+        if vendor_calls < 1:
+            problems.append("the vendor's server saw no tools/call from the conversation")
+        if audit_after - audit_before < 1:
+            problems.append("keeper recorded no completed run under standing trust")
+        if not posts:
+            problems.append(f"no reply containing {OUTSIDE_REPLY} was posted into {chat}")
+        if problems:
+            raise RuntimeError(f"outside-tool-in-a-{kind}-door-conversation failed: " + "; ".join(problems))
+        passed(f"outside-tool-in-a-{kind}-door-conversation-reached-the-vendor-and-answered")
+
+
 # --- mentions in a shared Slack channel -------------------------------------------------------------
 
 def room_mentions(work: pathlib.Path, fixture: pathlib.Path, door_values: dict, release: dict, room_allowed: set[str], deferred: list[str]) -> None:
@@ -2657,6 +2700,13 @@ def main(argv: list[str]) -> int:
         if not any(call["method"] == "tools/call" and call["ok"] for call in fake_calls(fixture) if call["kind"] == "mcp"):
             raise RuntimeError("the agent's call never reached the vendor's server")
         passed("one-outside-tool-call-succeeded")
+
+        # The lookup now runs without asking (the owner's own switch on the agent's outside tools page); then a new
+        # conversation on each door uses it. Nothing here is set from the host.
+        stage("the connected lookup, asked for in a Slack and a Telegram conversation")
+        browser("trust-outside", settings_file, tls, timeout=900)
+        passed("lookup-switched-on-to-run-without-asking-by-the-owner")
+        outside_on_doors(work, fixture, door_values, release, deferred)
 
         stage("sudo lares doctor")
         doctor = run("lares", "doctor", timeout=180, check=False)
