@@ -104,7 +104,11 @@ export type HumanPendingApply={accountId:string;agentName:string;connectionName:
   activationReviewHash:string;stageOperationId:string;candidateRevision:number};
 /** Trusted Keeper-side identity supplied by the authenticated runtime transport. Never accept it
  *  from MCP tool arguments or use receipt selectors as a substitute for this binding. */
-export type OutsideExecutionBinding={agent:string;incarnation:string;sessionId:string;memberId:string;approverMemberId:string;admissionNonce:string;policyRevision:number};
+/** `door: true` marks a call for the claimed person in a private chat on a chat door. There is no console session to bind
+ *  to; the broker has already checked the door claim (this role cannot read the door tables) and takes the member from
+ *  Keeper's own configuration. Everything else below (grant, definition, accepted catalogue, credential, route, receipt) is
+ *  checked here exactly as for a console session. */
+export type OutsideExecutionBinding={agent:string;incarnation:string;sessionId:string;memberId:string;approverMemberId:string;admissionNonce:string;policyRevision:number;door?:true};
 export type OutsideToolCallResult={content:OutsideJson[];isError?:boolean;structuredContent?:OutsideJson};
 export type OutsideToolCallInput=Pick<OutsideExecutionApproval,'callId'|'requestId'|'sessionId'|'memberId'|'approverMemberId'|'agent'|'incarnation'|
   'definitionHash'|'connectionName'|'accountId'|'credentialRevision'|'toolName'> & {input:OutsideJson};
@@ -2428,9 +2432,11 @@ export class OutsideCustodyStore {
     input:Pick<OutsideToolCallInput,'definitionHash'|'connectionName'|'accountId'|'credentialRevision'>,
     options:{assertCurrent?:()=>void},db:PoolClient,consume:boolean,assertRoute?:()=>Promise<unknown>,
     execution?:Pick<OutsideToolCallInput,'callId'|'requestId'|'toolName'|'input'>){
-    const session=await requireConsoleSessionBinding({agent:binding.agent,incarnation:binding.incarnation,sessionId:binding.sessionId,
-      memberId:binding.memberId,admissionNonce:binding.admissionNonce},db as never);
-    if(session.policyRevision!==binding.policyRevision)return denied();
+    if(binding.door!==true){
+      const session=await requireConsoleSessionBinding({agent:binding.agent,incarnation:binding.incarnation,sessionId:binding.sessionId,
+        memberId:binding.memberId,admissionNonce:binding.admissionNonce},db as never);
+      if(session.policyRevision!==binding.policyRevision)return denied();
+    }
     options.assertCurrent?.();
     const current=await captureOutsideHumanUse(db,binding.memberId,binding.agent,input.connectionName);
     const memberScoped=input.connectionName===MEMBER_PRIVATE_METADATA_CONNECTION;

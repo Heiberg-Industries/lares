@@ -1,5 +1,6 @@
 import { consoleAdmission } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
+import { doorVaultRoute } from '@lares/agent-kit/door-vault-turn';
 import { executeApprovedOutsideCall, vaultBrokerRequest } from '@lares/agent-kit/vault-broker-client';
 import type { AcceptedOutsideTool } from '@lares/agent-kit/outside-connections';
 import { reserveExactApprovalOrDeny, approveExactResponse, requireApprovedExecution, requireApprovedRecheck, isApprovalRecheck, approvalResponderOf, type ExactResponseContext } from '@lares/agent-kit/approval-execution';
@@ -60,5 +61,29 @@ export async function runTrustedOutsideTool(connectionName:string,toolName:strin
   throw new Error('Outside execution is unavailable for this call');
  const response=await vaultBrokerRequest<{result:unknown}>('outside.run-trusted',{sessionId:session.id,memberId:human.memberId,
   admissionNonce:human.admissionNonce,call:{callId:ctx.callId,connectionName,toolName,input}},10_000);
+ return response.result;
+}
+
+// ── A chat door (Slack, Telegram, ...): the claimed person in a private chat ─────────────────────
+// No console session exists here, so Keeper is asked under the door's claim instead, the way it is for private notes:
+// the agent names the door, the claim it speaks under and the conversation, never a member. Keeper finds the member
+// itself (its configured owner, checked against the claim) and re-reads the definition, the trust and the pin on every call.
+const DOOR_SESSION=/^[A-Za-z0-9_-]{1,64}$/;
+function doorIdentity(ctx:Context){
+ const route=doorVaultRoute(ctx),sessionId=ctx.session?.id;
+ if(!route||typeof sessionId!=='string'||!DOOR_SESSION.test(sessionId))throw new Error('Outside tools are not available in this conversation');
+ return {claim:{door:route.door,principal:route.principal,claimRevision:route.claimRevision,chat:'private' as const},sessionId};
+}
+export async function acceptedOutsideToolsOnDoor(ctx:Context,connectionName:string):Promise<AcceptedOutsideTool[]>{
+ const {claim,sessionId}=doorIdentity(ctx);
+ const result=await vaultBrokerRequest<{tools:AcceptedOutsideTool[]}>('outside.tools',{...claim,sessionId,connectionName});
+ return result.tools;
+}
+/** A lookup the owner let run without a card, asked for in a door conversation. Keeper refuses anything it cannot confirm. */
+export async function runTrustedOutsideToolOnDoor(connectionName:string,toolName:string,input:unknown,ctx:Context){
+ const {claim,sessionId}=doorIdentity(ctx),name=`${connectionName}__${toolName}`;
+ if(!ctx.callId||ctx.toolName!==name)throw new Error('Outside execution is unavailable for this call');
+ const response=await vaultBrokerRequest<{result:unknown}>('outside.run-trusted',{...claim,sessionId,
+  call:{callId:ctx.callId,connectionName,toolName,input}},10_000);
  return response.result;
 }

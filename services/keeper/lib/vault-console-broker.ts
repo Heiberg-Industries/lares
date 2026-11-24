@@ -240,13 +240,19 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
    // the per-tool trust, the pin, the ratchet level and the session are all read here, and any doubt is a
    // refusal (the runtime then raises an ordinary card on the next call, it never runs).
    const requested=object(input.call);
+   // A chat door's call carries the door and the claim it speaks under (as a door's private note read does) and no member or
+   // admission: Keeper takes the member from its own configuration and checks the claim itself, below.
+   const doorMode=input.door!==undefined,doorOwner=socketOptions.designatedOwnerId;
    if(Object.keys(requested).some(key=>!['callId','connectionName','toolName','input'].includes(key))||
       typeof requested.callId!=='string'||typeof requested.connectionName!=='string'||typeof requested.toolName!=='string'||
-      typeof input.sessionId!=='string'||typeof input.memberId!=='string'||typeof input.admissionNonce!=='string'||
-      !socketOptions.outsideCustody)throw new Error('outside');
+      typeof input.sessionId!=='string'||!socketOptions.outsideCustody||
+      (doorMode?Object.keys(input).sort().join(',')!=='call,chat,claimRevision,door,principal,sessionId'||!isValidDoorClaim(input as never)||input.chat!=='private'||
+        !/^[A-Za-z0-9_-]{1,64}$/.test(input.sessionId)||typeof doorOwner!=='string'||!/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(doorOwner)
+       :typeof input.memberId!=='string'||typeof input.admissionNonce!=='string'))throw new Error('outside');
    const call=requested as unknown as OutsideToolCallRequest,auditId=randomUUID();
    outsidePayloadHash(call.toolName,call.input);
-   const tuple={agent,incarnation,sessionId:input.sessionId,memberId:input.memberId,admissionNonce:input.admissionNonce};
+   const doorClaim=doorMode?{door:String(input.door),principal:String(input.principal),claimRevision:String(input.claimRevision)}:undefined;
+   const tuple={agent,incarnation,sessionId:input.sessionId,memberId:doorMode?doorOwner as string:input.memberId as string,admissionNonce:doorMode?'':input.admissionNonce as string};
    const checked=await authorityTransaction(pool,async db=>{
     await db.query("SELECT set_config('statement_timeout','1000ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");
     const rows=await db.query(`SELECT r.applied_definition,a.hash FROM agent_resources r JOIN agent_definitions a ON a.name=r.name
@@ -265,15 +271,19 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     // The description the owner switched this tool on for must be the one pinned now (pin_tools can be absent when too long: then no trust).
     const pinned=Array.isArray(pin.rows[0].pin_tools)?(pin.rows[0].pin_tools as Array<{name:string;description?:string;inputSchema?:unknown}>).find(t=>t.name===call.toolName):undefined;
     if(!pinned||toolPinHash(pinned)!==grantor.pin)throw new Error('trust');
-    const binding=await requireConsoleSessionBinding(tuple,db);
+    // The person: a web chat session's binding, or a chat door's claim (the applied claim is still this one, and its holder
+    // is still the active owner). Custody cannot read the door tables, so the claim is checked here, before it is asked.
+    let policyRevision=0;
+    if(doorClaim)await requireDoorClaim(db as never,{...doorClaim,memberId:tuple.memberId},{...process.env,LARES_AGENT_NAME:agent,LARES_AGENT_INCARNATION:incarnation} as NodeJS.ProcessEnv);
+    else policyRevision=(await requireConsoleSessionBinding(tuple,db)).policyRevision;
     await db.query("INSERT INTO keeper_audit (operation_id,action,actor,input,outcome,detail,completed_at) VALUES ($1,'outside.run-trusted',$2,$3::jsonb,'pending',$4,NULL)",
      [auditId,tuple.memberId,JSON.stringify({agent,connection:call.connectionName,tool:call.toolName,sessionId:tuple.sessionId,callId:call.callId,
-      trustGrantedBy:grantor.by,trustGrantedAt:grantor.at}),'started under the standing trust of the owner, no card']);
-    return {hash:String(rows.rows[0].hash),policyRevision:binding.policyRevision};
+      ...(doorClaim?{door:doorClaim.door}:{}),trustGrantedBy:grantor.by,trustGrantedAt:grantor.at}),'started under the standing trust of the owner, no card']);
+    return {hash:String(rows.rows[0].hash),policyRevision};
    },transactionDeadline);
    assertNotAborted();
    const binding={agent,incarnation,sessionId:tuple.sessionId,memberId:tuple.memberId,admissionNonce:tuple.admissionNonce,
-    approverMemberId:tuple.memberId,policyRevision:checked.policyRevision};
+    approverMemberId:tuple.memberId,policyRevision:checked.policyRevision,...(doorClaim?{door:true as const}:{})};
    const expiresAt=Math.min(Date.now()+60_000,requestDeadline);
    const assertCurrent=()=>{assertNotAborted();if(expiresAt<=Date.now())throw new Error('expired')};assertCurrent();
    // The same custody path as an approved call: a one-use receipt, then dispatch. No new way for the token to move.
@@ -357,6 +367,25 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     assertCurrent();const result=await custody.dispatchApproved(resume.binding,call,{deadlineAtMs:requestDeadline,assertCurrent});
     assertCurrent();return {result};
    },transactionDeadline);
+  }
+  if(op==='outside.tools'&&input.door!==undefined){
+   // The accepted descriptions for the person who claimed a chat door, in a private chat: no console session exists, so the
+   // claim is the authority (the member is Keeper's own configured owner, never named by the agent).
+   const owner=socketOptions.designatedOwnerId;
+   if(!socketOptions.outsideCustody||Object.keys(input).sort().join(',')!=='chat,claimRevision,connectionName,door,principal,sessionId'||!isValidDoorClaim(input as never)||
+      input.chat!=='private'||typeof input.sessionId!=='string'||!/^[A-Za-z0-9_-]{1,64}$/.test(input.sessionId)||typeof input.connectionName!=='string'||
+      typeof owner!=='string'||!/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(owner))throw new Error('outside');
+   const claim={door:String(input.door),principal:String(input.principal),claimRevision:String(input.claimRevision)};
+   const env={...process.env,LARES_AGENT_NAME:agent,LARES_AGENT_INCARNATION:incarnation} as NodeJS.ProcessEnv;
+   const check=()=>authorityTransaction(pool,async db=>{
+    await db.query("SELECT set_config('statement_timeout','900ms',true)");await db.query("SELECT set_config('lock_timeout','500ms',true)");
+    await requireDoorClaim(db as never,{...claim,memberId:owner},env);
+   },transactionDeadline);
+   await check();assertNotAborted();
+   const tools=await socketOptions.outsideCustody.acceptedRuntimeTools({agent,incarnation,sessionId:input.sessionId,
+    memberId:owner,approverMemberId:owner,admissionNonce:'',policyRevision:0,door:true},
+    String(active.rows[0]!.hash),input.connectionName,{deadlineAtMs:requestDeadline,assertCurrent:assertNotAborted});
+   await check();assertNotAborted();return {tools};
   }
   if(op==='outside.tools'){
    if(!socketOptions.outsideCustody||typeof input.sessionId!=='string'||typeof input.memberId!=='string'||

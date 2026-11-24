@@ -89,6 +89,27 @@ export function isTrustedRead(entry: Pick<OutsideToolDeclaration, "tools">, bare
   return grant !== undefined && currentPin !== undefined && grant.pin === currentPin;
 }
 
+/** Where a conversation happens, for the one question "may this outside tool be offered here?".
+ *  `web-chat`: the console's own verified session, where every allowed tool is offered and a card asks first.
+ *  `private-door-chat`: the claimed person in a private chat on a door (Slack, Telegram, ...). A door has no
+ *  card the engine can bind to an outside call yet, so only a tool the owner lets run without asking is offered.
+ *  A later surface (a shared channel, with a per-tool "allowed here" setting) is a new case in this one function. */
+export type OutsideSurface = "web-chat" | "private-door-chat";
+
+export function outsideToolOfferedOn(
+  surface: OutsideSurface,
+  entry: Pick<OutsideToolDeclaration, "tools">,
+  bareTool: string,
+  currentPin: string | undefined,
+): boolean {
+  if (!entry.tools.allow.includes(bareTool)) return false;
+  return surface === "web-chat" ? true : isTrustedRead(entry, bareTool, currentPin);
+}
+
+/** What the model is told when a door-chat lookup would have needed a card (the turn already read outside text). */
+export const OUTSIDE_DOOR_NEEDS_CARD =
+  "This lookup cannot run here after the conversation has read text from outside. Ask again in a new message, or ask in the console's web chat, where it can ask the owner first.";
+
 /** Who and when, written by the keeper and never taken from the browser. A switch that was already on
  *  for the same tool with the same description keeps its original who and when; a new or re-ticked one
  *  is stamped with `by` and `now`. Anything else the browser sent for `by`/`at` is thrown away. */
