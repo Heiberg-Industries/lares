@@ -493,6 +493,12 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     reason: "which model-provider key file an agent's calls use (revision id, state, a role label for who set it, key-test outcome); the key itself is never stored, and there is no person column.",
   },
   {
+    table: "outside_connectors",
+    scope: "operational",
+    createdBy: `${BOX}/039_outside_connectors.sql`,
+    reason: "the installation's directory of outside servers (name, address, login kind, listed tools, setup state); created_by is a role label and there is no person column or credential.",
+  },
+  {
     table: "agent_doors",
     scope: "operational",
     createdBy: `${BOX}/001_baseline.sql`,
