@@ -28,6 +28,8 @@
 #   lares budget recover [--check]                      prove the ledger against the database and lift a freeze
 #   lares budget setup [options]                        ask for the monthly limits and switch model
 #                                                       spending on for this installation
+#   lares db [psql options]                             open a read-only look at the installation's database
+#                                                       (a login that sees no secret and changes nothing)
 #   lares agent start <name> [--member <email>] [--yes]
 #                                                       connect a person to an agent and start it
 #   lares agent import <dir> [--yes]                    create the agents in <dir> (one agent folder,
@@ -81,6 +83,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
        lares budget recover [--check]
        lares budget setup [--installation-limit <usd>] [--person-limit <usd>] [--prices <in,out,cache-read,cache-write>] [--yes]
+       lares db [psql options]
        lares agent start <name> [--member <email>] [--yes]
        lares agent import <dir> [--yes]
        lares agent refresh
@@ -97,7 +100,7 @@ EOF
 cmd="$1"
 shift
 case "$cmd" in
-  update|rollback|restore|doctor|import-preview|vault|voices|owner-bootstrap|backups|budget|agent|provider-key) ;;
+  update|rollback|restore|doctor|import-preview|vault|voices|owner-bootstrap|backups|budget|agent|provider-key|db) ;;
   -h|--help) usage; exit "$EX_USAGE" ;;
   *) printf 'lares: I do not know the command %s.\n' "'$cmd'" >&2; usage; exit "$EX_USAGE" ;;
 esac
@@ -563,6 +566,41 @@ cmd_agent() {
   budget_commands agent-start "$@"
 }
 
+# A read-only look at the database. The diagnostic login has no stored password: each run sets a random
+# one that lasts at most an hour, signs in with it, and clears it when psql ends. That login reads
+# named non-secret columns only and cannot write (database-privileges.ts). It runs in a throwaway
+# container with the root-only operator credential, which is used only to set and clear that password.
+DB_SCRIPT='
+set -eu
+db=${PGDATABASE:-lares_state}
+op() { psql -X -qAt -v ON_ERROR_STOP=1 -U lares_operator -d "$db" "$@"; }
+if [ "$(op -c "SELECT 1 FROM pg_roles WHERE rolname = '"'"'lares_diagnostic'"'"'" 2>/dev/null || true)" != 1 ]; then
+  echo "lares db: this installation has no diagnostic login yet. It is created by lares update; update to a release that has it." >&2
+  exit 78
+fi
+pw=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d " \n")
+expires=$(date -u -d "@$(( $(date +%s) + 3600 ))" "+%Y-%m-%d %H:%M:%S+00")
+cleanup() { op -c "ALTER ROLE lares_diagnostic PASSWORD NULL VALID UNTIL '"'"'infinity'"'"'" >/dev/null 2>&1 || echo "lares db: could not clear the temporary password; it expires by itself within an hour." >&2; }
+trap cleanup EXIT
+op -c "ALTER ROLE lares_diagnostic PASSWORD '"'"'$pw'"'"' VALID UNTIL '"'"'$expires'"'"'" >/dev/null
+code=0
+PGPASSWORD="$pw" psql -X -U lares_diagnostic -d "$db" "$@" || code=$?
+exit "$code"
+'
+
+cmd_db() {
+  case "${1:-}" in
+    -h|--help)
+      printf 'lares db [psql options]: open a read-only look at the database as a login that sees no secret and changes nothing.\nExamples:\n  sudo lares db\n  sudo lares db -c "SELECT slug, state FROM outside_connectors"\n' >&2
+      return 0 ;;
+  esac
+  # shellcheck source=engine-run.sh
+  . "$OPS/engine-run.sh"
+  local tty=""
+  if [ -t 0 ] && [ -t 1 ]; then tty=1; fi
+  OPERATOR_DB_TTY="$tty" operator_db_run -f "$DB_COMPOSE_DIR/compose.yaml" -- sh -c "$DB_SCRIPT" sh "$@"
+}
+
 cmd_provider_key() {
   [ "${1:-}" = set ] || { printf 'lares: the provider-key command is: lares provider-key set --key-file <path>\n' >&2; usage; exit "$EX_USAGE"; }
   shift
@@ -581,5 +619,6 @@ case "$cmd" in
   doctor) cmd_doctor "$@" ;;
   budget) cmd_budget "$@" ;;
   agent) cmd_agent "$@" ;;
+  db) cmd_db "$@" ;;
   provider-key) cmd_provider_key "$@" ;;
 esac

@@ -973,7 +973,9 @@ operator_db_run() {
   fi
   image=$(printf '%s' "$image_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["db"]["image"])') \
     || { echo "operator_db_run: database image could not be resolved" >&2; return 1; }
-  docker_args=(run --rm -i --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+  local tty_flag=-i
+  [ "${OPERATOR_DB_TTY:-}" = 1 ] && tty_flag=-it
+  docker_args=(run --rm "$tty_flag" --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
     -v "$operator_file:/run/secrets/database-operator:ro" \
     -e PGPASSWORD_FILE=/run/secrets/database-operator -e PGHOST=127.0.0.1 -e PGPORT="${PGPORT:-5432}" -e PGUSER=lares_operator \
     --entrypoint /bin/sh "$image" -ec 'export PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; unset PGPASSWORD_FILE; exec "$@"' sh "${program[@]}")
