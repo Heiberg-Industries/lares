@@ -240,6 +240,7 @@
         "outside-connect.connectApplyAgent",
         "outside-connect.connectDeclare",
         "outside-connect.connectLookUpTools",
+        "outside-connect.connectRemoveDeclaration",
         "outside-connect.connectReviewAndStage",
         "outside-connect.connectSetTools",
         "outside-connect.connectSwitchOnTrust",
@@ -994,8 +995,8 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": [],
-      "see": "none"
+      "usedBy": ["/integrations/outside/[id]"],
+      "see": "owner"
     },
     {
       "id": "outside-connect.connectReviewAndStage",
