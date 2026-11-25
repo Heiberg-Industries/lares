@@ -981,3 +981,29 @@ operator_db_run() {
     --entrypoint /bin/sh "$image" -ec 'export PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; unset PGPASSWORD_FILE; exec "$@"' sh "${program[@]}")
   if [ -n "$timeout_seconds" ]; then timeout "$timeout_seconds" docker "${docker_args[@]}"; else docker "${docker_args[@]}"; fi
 }
+
+# diagnostic_db_run COMPOSE_ARGS... -- PROGRAM ARGS...
+# Run a PostgreSQL client for the read-only diagnostic login (`lares db`). Unlike operator_db_run,
+# NOTHING secret is mounted: whoever holds this client, including through a shell escape inside
+# psql, sees only the one temporary password of the diagnostic login, which is passed in the
+# environment variable LARES_DIAGNOSTIC_PGPASSWORD of the caller (exported, never put in argv).
+diagnostic_db_run() {
+  local image_json image
+  local -a compose_args=() program=()
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do compose_args+=("$1"); shift; done
+  [ "$#" -gt 1 ] || { echo "diagnostic_db_run: no PostgreSQL command was named" >&2; return 64; }
+  shift
+  program=("$@")
+  [ -n "${LARES_DIAGNOSTIC_PGPASSWORD:-}" ] || { echo "diagnostic_db_run: no temporary password was given" >&2; return 64; }
+  image_json=$(docker compose "${compose_args[@]}" config --format json) \
+    || { echo "diagnostic_db_run: database Compose configuration could not be read" >&2; return 1; }
+  image=$(printf '%s' "$image_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["db"]["image"])') \
+    || { echo "diagnostic_db_run: database image could not be resolved" >&2; return 1; }
+  local tty_flag=-i
+  [ "${OPERATOR_DB_TTY:-}" = 1 ] && tty_flag=-it
+  local PGPASSWORD="$LARES_DIAGNOSTIC_PGPASSWORD"
+  export PGPASSWORD
+  docker run --rm "$tty_flag" --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+    -e PGPASSWORD -e PGHOST=127.0.0.1 -e PGPORT="${PGPORT:-5432}" -e PGUSER=lares_diagnostic \
+    --entrypoint "${program[0]}" "$image" "${program[@]:1}"
+}

@@ -968,7 +968,7 @@ operators and agents. It signs in as a login that reads named non-secret columns
 connections, their custody history without any sealed value, approvals, update and backup history,
 the keeper's action log without its inputs) and can change nothing. It sees no token, key or
 refresh material. Each run sets a random password that lasts at most an hour and is cleared when you
-leave. Give it psql options to run one query: `sudo lares db -c "SELECT slug, state FROM outside_connectors"`.
+leave. Your psql runs in a container that holds no operator secret, and only one session can be open at a time. Give it psql options to run one query: `sudo lares db -c "SELECT slug, state FROM outside_connectors"`.
 A server gets this login with its next `lares update`; `lares doctor` has a line that checks it.
 
 **Disk space.** An optional `disk-guard` timer can report root-disk usage to an uptime monitor;
