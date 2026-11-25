@@ -89,6 +89,22 @@ export function isTrustedRead(entry: Pick<OutsideToolDeclaration, "tools">, bare
   return grant !== undefined && currentPin !== undefined && grant.pin === currentPin;
 }
 
+/** The owner's recorded danger-zone permission for one tool: only a tool in `allow` and NOT in `read` can have it. */
+export function dangerGrantFor(entry: Pick<OutsideToolDeclaration, "tools">, bareTool: string): NonNullable<OutsideToolDeclaration["tools"]["danger"]>[number] | undefined {
+  return entry.tools.allow.includes(bareTool) && !entry.tools.read.includes(bareTool) ? (entry.tools.danger ?? []).find((t) => t.tool === bareTool) : undefined;
+}
+
+/** Whether the designated owner let this tool, which changes something, run without a card, NOW (the description pin must still match). */
+export function isDangerRun(entry: Pick<OutsideToolDeclaration, "tools">, bareTool: string, currentPin: string | undefined): boolean {
+  const grant = dangerGrantFor(entry, bareTool);
+  return grant !== undefined && currentPin !== undefined && grant.pin === currentPin;
+}
+
+/** The one question the runtime asks: does this tool run without a card now, as a trusted lookup or from the danger zone? */
+export function runsWithoutAsking(entry: Pick<OutsideToolDeclaration, "tools">, bareTool: string, currentPin: string | undefined): boolean {
+  return isTrustedRead(entry, bareTool, currentPin) || isDangerRun(entry, bareTool, currentPin);
+}
+
 /** Where a conversation happens, for the one question "may this outside tool be offered here?".
  *  `web-chat`: the console's own verified session, where every allowed tool is offered and a card asks first.
  *  `private-door-chat`: the claimed person in a private chat on a door (Slack, Telegram, ...). A door has no
@@ -103,7 +119,7 @@ export function outsideToolOfferedOn(
   currentPin: string | undefined,
 ): boolean {
   if (!entry.tools.allow.includes(bareTool)) return false;
-  return surface === "web-chat" ? true : isTrustedRead(entry, bareTool, currentPin);
+  return surface === "web-chat" ? true : runsWithoutAsking(entry, bareTool, currentPin);
 }
 
 /** What the model is told when a door-chat lookup would have needed a card (the turn already read outside text). */

@@ -1564,11 +1564,14 @@ for (const kind of DOOR_KINDS) {
 // ─── A lookup the owner let run without a card ─────────────────────────────────────────────
 describe('a lookup under the owner\'s standing trust',()=>{
  const lookupTool={name:'lookup',description:'Looks up a company.',inputSchema:{type:'object'}};
- async function trustedFixture(over:{trust?:'none'|'write'|'stale-pin';pinRow?:'ok'|'missing'|'unaccepted'|'moved'}={}){
+ const createTool={name:'create_note',description:'Writes a note.',inputSchema:{type:'object'}};
+ async function trustedFixture(over:{trust?:'none'|'write'|'stale-pin'|'danger'|'danger-stale';pinRow?:'ok'|'missing'|'unaccepted'|'moved'}={}){
   const {toolPinHash,entryConfigHash}=await import('../../../packages/agent-kit/src/outside-pins.js');
   const grant={tool:over.trust==='write'?'create_note':'lookup',by:ids.member,at:'2026-11-20T10:00:00.000Z',
    pin:toolPinHash(over.trust==='stale-pin'?{...lookupTool,description:'Older words.'}:lookupTool)};
-  const tools={allow:['lookup','create_note'],read:['lookup'],...(over.trust==='none'?{}:{trusted:[grant]})};
+  const dangerGrant={tool:'create_note',by:ids.member,at:'2026-11-25T10:00:00.000Z',pin:toolPinHash(over.trust==='danger-stale'?{...createTool,description:'Older words.'}:createTool)};
+  const isDanger=over.trust==='danger'||over.trust==='danger-stale';
+  const tools={allow:['lookup','create_note'],read:['lookup'],...(over.trust==='none'?{}:isDanger?{danger:[dangerGrant]}:{trusted:[grant]})};
   roleDefinition=definitionSchema.parse({...defaultRoleDefinition,
    grants:[...defaultRoleDefinition.grants,{capability:'outside',scope:'write-with-confirm'}],autonomy:{...defaultRoleDefinition.autonomy,outside:'gated'},
    outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Lookup',token:true,tools}]});
@@ -1580,12 +1583,12 @@ describe('a lookup under the owner\'s standing trust',()=>{
   const entry=roleDefinition.outsideTools![0]!;
   if(over.pinRow!=='missing')await pool.query(
    `INSERT INTO outside_tool_pins(agent,tool,config_hash,pin_hash,pin_tools,seen_hash) VALUES($1,'registry',$2,$3,$4::jsonb,$5)`,
-   [agent,entryConfigHash(entry),'e'.repeat(64),JSON.stringify([over.pinRow==='moved'?{...lookupTool,description:'Changed words.'}:lookupTool]),over.pinRow==='unaccepted'?'f'.repeat(64):null]);
+   [agent,entryConfigHash(entry),'e'.repeat(64),JSON.stringify([over.pinRow==='moved'?{...lookupTool,description:'Changed words.'}:lookupTool,over.pinRow==='moved'?{...createTool,description:'Changed words.'}:createTool]),over.pinRow==='unaccepted'?'f'.repeat(64):null]);
   expect(await new PgGrantStore(pool).captureUse(ids.member,agent)).toBeDefined();
   await bindConsoleSession({agent,incarnation,sessionId:session,memberId:ids.member,admissionNonce},pool as never,env);
   ids.outsideApprove.mockResolvedValue(undefined);
   ids.outsideDispatch.mockResolvedValue({content:[{type:'text',text:'Fixture result'}]});
-  const call={callId:randomUUID(),connectionName:'registry',toolName:over.trust==='write'?'create_note':'lookup',input:{company:'Example'}};
+  const call={callId:randomUUID(),connectionName:'registry',toolName:over.trust==='write'||over.trust==='danger'||over.trust==='danger-stale'?'create_note':'lookup',input:{company:'Example'}};
   return {call,binding:{sessionId:session,memberId:ids.member,admissionNonce}};
  }
  const audits=async()=>(await pool.query("SELECT actor,input,outcome,detail FROM keeper_audit WHERE action='outside.run-trusted'")).rows;
@@ -1597,6 +1600,20 @@ describe('a lookup under the owner\'s standing trust',()=>{
   const rows=await audits();expect(rows).toHaveLength(1);
   expect(rows[0]!.input).toMatchObject({agent,connection:'registry',tool:'lookup',sessionId:session,callId:f.call.callId,trustGrantedBy:ids.member,trustGrantedAt:'2026-11-20T10:00:00.000Z'});
   expect(rows[0]!.outcome).toBe('ok');
+ });
+ it('runs a tool from the danger zone with no card, and the audit says it was the danger zone',async()=>{
+  const f=await trustedFixture({trust:'danger'});
+  expect(await runtime('outside.run-trusted',{...f.binding,call:f.call})).toMatchObject({result:{content:[{type:'text',text:'Fixture result'}]}});
+  const rows=await audits();expect(rows).toHaveLength(1);
+  expect(rows[0]!.input).toMatchObject({agent,connection:'registry',tool:'create_note',dangerZone:true,trustGrantedBy:ids.member,trustGrantedAt:'2026-11-25T10:00:00.000Z'});
+  expect(rows[0]!.outcome).toBe('ok');
+ });
+ it('refuses a danger-zone tool once its description moved, was never accepted, or its stored words are gone',async()=>{
+  for(const over of [{trust:'danger-stale' as const},{trust:'danger' as const,pinRow:'moved' as const},{trust:'danger' as const,pinRow:'unaccepted' as const},{trust:'danger' as const,pinRow:'missing' as const}]){
+   const f=await trustedFixture(over);
+   await expect(runtime('outside.run-trusted',{...f.binding,call:f.call})).rejects.toThrow();
+  }
+  expect(ids.outsideDispatch).not.toHaveBeenCalled();
  });
  it('never writes the call\'s arguments into the audit, whatever strings they hold',async()=>{
   const f=await trustedFixture();

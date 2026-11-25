@@ -282,6 +282,20 @@ describe("engine database privilege foundation", () => {
     expect(role).toEqual({ rolcanlogin: true, rolsuper: false, nopw: true });
   });
 
+  it("takes back a grant the diagnostic login should not hold, then grants the fixed list again", async () => {
+    await admin.query("GRANT UPDATE ON TABLE outside_connectors TO lares_diagnostic");
+    await admin.query("GRANT SELECT (ciphertext) ON TABLE outside_custody_revisions TO lares_diagnostic");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    const operator = await admin.connect();
+    try {
+      expect(await refreshEngineDatabasePrivileges(operator, { expectedDatabase: container.getDatabase() })).toEqual({ status: "repaired" });
+      expect(await refreshEngineDatabasePrivileges(operator, { expectedDatabase: container.getDatabase() })).toEqual({ status: "verified" });
+    } finally { operator.release(); }
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+    const held = await admin.query("SELECT has_table_privilege('lares_diagnostic','outside_connectors','UPDATE') AS update, has_column_privilege('lares_diagnostic','outside_custody_revisions','ciphertext','SELECT') AS secret, has_column_privilege('lares_diagnostic','outside_connectors','slug','SELECT') AS slug");
+    expect(held.rows[0]).toEqual({ update: false, secret: false, slug: true });
+  }, 60_000);
+
   it("closes the write-capable built-ins to PUBLIC, and the refresh closes them again when they were reopened", async () => {
     await admin.query("GRANT EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) TO PUBLIC");
     expect(await diagnosticLoginState(admin)).toBe("wrong");

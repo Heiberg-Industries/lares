@@ -13,7 +13,8 @@ Open **Integrations**, then **Outside tools**. The owner uses three screens; the
   a later release. A failure shows one message and **Try again**, which continues with the saved connector.
 - **Connector page** (`/integrations/outside/<id>`):
   - **Who can use it**: each agent's tools as a list with the kind (looks things up, or changes something) and a
-    **Run without asking** switch, saved with **Save tools**. A tool that changes something always asks.
+    **Run without asking** switch, saved with **Save tools**. A tool that changes something always asks, unless the
+    owner put it in the **Danger zone** at the bottom of the page (see "The danger zone" below).
   - **Give an agent access**: choose the agents, paste the token once, **Find tools**, choose the tools, **Give access**.
     The token is sent to each chosen agent's own locked store in that one action. An agent whose outside access is
     read-only and a tool that changes something: the page offers **Leave it out** (everything else is saved) or
@@ -136,3 +137,30 @@ Changing a switch after connecting edits the agent's definition, like any other 
   be reviewed and sent again.
 - Each run is written to the audit log as started, then finished or failed. If the closing write fails, the keeper logs it
   loudly and opens a repair, so a run never stays "started" unnoticed.
+
+## The danger zone: a tool that changes something may run without asking
+
+A tool that changes something (sends, creates, deletes, pays) always asks first. There is one narrow way around that,
+decided in ADR-0029: the red **Danger zone** at the bottom of the connector page.
+
+- It lists only the tools that change something, for each agent that may use them. Each tool is switched on on its own;
+  there is no switch for all of them.
+- The switch stays disabled until you type the tool's name exactly. Switching off needs no typing.
+- Only the installation's designated owner can use it, from a signed-in console session. Another owner of the
+  organisation, a member, an agent, a card answer, a definition import or a definition an agent wrote cannot. Whatever a
+  saved or imported definition says for it is thrown away by the keeper. It also needs an agent whose outside access is
+  not read-only, and a tool the agent may already use.
+- It is tied to the description the agent has stored for the tool, like a lookup's switch. If the description or the input
+  shape changes, it is off again by itself, the tool asks first again, and the page says so in the same words as for a
+  lookup. There is no expiry otherwise.
+- Every switch on and off is written to the keeper audit log (`outside.danger.set`): who, when, the connector, the tool and
+  the description fingerprint it was bound to. Every run under it is audited like a lookup's, marked as coming from the danger zone.
+- A tool in the danger zone carries the red badge **Runs without asking: changes something** on the connector page, the
+  agent's page and the outside tools list. The connector's summary line counts these separately from lookups.
+- In a private chat on a chat door (Slack, Telegram) the tool is offered and runs without a card, for the claimed owner
+  only. It is never offered in a shared room. After ANY outside text in the same turn, even the result of a lookup on the
+  same connection, it is refused in words (a lookup may chain on its own connection; a changing tool never does). The
+  ratchet, the member's spending limit and the description check all still apply.
+- To check it live: on a connector with a tool that changes something, type its name in the danger zone and switch it on,
+  see the red badge, ask the agent to use it in a Slack private message (no card appears), then switch it off and ask again
+  (it is no longer offered there).

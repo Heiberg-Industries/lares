@@ -319,3 +319,25 @@ export async function connectSetTools(input: unknown): Promise<ConnectStep<{ con
       droppedTrust: (current.tools.trusted ?? []).map(t => t.tool).filter(t => wanted.includes(t) && !after.has(t)) };
   });
 }
+
+/**
+ * The danger zone: lets ONE tool that changes something run without asking, or takes that back. The keeper alone decides who may
+ * (the installation's designated owner, from this signed-in session), checks that the typed name is the tool's name, binds the
+ * permission to the exact description it has stored, and writes the audit record. This only carries the owner's request to it, then
+ * applies the saved change like every other connection edit. A refusal comes back in the keeper's own words.
+ */
+export async function connectSetDanger(input: unknown): Promise<ConnectStep<{ on: boolean }>> {
+  await requireConsoleMember();
+  const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, tool: z.string().min(1).max(200), on: z.boolean(), typedName: z.string().max(200) }).safeParse(input);
+  if (!parsed.success) return fail("That request is not valid.");
+  const { agent, name, tool, on, typedName } = parsed.data;
+  return step("The danger zone could not be changed.", async (who) => {
+    const state = await read(who, agent);
+    if (!state.connections.some(c => c.name === name)) throw new StepFailure("This connector is not on the agent any more.", false);
+    const saved = stateSchema.parse(await keeper<unknown>("outside.danger.set",
+      { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: state.definitionHash, expectedAccessRevision: state.accessRevision, connection: name, tool, on, typedName }, who.actor, TIMEOUT));
+    if (saved.applicationStatus !== "applied")
+      await keeper<unknown>("outside.connections.apply", { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: saved.definitionHash, expectedAccessRevision: saved.accessRevision }, who.actor, TIMEOUT);
+    return { on };
+  });
+}

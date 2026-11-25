@@ -4,6 +4,7 @@ import { Button } from "@lares/ui/primitives/button";
 import { requireConsolePage } from "../../../lib/auth";
 import { listConnectors } from "../../actions/outside-connectors";
 import { agentUsesByConnector } from "../../../lib/outside-connector-view";
+import { DANGER_BADGE, dangerCount } from "../../../lib/outside-tools-words";
 import { authWords, nextActionWords, stateTone, stateWords } from "../../../lib/outside-connector-words";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +27,7 @@ export default async function OutsideToolsDirectoryPage() {
           <div className="lares-actions">
             <strong><Link href={`/integrations/outside/${c.id}`}>{c.displayName}</Link></strong>
             <StatusBadge tone={stateTone(c.state, c.authKind, agents.length)}>{stateWords(c.state, c.authKind, agents.length)}</StatusBadge>
+            {dangerCount(agents) > 0 && <StatusBadge tone="error">{DANGER_BADGE}</StatusBadge>}
           </div>
           <p className="lares-muted">{authWords(c.authKind)} · {tools === null ? "tools not read yet" : `${tools} tool${tools === 1 ? "" : "s"}`} · {agents.length ? agents.map(a => a.displayName).join(", ") : "no agents"}</p>
           <p><Link href={`/integrations/outside/${c.id}`}>{nextActionWords(c.state, c.authKind, agents.length)} →</Link></p>

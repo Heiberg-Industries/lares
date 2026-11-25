@@ -5,7 +5,7 @@ import type { ApprovalContext, ApprovalResponseContext, ApprovalResponseDecision
 
 import type { AgentDefinition, OutsideToolDeclaration } from "./definition.js";
 import { registerOutsideConnections, withCardTitle } from "./approval-summary.js";
-import { outsideToolsInEffect, isTrustedRead, outsideToolOfferedOn, OUTSIDE_DOOR_NEEDS_CARD, type OutsideSurface } from "./outside-tools.js";
+import { outsideToolsInEffect, runsWithoutAsking, isDangerRun, outsideToolOfferedOn, OUTSIDE_DOOR_NEEDS_CARD, type OutsideSurface } from "./outside-tools.js";
 import { toolPinHash } from "./outside-pins.js";
 import { asksAfterUntrustedText, asksAfterUntrustedTextUnlessSameConnection } from "./tainted-approval.js";
 import { isApprovalRecheck } from "./approval-execution.js";
@@ -49,8 +49,9 @@ export function bareToolName(connection: string, toolName: string): string {
  * The request-time approval policy.
  *
  * - every tool asks, reads included, UNLESS the owner switched that one tool on ("run without asking")
- *   and it is also marked as only looking things up (`isTrustedRead`). A tool that changes
- *   something always asks.
+ *   and it is also marked as only looking things up (`isTrustedRead`), or the installation's designated owner put
+ *   that one tool, which changes something, in the console's danger zone (`isDangerRun`). Both are `runsWithoutAsking`.
+ *   Any other tool that changes something asks.
  * - a trusted lookup runs without a card only while the turn has not read somebody else's words
  *   (`asksAfterUntrustedText`). In a role with no taint hook (`taintAware: false`) that check could
  *   never see outside text, so every call asks.
@@ -63,13 +64,15 @@ export function outsideRequestPolicy(
   opts: { taintAware?: boolean; telegramApprovals?: boolean; pins?: Readonly<Record<string, string>> } = {},
 ): (ctx: ApprovalContext) => Promise<ApprovalStatus> {
   const afterUntrusted = asksAfterUntrustedTextUnlessSameConnection(entry.name);
+  // A tool that changes something never chains on text it follows: after ANY outside text, even a trusted lookup of its own connection, it asks.
+  const afterAnyText = asksAfterUntrustedText();
   const telegramOk = opts.telegramApprovals ?? OUTSIDE_TELEGRAM_APPROVALS_PROVEN;
   return async (ctx) => {
     let decision: ApprovalStatus = "user-approval";
     try {
       const bare = bareToolName(entry.name, ctx.toolName);
-      if (opts.taintAware !== false && isTrustedRead(entry, bare, opts.pins?.[bare])) {
-        decision = await afterUntrusted(ctx);
+      if (opts.taintAware !== false && runsWithoutAsking(entry, bare, opts.pins?.[bare])) {
+        decision = await (isDangerRun(entry, bare, opts.pins?.[bare]) ? afterAnyText : afterUntrusted)(ctx);
       }
     } catch {
       decision = "user-approval";
@@ -268,18 +271,18 @@ export async function resolveOutsideTools(definition:OutsideDefinitionView,deps:
         tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
           approval:withCardTitle({request:async (ctx:ApprovalContext)=>(await free(ctx))==='not-applicable'?'not-applicable' as const:{type:'denied' as const,reason:OUTSIDE_DOOR_NEEDS_CARD},
             response:()=>({status:'rejected' as const,reason:'an outside lookup on a chat door has no card to answer'})}),
-          execute:markTrusted(entry.name,deps.executor(entry.name,tool.name,true))});
+          execute:isDangerRun(entry,tool.name,pins[tool.name])?deps.executor(entry.name,tool.name,true):markTrusted(entry.name,deps.executor(entry.name,tool.name,true))});
         continue;
       }
       const authored=deps.approval?.(entry.name,tool.name)??{request:async()=> 'user-approval' as const};
-      const runsFree=isTrustedRead(entry,tool.name,pins[tool.name]);
+      const runsFree=runsWithoutAsking(entry,tool.name,pins[tool.name]);
       // A trusted lookup skips the card only on a clean turn. A card already raised (eve asks the policy
       // again before the approved call runs) keeps its own path.
       const free=outsideRequestPolicy(entry,{telegramApprovals:true,pins});
       const gated=runsFree?{...authored,request:async (ctx:ApprovalContext)=>
         (isApprovalRecheck(ctx)?authored.request(ctx):(await free(ctx))==='not-applicable'?'not-applicable' as const:authored.request(ctx))}:authored;
       tools[`${entry.name}__${tool.name}`]=defineTool({description:tool.description??'',inputSchema:tool.inputSchema,
-        approval:withCardTitle(gated),execute:runsFree?markTrusted(entry.name,deps.executor(entry.name,tool.name,runsFree)):deps.executor(entry.name,tool.name,runsFree)});
+        approval:withCardTitle(gated),execute:runsFree&&!isDangerRun(entry,tool.name,pins[tool.name])?markTrusted(entry.name,deps.executor(entry.name,tool.name,runsFree)):deps.executor(entry.name,tool.name,runsFree)});
     }
   }
   return Object.keys(tools).length?tools:null;

@@ -1,5 +1,5 @@
 "use client";
-import { Choice, Field, FieldGroup, Notice, ToolList, ToolRow } from "@lares/ui/patterns";
+import { Choice, Field, FieldGroup, Notice, StatusBadge, ToolList, ToolRow } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { Input } from "@lares/ui/primitives/input";
@@ -12,7 +12,7 @@ import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLo
 import { removeFromAgent } from "../app/actions/outside-connectors";
 import type { OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
 import { toolNamesOf } from "../lib/outside-connect-words";
-import { readOnlyChoiceWords, whereToolsWork } from "../lib/outside-tools-words";
+import { DANGER_BADGE, readOnlyChoiceWords, whereToolsWork } from "../lib/outside-tools-words";
 import type { AgentUse } from "../lib/outside-connector-view";
 
 type Agent = { name: string; displayName: string };
@@ -81,12 +81,13 @@ function AgentTools({ use, universe, slug, canWiden, read }: { use: AgentUse; un
   const set = (i: number, patch: Partial<(typeof rows)[number]>) => setRows(list => list.map((r, k) => k === i ? { ...r, ...patch } : r));
   return <section className="lares-stack" aria-label={`${use.displayName} access`}>
     <h3 className="lares-section-title">{use.displayName}</h3>
-    <p className="lares-muted">{use.tools.length} of {universe.length} tools. {whereToolsWork(use.tools.length, use.tools.filter(t => t.free).length)}</p>
+    <p className="lares-muted">{use.tools.length} of {universe.length} tools. {whereToolsWork(use.tools.length, use.tools.filter(t => t.free).length, use.tools.filter(t => t.danger === "on").length)}</p>
     <ToolList label={`Tools for ${use.displayName}`}>{rows.map((row, i) => <ToolRow key={row.name} name={row.name} kind={row.kind}
       control={<Switch aria-label={`${use.displayName} may use ${row.name}`} checked={row.allowed} disabled={!read.has(row.name)} onCheckedChange={on => set(i, { allowed: on, ...(on ? {} : { free: false }) })} />}>
       {!read.has(row.name) && <span className="lares-muted">{use.displayName} has not read this tool&apos;s description. Give access again to review and add it.</span>}
       {row.allowed && row.kind === "read" && <Choice><Switch aria-label={`Run ${row.name} without asking`} checked={row.free} onCheckedChange={on => set(i, { free: on })} /> Run without asking</Choice>}
-      {row.allowed && row.kind === "change" && <span className="lares-muted">Always asks you first.</span>}
+      {row.allowed && row.kind === "change" && (use.tools.find(t => t.name === row.name)?.danger === "on"
+        ? <StatusBadge tone="error">{DANGER_BADGE}</StatusBadge> : <span className="lares-muted">Always asks you first.</span>)}
     </ToolRow>)}</ToolList>
     {conflict && <div className="lares-stack">
       <Notice tone="needs-you">{readOnlyChoiceWords(use.displayName, conflict.tools)}</Notice>
@@ -114,12 +115,12 @@ function AgentTools({ use, universe, slug, canWiden, read }: { use: AgentUse; un
 }
 
 /** Give more agents the connector. A token is typed once and sent to each chosen agent in this one action. */
-function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; canWiden: boolean }) {
+function GiveAccess({ conn, agents, canWiden, preTicked = [] }: { conn: Conn; agents: Agent[]; canWiden: boolean; preTicked?: string[] }) {
   const router = useRouter();
   const chain = useChain();
   const [phase, setPhase] = useState<"form" | "pick" | "connecting" | "done">("form");
   const [token, setToken] = useState(""), [consent, setConsent] = useState(false), [toolText, setToolText] = useState("");
-  const [ticked, setTicked] = useState<string[]>(agents.length === 1 ? [agents[0]!.name] : []);
+  const [ticked, setTicked] = useState<string[]>(preTicked.length ? preTicked : agents.length === 1 ? [agents[0]!.name] : []);
   const [rows, setRows] = useState<Row[]>([]), [serverName, setServerName] = useState("");
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [notes, setNotes] = useState<string[]>([]);
   const [conflict, setConflict] = useState<Conflict | null>(null);
@@ -129,7 +130,8 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
 
   /** Back to the form. Whatever a failed run saved is shown again by a refresh of the page. */
   function startOver() { reset(); router.refresh(); }
-  function reset() { setPhase("form"); setToken(""); setConsent(false); setRows([]); setError(""); setNotes([]); setConflict(null); chain.reset(); seen.current = undefined; }
+  // An agent that has the connector now is no longer in the list after the refresh, so it must not stay ticked for the next round.
+  function reset() { setPhase("form"); setToken(""); setConsent(false); setRows([]); setError(""); setNotes([]); setConflict(null); chain.reset(); seen.current = undefined; setTicked(list => list.filter(n => agents.some(a => a.name === n))); }
 
   async function findTools() {
     setError("");
@@ -336,7 +338,10 @@ export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines, kno
     for (const list of Object.values(known)) for (const name of list) if (!seenNames.has(name)) seenNames.set(name, "change");
     return [...seenNames].map(([name, kind]) => ({ name, kind }));
   })();
-  const without = allAgents.filter(a => !uses.some(u => u.agent === a.name));
+  // A connector that a check found to need a token, while some agent still has it declared without one: those agents get the token setup
+  // here too (the same steps as giving access), or they would keep failing for want of a token with nothing on the page to fix it.
+  const needToken = conn.authKind === "token" ? uses.filter(u => !u.needsKey).map(u => u.agent) : [];
+  const without = allAgents.filter(a => !uses.some(u => u.agent === a.name) || needToken.includes(a.name));
   if (conn.authKind === "signin") return <Notice tone="needs-you">This server uses a sign-in page. Sign-in comes in a later release, so no agent can use it yet.</Notice>;
   return <div className="lares-stack">
     <h2 className="lares-section-title">Who can use it</h2>
@@ -346,7 +351,8 @@ export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines, kno
       {u.needsKey && keyLines[u.agent] && <p className="lares-muted">{keyLines[u.agent]}</p>}
     </div>)}
     {conn.authKind === "token" && <ReplaceToken conn={conn} agents={allAgents.filter(a => uses.some(u => u.agent === a.name && u.needsKey))} />}
-    <h2 className="lares-section-title">{uses.length ? "Give another agent access" : "Give an agent access"}</h2>
-    <GiveAccess conn={conn} agents={without} canWiden={canWiden} />
+    <h2 className="lares-section-title">{needToken.length ? "Set up the token" : uses.length ? "Give another agent access" : "Give an agent access"}</h2>
+    {needToken.length > 0 && <Notice tone="needs-you">This connector needs a token, and {needToken.map(a => allAgents.find(x => x.name === a)?.displayName ?? a).join(", ")} {needToken.length === 1 ? "uses" : "use"} it without one. Add the token below to finish.</Notice>}
+    <GiveAccess key={needToken.join(",")} conn={conn} agents={without} canWiden={canWiden} preTicked={needToken} />
   </div>;
 }

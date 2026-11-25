@@ -1135,3 +1135,101 @@ it('definition.create and definition.import refuse a switch from anyone but the 
     await expect(runAction('definition.import', save('bookkeeper', { definition: withTrust }), ctx())).rejects.toThrow();
     expect(existsSync(join(agentsDir, 'bookkeeper'))).toBe(false);
 });
+
+// The danger zone: one tool that changes something may run without a card. Designated owner only, typed name, audited, bound to the stored description.
+async function dangerFixture() {
+    const { toolPinHash } = await import('@lares/agent-kit/outside-pins');
+    const fixture = await connectionFixture();
+    const changing = { ...declaration, tools: { allow: ['find_rate', 'set_rate'], read: ['find_rate'] } };
+    const stored = [{ name: 'find_rate', description: 'Finds a rate.', inputSchema: { type: 'object' } }, { name: 'set_rate', description: 'Sets a rate.', inputSchema: { type: 'object' } }];
+    const putPin = () => pool.query(`INSERT INTO outside_tool_pins(agent,tool,config_hash,pin_hash,pin_tools) VALUES('bookkeeper','rates',$1,$2,$3::jsonb)
+        ON CONFLICT (agent,tool) DO UPDATE SET pin_tools=EXCLUDED.pin_tools, seen_hash=NULL`, ['c'.repeat(64), 'd'.repeat(64), JSON.stringify(stored)]);
+    await putPin();
+    // A second owner of the same organisation, with edit access, who is not the installation's designated owner.
+    await pool.query(`INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES('connection-owner2','Second owner','connection-owner2@example.test','connection-org','owner');
+        INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('connection-owner2',NULL)`);
+    const token = Buffer.alloc(32, 91).toString('base64url');
+    await pool.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval \'1 hour\')', ['connection-session-owner2', 'connection-owner2', createHash('sha256').update(token).digest('hex')]);
+    const saved: any = await connectionCall(fixture.sessions.owner, 'bookkeeper', fixture.loaded.hash, fixture.access.accessRevision, [changing]);
+    const grants = new PgGrantStore(pool);
+    const widened = await grants.updateAgentAccess('connection-owner', { agentName: 'bookkeeper', expectedRevision: saved.accessRevision, grants: [
+        { principal: { kind: 'member', id: 'connection-editor' }, permission: 'edit', expiresAt: null },
+        { principal: { kind: 'member', id: 'connection-owner2' }, permission: 'edit', expiresAt: null },
+        { principal: { kind: 'member', id: 'connection-user' }, permission: 'use', expiresAt: null },
+    ] });
+    const definitionHash = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).hash;
+    const set = (sessionToken: string, over: Record<string, unknown> = {}, c = ctx()) => runAction('outside.danger.set',
+        { sessionToken, name: 'bookkeeper', expectedDefinitionHash: definitionHash, expectedAccessRevision: widened.accessRevision, connection: 'rates', tool: 'set_rate', on: true, typedName: 'set_rate', ...over }, c);
+    const applied = async (list: unknown[]) => pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,applied_definition,pending)
+        VALUES('bookkeeper','172.18.0.41','lares_danger','legacy',gen_random_uuid(),'ready',$1::jsonb,false)
+        ON CONFLICT (name) DO UPDATE SET applied_definition=EXCLUDED.applied_definition`, [JSON.stringify({ ...fixture.loaded.definition, outsideTools: list })]);
+    return { ...fixture, changing, stored, putPin, set, applied, toolPinHash, owner2: token, definitionHash, accessRevision: widened.accessRevision };
+}
+const stateOf = async () => (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition.outsideTools![0]!.tools;
+it('the danger zone: the designated owner switches a tool that changes something on, bound to the stored description, with an audit record', async () => {
+    const f = await dangerFixture();
+    const before = Date.now(), c = ctx();
+    const result: any = await f.set(f.sessions.owner, {}, c);
+    const [grant] = (await stateOf()).danger!;
+    expect(grant).toMatchObject({ tool: 'set_rate', by: 'owner@example.com', pin: f.toolPinHash(f.stored[1]!) });
+    expect(Date.parse(grant!.at)).toBeGreaterThanOrEqual(before);
+    expect((await stateOf()).trusted ?? []).toEqual([]);
+    expect(result.connections[0].tools.danger[0].pin).toBe(f.toolPinHash(f.stored[1]!));
+    const records = c.audit.mock.calls.map(([r]) => r as { action: string; actor: string; input: any; outcome: string; detail?: string });
+    expect(records.at(-1)).toMatchObject({ action: 'outside.danger.set', actor: 'owner@example.com', outcome: 'ok', input: { connection: 'rates', tool: 'set_rate', on: true, sessionToken: '<redacted>' } });
+    expect(JSON.parse(records.at(-1)!.detail!)).toMatchObject({ connection: 'rates', tool: 'set_rate', on: true, fingerprint: f.toolPinHash(f.stored[1]!) });
+});
+it('the danger zone: nobody else can use it, and the typed name must match exactly', async () => {
+    const f = await dangerFixture();
+    for (const who of [f.sessions.editor, f.sessions.user, f.sessions.stranger, f.owner2]) await expect(f.set(who)).rejects.toThrow();
+    await expect(f.set(f.owner2)).rejects.toThrow(/Only the installation's owner/);
+    await expect(f.set(f.sessions.owner, { typedName: 'set_rat' })).rejects.toThrow(/Type the tool's name exactly/);
+    await expect(f.set(f.sessions.owner, { typedName: '' })).rejects.toThrow(/Type the tool's name exactly/);
+    await expect(f.set(f.sessions.owner, { tool: 'find_rate', typedName: 'find_rate' })).rejects.toThrow(/changes something/);
+    expect((await stateOf()).danger).toBeUndefined();
+});
+it('the danger zone: a tool the agent does not use is refused', async () => {
+    const f = await dangerFixture();
+    await expect(f.set(f.sessions.owner, { tool: 'unknown_tool', typedName: 'unknown_tool' })).rejects.toThrow(/changes something/);
+    expect((await stateOf()).danger).toBeUndefined();
+});
+it('the danger zone: switching off is audited with the fingerprint it was bound to, and needs no typing', async () => {
+    const f = await dangerFixture();
+    await f.set(f.sessions.owner);
+    const hash = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).hash;
+    await f.applied((await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } })).definition.outsideTools!);
+    const c = ctx();
+    const revision = Number((await pool.query('SELECT revision FROM agent_access WHERE agent_name=$1', ['bookkeeper'])).rows[0].revision);
+    await runAction('outside.danger.set', { sessionToken: f.sessions.owner, name: 'bookkeeper', expectedDefinitionHash: hash, expectedAccessRevision: revision, connection: 'rates', tool: 'set_rate', on: false, typedName: '' }, c);
+    expect((await stateOf()).danger).toBeUndefined();
+    const records = c.audit.mock.calls.map(([r]) => r as { detail?: string; outcome: string });
+    expect(JSON.parse(records.at(-1)!.detail!)).toMatchObject({ tool: 'set_rate', on: false, fingerprint: f.toolPinHash(f.stored[1]!) });
+});
+it('the danger zone: a description that changed switches it off on the next save, and the owner can switch it on again', async () => {
+    const f = await dangerFixture();
+    await f.set(f.sessions.owner);
+    const saved = (await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } }));
+    await f.applied(saved.definition.outsideTools!);
+    f.stored[1]!.description = 'Sets a rate, and mails it to us.';
+    await f.putPin();
+    const revision = Number((await pool.query('SELECT revision FROM agent_access WHERE agent_name=$1', ['bookkeeper'])).rows[0].revision);
+    const next: any = await connectionCall(f.sessions.owner, 'bookkeeper', saved.hash, revision, [f.changing]);
+    expect(next.connections[0].tools.danger).toBeUndefined();
+});
+it('the danger zone: nothing a definition save, import or the console\'s ordinary save sends can set it', async () => {
+    const f = await dangerFixture();
+    const forged = { tool: 'set_rate', pin: f.toolPinHash(f.stored[1]!), by: 'someone-else', at: '2001-01-01T00:00:00.000Z' };
+    // The console's own connection save: whatever it sends for the danger list is thrown away.
+    const sent: any = await connectionCall(f.sessions.owner, 'bookkeeper', f.definitionHash, f.accessRevision, [{ ...f.changing, tools: { ...f.changing.tools, danger: [forged] } }]);
+    expect(sent.connections[0].tools.danger).toBeUndefined();
+    expect((await stateOf()).danger).toBeUndefined();
+    // definition.save, definition.create and definition.import: the same.
+    const base = { ...GOOD, name: 'bookkeeper', grants: [...GOOD.grants, { capability: 'outside', scope: 'write-with-confirm' }], autonomy: { ...GOOD.autonomy, outside: 'gated' } };
+    const withDanger = { ...base, outsideTools: [{ ...f.changing, tools: { ...f.changing.tools, danger: [forged] } }] };
+    await runAction('definition.save', save('bookkeeper', { definition: withDanger }), ctx(), { host: true });
+    expect((await stateOf()).danger).toBeUndefined();
+    await runAction('definition.save', save('bookkeeper', { definition: withDanger }), ctx());
+    expect((await stateOf()).danger).toBeUndefined();
+    // An agent has no way to reach the action at all: it needs a signed-in console session token.
+    await expect(runAction('outside.danger.set', { name: 'bookkeeper', connection: 'rates', tool: 'set_rate', on: true, typedName: 'set_rate' }, ctx())).rejects.toThrow();
+});

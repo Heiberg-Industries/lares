@@ -86,6 +86,33 @@ describe("the connector page", () => {
     expect(screen.getByLabelText("Ben")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Find tools" })).toBeTruthy();
   });
+  it("Give access to more does not keep the agents that were just added ticked", async () => {
+    mocks.declare.mockResolvedValue({ ok: true, value: { conflicts: [] } });
+    const none = { ...conn, authKind: "none" as const };
+    const give = async (name: string) => {
+      fireEvent.click(screen.getByLabelText(name));
+      fireEvent.change(screen.getByLabelText(/^Tools the agents may use/), { target: { value: "find_rate" } });
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Give access" }));
+      await screen.findByText(/^Done\./);
+    };
+    const { rerender } = render(<ConnectorAccess conn={none} uses={[]} allAgents={agents} canWiden keyLines={{}} />);
+    await give("Ada");
+    // The page refreshed: Ada has the connector now, so she is no longer in the list of agents to add.
+    rerender(<ConnectorAccess conn={none} uses={[{ agent: "ada", displayName: "Ada", needsKey: false, tools: [{ name: "find_rate", kind: "change", free: false }] }]} allAgents={agents} canWiden keyLines={{}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Give access to more" }));
+    await give("Ben");
+    expect(mocks.declare.mock.calls.map(c => (c[0] as { agent: string }).agent)).toEqual(["ada", "ben"]);
+  });
+  it("offers the token setup to agents that use the connector without a token once a check found it needs one", () => {
+    const noToken = [{ agent: "ada", displayName: "Ada", needsKey: false, tools: [{ name: "find_rate", kind: "read" as const, free: false }] }];
+    render(<ConnectorAccess conn={conn} uses={noToken} allAgents={agents} canWiden keyLines={{}} />);
+    expect(screen.getByRole("heading", { name: "Set up the token" })).toBeTruthy();
+    expect(screen.getByText(/Ada uses it without one/)).toBeTruthy();
+    expect((screen.getByLabelText("Ada") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("Ben") as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByLabelText(/^Token/)).toBeTruthy();
+  });
   it("says that sign-in comes later and builds no form for a sign-in server", () => {
     render(<ConnectorAccess conn={{ ...conn, authKind: "signin" }} uses={[]} allAgents={agents} canWiden keyLines={{}} />);
     expect(screen.getByText(/Sign-in comes in a later release/)).toBeTruthy();

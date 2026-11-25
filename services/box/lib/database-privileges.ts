@@ -826,6 +826,17 @@ export async function provisionEngineDatabasePrivileges(
   }
 }
 
+/** Takes back every privilege the read-only diagnostic login holds on the engine's schema and database. Only the refresh calls it, just before it grants the fixed list again. */
+async function revokeDiagnosticGrants(client: PoolClient, database: string): Promise<void> {
+  if (!(await diagnosticRoleExists(client))) return;
+  const role = qid(DIAGNOSTIC);
+  await client.query(`REVOKE ALL ON ALL TABLES IN SCHEMA ${qid(SCHEMA)} FROM ${role}`);
+  await client.query(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA ${qid(SCHEMA)} FROM ${role}`);
+  await client.query(`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${qid(SCHEMA)} FROM ${role}`);
+  await client.query(`REVOKE ALL ON SCHEMA ${qid(SCHEMA)} FROM ${role}`);
+  await client.query(`REVOKE ALL ON DATABASE ${qid(database)} FROM ${role}`);
+}
+
 /**
  * Bring an already-managed engine database's grants up to this release's fixed list, then verify
  * them exactly. A fresh install grants once, at setup; a migration applied later under the schema
@@ -861,6 +872,9 @@ export async function refreshEngineDatabasePrivileges(
     try { await requireManagedState(operator, identity.database, true); } catch { complete = false; }
     await operator.query("ROLLBACK TO SAVEPOINT lares_grants_before");
     if (!complete) {
+      // A grant the diagnostic login should not hold (left by hand, or by an older release) would make the check below fail and the
+      // whole refresh roll back. Take back everything it holds first; the fixed list is then granted again, exactly.
+      await revokeDiagnosticGrants(operator, identity.database);
       await applyGrants(operator);
       await requireManagedState(operator, identity.database, true);
     }

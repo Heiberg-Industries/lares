@@ -1,11 +1,11 @@
 "use client";
 import { useRef, useState } from "react";
 import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
-import { ToolList, ToolRow } from "@lares/ui/patterns";
+import { StatusBadge, ToolList, ToolRow } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { acceptOutsideDescriptions } from "../app/actions/definition";
 import type { DescribedTool, OutsideToolEvidence, OutsideToolLock } from "../lib/outside-tools";
-import { keyLine } from "../lib/outside-tools-words";
+import { DANGER_BADGE, keyLine } from "../lib/outside-tools-words";
 
 /** A declaration plus its display host, worked out on the server (the address check uses node-only code). */
 export type OutsideToolView = OutsideToolDeclaration & { host?: string };
@@ -144,13 +144,14 @@ export function OutsideToolsSection({
               <p>Address: <span className="mono">{t.host ?? t.url}</span></p>
               <p>
                 {(t.tools.trusted ?? []).length
-                  ? `Run without asking: ${(t.tools.trusted ?? []).map(g => `${g.tool} (switched on ${g.at.slice(0, 10)})`).join(", ")}. These skip the card unless the agent has just read someone else's words. Every other tool asks first, and a changed description ends this for that tool.`
-                  : "Every call asks you first."}
+                  ? `Run without asking: ${(t.tools.trusted ?? []).map(g => `${g.tool} (switched on ${g.at.slice(0, 10)})`).join(", ")}. These skip the card unless the agent has just read someone else's words. Every other tool asks first, except one marked in red, and a changed description ends this for that tool.`
+                  : (t.tools.danger ?? []).length ? "Every call asks you first, except the tool marked in red." : "Every call asks you first."}
               </p>
               <p>{keyLine(t.token, evidence?.keys, t.name)}</p>
               {t.tools.allow.length > 0 ? (
                 <ToolList label={`Tools ${t.name} may use`}>
-                  {t.tools.allow.map(a => <ToolRow key={a} name={a} kind={t.tools.read.includes(a) ? "read" : "change"} />)}
+                  {t.tools.allow.map(a => <ToolRow key={a} name={a} kind={t.tools.read.includes(a) ? "read" : "change"}
+                    control={(t.tools.danger ?? []).some(g => g.tool === a) ? <StatusBadge tone="error">{DANGER_BADGE}</StatusBadge> : undefined} />)}
                 </ToolList>
               ) : <p className="lares-muted">No tools allowed.</p>}
               {lock && (
