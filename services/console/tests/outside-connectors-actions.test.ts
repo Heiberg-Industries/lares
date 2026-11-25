@@ -12,6 +12,7 @@ vi.mock("../app/actions/outside-connect", () => ({ connectRemoveDeclaration: moc
 import { addConnector, checkConnector, listConnectors, removeConnector, removeFromAgent, renameConnector } from "../app/actions/outside-connectors";
 import { KeeperRefusedError } from "../lib/keeper-client";
 
+const order: string[] = [];
 const id = "00000000-0000-4000-8000-000000000001";
 const row = (over: Record<string, unknown> = {}) => ({ id, slug: "rates", displayName: "Rates", url: "https://tools.example.org/mcp", authKind: "none", description: "", state: "setup",
   createdBy: "owner", createdAt: "2026-11-25T00:00:00.000Z", probedAt: null, toolCount: null, catalogueAt: null, ...over });
@@ -59,8 +60,11 @@ describe("the connector directory actions", () => {
     mocks.targets.mockResolvedValue([
       { agentName: "ada", connectionName: "rates", credentialStatus: { accountId: id, generation: 3, state: "active" } },
       { agentName: "ben", connectionName: "other", credentialStatus: { accountId: id, generation: 1, state: "active" } }]);
-    mocks.removeDeclaration.mockResolvedValue({ ok: true, value: { removed: true } }); mocks.removeCredential.mockResolvedValue({ removed: true, generation: 4 });
+    mocks.removeDeclaration.mockImplementation(async () => { order.push("declaration"); return { ok: true, value: { removed: true } }; });
+    mocks.removeCredential.mockImplementation(async () => { order.push("credential"); return { removed: true, generation: 4 }; });
+    order.length = 0;
     expect(await removeConnector(id)).toEqual({ ok: true, value: { agents: ["ada"] } });
+    expect(order).toEqual(["credential", "declaration"]); // the keeper erases a held token only while the agent still declares it
     expect(mocks.removeDeclaration).toHaveBeenCalledTimes(1);
     expect(mocks.removeCredential).toHaveBeenCalledWith({ accountId: id, agentName: "ada", connectionName: "rates", expectedGeneration: 3 });
     expect(calls()).toEqual(["outside.connector-list", "outside.connector-retire"]);
@@ -74,9 +78,11 @@ describe("the connector directory actions", () => {
   });
   it("takes a connector off one agent and erases that agent's token only", async () => {
     mocks.targets.mockResolvedValue([{ agentName: "ada", connectionName: "rates", credentialStatus: { accountId: id, generation: 2, state: "active" } }]);
-    mocks.removeDeclaration.mockResolvedValue({ ok: true, value: { removed: true } }); mocks.removeCredential.mockResolvedValue({ removed: true, generation: 3 });
+    mocks.removeDeclaration.mockImplementation(async () => { order.push("declaration"); return { ok: true, value: { removed: true } }; });
+    mocks.removeCredential.mockImplementation(async () => { order.push("credential"); return { removed: true, generation: 3 }; });
+    order.length = 0;
     expect(await removeFromAgent({ agent: "ada", slug: "rates" })).toEqual({ ok: true, value: null });
-    expect(mocks.removeCredential).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["credential", "declaration"]);
   });
   it("refuses a bad id before asking the keeper", async () => {
     expect(await removeConnector("nope")).toMatchObject({ ok: false });

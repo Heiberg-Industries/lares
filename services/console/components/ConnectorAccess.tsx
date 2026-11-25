@@ -7,7 +7,7 @@ import { Switch } from "@lares/ui/primitives/switch";
 import { SECRET_AS_NAME_MESSAGE, looksLikeSecret } from "@lares/agent-kit/secret-shaped";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
-import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectReviewAndStage, connectSetTools, connectSwitchOnTrust,
+import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSetTools, connectSwitchOnTrust,
   type ConnectIdentity, type ConnectStep, type ConnectTool } from "../app/actions/outside-connect";
 import { removeFromAgent } from "../app/actions/outside-connectors";
 import type { OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
@@ -152,6 +152,17 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
     setPhase("pick");
   }
 
+  /** A token connector has a temporary declaration on the first agent while the owner reads the tool list; Cancel takes it back, as the old screen did. */
+  async function cancel() {
+    if (needsToken && ticked[0]) {
+      setBusy(true);
+      const gone = await connectRemoveDeclaration({ agent: ticked[0], name: conn.slug }).catch(() => undefined);
+      setBusy(false);
+      if (!gone || !gone.ok) { setError(`The temporary connection could not be removed: ${gone?.message ?? "Lares could not confirm it. Reload the page."}`); return; }
+    }
+    reset();
+  }
+
   function ask(agent: string, tools: string[]): Promise<"leave" | "ask"> {
     return new Promise(resolve => { answer.current = a => { setConflict(null); resolve(a); }; setConflict({ agent, tools, confirming: false }); });
   }
@@ -221,7 +232,7 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
         {row.inputSchema && <details><summary>What it asks for</summary><pre>{JSON.stringify(row.inputSchema, null, 2)}</pre></details>}
       </ToolRow>)}</ToolList>
       {error && <Notice tone="error">{error}</Notice>}
-      <div className="lares-actions"><Button type="button" onClick={connect}>Give access</Button><Button type="button" variant="outline" onClick={reset}>Cancel</Button></div>
+      <div className="lares-actions"><Button type="button" onClick={connect}>Give access</Button><Button type="button" variant="outline" disabled={busy} onClick={() => void cancel()}>Cancel</Button></div>
     </div>}
     {phase === "connecting" && <div className="lares-stack">
       <WorkNotice chain={chain} />
@@ -249,36 +260,58 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
   </section>;
 }
 
-/** Replace the token for the agents that hold one: the new token is read, its tools re-recorded and locked away, in one action. */
+/**
+ * Replace the token for the agents that hold one. The new token reads the tool list once; the owner sees the exact descriptions and accepts
+ * them in the same press that replaces the token, so a server that changed a description since it was last accepted is read, never waved through.
+ * Each agent's step then checks the server still says what the owner was shown.
+ */
 function ReplaceToken({ conn, agents }: { conn: Conn; agents: Agent[] }) {
   const router = useRouter();
   const chain = useChain();
-  const [open, setOpen] = useState(false), [token, setToken] = useState(""), [error, setError] = useState(""), [done, setDone] = useState(false);
-  const [ticked, setTicked] = useState<string[]>(agents.map(a => a.name));
-  function go() {
+  const [phase, setPhase] = useState<"closed" | "form" | "review">("closed");
+  const [token, setToken] = useState(""), [error, setError] = useState(""), [done, setDone] = useState(false), [busy, setBusy] = useState(false);
+  const [ticked, setTicked] = useState<string[]>(agents.map(a => a.name)), [tools, setTools] = useState<ConnectTool[]>([]);
+  function close() { setPhase("closed"); setToken(""); setError(""); setTools([]); chain.reset(); }
+  async function read() {
     setError(""); setDone(false);
     if (!token.trim()) { setError("Paste the new token first."); return; }
     if (ticked.length === 0) { setError("Choose at least one agent."); return; }
+    setBusy(true);
+    const r = await connectLookUpTools({ agent: ticked[0]!, name: conn.slug, credential: token }).catch(() => undefined);
+    setBusy(false);
+    if (!r || !r.ok) { setError(r?.message ?? "Lares could not ask the server for its tools."); if (r && !r.retryable) setToken(""); return; }
+    setTools(r.value.tools); setPhase("review");
+  }
+  function replace() {
     const steps: Plan = [];
     for (const agent of ticked) {
       let identity: ConnectIdentity | undefined, staged: OutsidePendingApplyDto | undefined;
       steps.push(
         { label: `reading the tools for ${agent}`, run: async () => { const r = await connectLookUpTools({ agent, name: conn.slug, credential: token }); if (r.ok) identity = r.value.identity; return r; } },
-        { label: `recording the descriptions for ${agent}`, run: async () => { if (!identity) return { ok: false as const, message: "The previous step has no result. Start over.", retryable: false }; const r = await connectReviewAndStage({ identity }); if (r.ok) staged = r.value; return r; } },
+        // `seen`: the descriptions the owner read. If the server now says something else, nothing is accepted.
+        { label: `recording the descriptions for ${agent}`, run: async () => { if (!identity) return { ok: false as const, message: "The previous step has no result. Start over.", retryable: false }; const r = await connectReviewAndStage({ identity, seen: tools }); if (r.ok) staged = r.value; return r; } },
         { label: `locking the new token away for ${agent}`, run: async () => { if (!staged) return { ok: false as const, message: "The previous step has no result. Start over.", retryable: false }; return connectActivateCredential({ staged }); } },
       );
     }
-    chain.start(steps, () => { setToken(""); setDone(true); setOpen(false); router.refresh(); });
+    chain.start(steps, () => { setToken(""); setDone(true); setPhase("closed"); setTools([]); router.refresh(); });
   }
   if (agents.length === 0) return null;
   return <div className="lares-stack">
-    {!open && <div className="lares-actions"><Button type="button" variant="outline" onClick={() => { setOpen(true); chain.reset(); }}>Replace token</Button></div>}
-    {open && <div className="lares-stack">
+    {phase === "closed" && <div className="lares-actions"><Button type="button" variant="outline" onClick={() => { setPhase("form"); chain.reset(); }}>Replace token</Button></div>}
+    {phase === "form" && <div className="lares-stack">
       <FieldGroup legend="Replace the token for">{agents.map(a => <Choice key={a.name}><Checkbox checked={ticked.includes(a.name)} onChange={e => setTicked(l => e.target.checked ? [...l, a.name] : l.filter(n => n !== a.name))} /> {a.displayName}</Choice>)}</FieldGroup>
-      <Field label="New token" hint="Typed once and sent to each chosen agent's locked store. The old token is replaced."><Input type="password" autoComplete="off" maxLength={4096} value={token} onChange={e => setToken(e.target.value)} /></Field>
+      <Field label="New token" hint="Typed once. Lares reads the server's tools with it so you can see their descriptions before anything is replaced."><Input type="password" autoComplete="off" maxLength={4096} value={token} onChange={e => setToken(e.target.value)} /></Field>
+      {busy && <Notice tone="working">Asking the server which tools it offers.</Notice>}
       {error && <Notice tone="error">{error}</Notice>}
+      <div className="lares-actions"><Button type="button" disabled={busy} onClick={() => void read()}>Read the tools</Button><Button type="button" variant="outline" onClick={close}>Cancel</Button></div>
+    </div>}
+    {phase === "review" && <div className="lares-stack">
+      <h3 className="lares-section-title">Read these descriptions before the token is replaced</h3>
+      <p>If the server changed a description since you last accepted it, this is where you see it. Accepting records exactly this text.</p>
+      <ToolList label="Descriptions the server gives now">{tools.map(t => <ToolRow key={t.name} name={t.name} kind={t.readOnly ? "read" : "change"} description={t.description}>
+        {t.inputSchema && <details><summary>What it asks for</summary><pre>{JSON.stringify(t.inputSchema, null, 2)}</pre></details>}</ToolRow>)}</ToolList>
       <WorkNotice chain={chain} />
-      <div className="lares-actions"><Button type="button" disabled={chain.state === "working"} onClick={go}>Replace token</Button><Button type="button" variant="outline" onClick={() => { setOpen(false); setToken(""); chain.reset(); }}>Cancel</Button></div>
+      <div className="lares-actions"><Button type="button" disabled={chain.state === "working"} onClick={replace}>Accept these descriptions and replace the token</Button><Button type="button" variant="outline" onClick={close}>Cancel</Button></div>
     </div>}
     {done && <Notice tone="success">The new token is locked away.</Notice>}
   </div>;

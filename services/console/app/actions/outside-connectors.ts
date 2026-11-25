@@ -41,6 +41,15 @@ async function run<T>(fallback: string, work: (w: { sessionToken: string; actor:
   catch (error) { return { ok: false, message: error instanceof Said ? error.message : keeperReason(error, fallback) }; }
 }
 
+type Target = Awaited<ReturnType<typeof listOutsideDiscoveryTargets>>[number];
+/** Erases the token Lares holds for one agent's connection, if it holds one. A token already erased is skipped, so a repeat is safe. */
+async function eraseHeldToken(t: Target): Promise<void> {
+  const s = t.credentialStatus;
+  if (!(s.accountId && s.generation !== null && s.state !== "revoked")) return;
+  try { await removeOutsideCredential({ accountId: s.accountId, agentName: t.agentName, connectionName: t.connectionName, expectedGeneration: s.generation }); }
+  catch (error) { throw new Said(`${t.agentName}: ${error instanceof Error ? error.message : "The held token could not be erased."}`); }
+}
+
 async function list(w: { sessionToken: string; actor: string }): Promise<Connector[]> {
   const raw = await keeper<{ connectors?: unknown }>("outside.connector-list", { sessionToken: w.sessionToken }, w.actor);
   return z.array(connectorSchema).parse(raw.connectors);
@@ -102,7 +111,7 @@ export async function renameConnector(input: { id: string; displayName: string }
 }
 
 /**
- * Remove: off every agent, the held tokens erased, then the directory row retired, in that order. A stop part way leaves the
+ * Remove: for each agent the held token is erased and then the declaration taken off, then the directory row is retired. A stop part way leaves the
  * rest still to do, so pressing Remove again continues from there.
  */
 export async function removeConnector(id: string): Promise<ConnectorResult<{ agents: string[] }>> {
@@ -114,30 +123,27 @@ export async function removeConnector(id: string): Promise<ConnectorResult<{ age
     const targets = (await listOutsideDiscoveryTargets()).filter(t => t.connectionName === connector.slug);
     const agents: string[] = [];
     for (const t of targets) {
+      // The held token first: the keeper can only erase it while the agent still declares the connection.
+      await eraseHeldToken(t);
       const gone = await connectRemoveDeclaration({ agent: t.agentName, name: connector.slug });
       if (!gone.ok) throw new Said(`${t.agentName}: ${gone.message}`);
       agents.push(t.agentName);
-      const s = t.credentialStatus;
-      if (s.accountId && s.generation !== null && s.state !== "revoked")
-        await removeOutsideCredential({ accountId: s.accountId, agentName: t.agentName, connectionName: t.connectionName, expectedGeneration: s.generation });
     }
     await keeper("outside.connector-retire", { sessionToken: w.sessionToken, id }, w.actor, TIMEOUT);
     return { agents };
   });
 }
 
-/** Takes the connector off one agent: its declaration, then the token Lares holds for that agent. The directory row stays. */
+/** Takes the connector off one agent: the token Lares holds for that agent, then its declaration. The directory row stays. */
 export async function removeFromAgent(input: { agent: string; slug: string }): Promise<ConnectorResult<null>> {
   await requireConsoleMember();
   const parsed = z.strictObject({ agent: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/), slug: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/) }).safeParse(input);
   if (!parsed.success) return { ok: false, message: "That agent or connector is not valid." };
   return run("The connector could not be taken off this agent.", async () => {
+    const t = (await listOutsideDiscoveryTargets()).find(x => x.agentName === parsed.data.agent && x.connectionName === parsed.data.slug);
+    if (t) await eraseHeldToken(t);
     const gone = await connectRemoveDeclaration({ agent: parsed.data.agent, name: parsed.data.slug });
     if (!gone.ok) throw new Said(gone.message);
-    const t = (await listOutsideDiscoveryTargets()).find(x => x.agentName === parsed.data.agent && x.connectionName === parsed.data.slug);
-    const s = t?.credentialStatus;
-    if (t && s?.accountId && s.generation !== null && s.state !== "revoked")
-      await removeOutsideCredential({ accountId: s.accountId, agentName: t.agentName, connectionName: t.connectionName, expectedGeneration: s.generation });
     return null;
   });
 }

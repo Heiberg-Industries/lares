@@ -2,10 +2,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn(), add: vi.fn(), setTools: vi.fn() }));
+const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn(), add: vi.fn(), setTools: vi.fn(), declare: vi.fn(), lookUp: vi.fn(), review: vi.fn(), removeDecl: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push, refresh: mocks.refresh }) }));
 vi.mock("../app/actions/outside-connectors", () => ({ addConnector: mocks.add, checkConnector: vi.fn(), renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: vi.fn() }));
-vi.mock("../app/actions/outside-connect", () => ({ connectSetTools: mocks.setTools, connectDeclare: vi.fn(), connectLookUpTools: vi.fn(), connectReviewAndStage: vi.fn(),
+vi.mock("../app/actions/outside-connect", () => ({ connectSetTools: mocks.setTools, connectDeclare: mocks.declare, connectLookUpTools: mocks.lookUp, connectReviewAndStage: mocks.review, connectRemoveDeclaration: mocks.removeDecl,
   connectActivateCredential: vi.fn(), connectApplyAgent: vi.fn(), connectSwitchOnTrust: vi.fn() }));
 import { AddConnectorForm } from "../components/AddConnectorForm";
 import { ConnectorAccess } from "../components/ConnectorAccess";
@@ -90,6 +90,45 @@ describe("the connector page", () => {
     render(<ConnectorAccess conn={{ ...conn, authKind: "signin" }} uses={[]} allAgents={agents} canWiden keyLines={{}} />);
     expect(screen.getByText(/Sign-in comes in a later release/)).toBeTruthy();
     expect(screen.queryByLabelText(/^Token/)).toBeNull();
+  });
+});
+
+const tools = [{ name: "find_rate", description: "Finds a rate.", inputSchema: { type: "object" }, readOnly: true as const }];
+const looked = { ok: true, value: { identity: { accountId: "a" }, serverName: "Rates 1", tools } };
+
+describe("the token flows", () => {
+  it("Cancel on the tool list takes back the temporary declaration on the first agent", async () => {
+    mocks.declare.mockResolvedValue({ ok: true, value: {} }); mocks.lookUp.mockResolvedValue(looked); mocks.removeDecl.mockResolvedValue({ ok: true, value: { removed: true } });
+    render(<ConnectorAccess conn={conn} uses={[]} allAgents={[agents[0]!]} canWiden keyLines={{}} />);
+    fireEvent.change(screen.getByLabelText(/^Token/), { target: { value: "tok" } });
+    fireEvent.click(screen.getByLabelText(/I allow Lares to send this token/));
+    fireEvent.click(screen.getByRole("button", { name: "Find tools" }));
+    await screen.findByText(/offers 1 tool/);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await vi.waitFor(() => expect(mocks.removeDecl).toHaveBeenCalledWith({ agent: "ada", name: "rates" }));
+    await screen.findByRole("button", { name: "Find tools" });
+  });
+  it("keeps the form and says why when the temporary declaration cannot be taken back", async () => {
+    mocks.declare.mockResolvedValue({ ok: true, value: {} }); mocks.lookUp.mockResolvedValue(looked); mocks.removeDecl.mockResolvedValue({ ok: false, message: "The agent is busy." });
+    render(<ConnectorAccess conn={conn} uses={[]} allAgents={[agents[0]!]} canWiden keyLines={{}} />);
+    fireEvent.change(screen.getByLabelText(/^Token/), { target: { value: "tok" } });
+    fireEvent.click(screen.getByLabelText(/I allow Lares to send this token/));
+    fireEvent.click(screen.getByRole("button", { name: "Find tools" }));
+    await screen.findByText(/offers 1 tool/);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await screen.findByText(/could not be removed: The agent is busy/);
+  });
+  it("Replace token shows the descriptions first, and records them only against what the owner read", async () => {
+    mocks.lookUp.mockResolvedValue(looked); mocks.review.mockResolvedValue({ ok: false, message: "The server now describes find_rate differently.", retryable: false });
+    render(<ConnectorAccess conn={conn} uses={uses} allAgents={agents} canWiden keyLines={{}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Replace token" }));
+    fireEvent.change(screen.getByLabelText(/^New token/), { target: { value: "tok2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Read the tools" }));
+    await screen.findByText("Finds a rate.");
+    expect(mocks.review).not.toHaveBeenCalled(); // nothing is accepted before the owner has read the text
+    fireEvent.click(screen.getByRole("button", { name: "Accept these descriptions and replace the token" }));
+    await screen.findByText(/differently/);
+    expect(mocks.review).toHaveBeenCalledWith(expect.objectContaining({ seen: tools }));
   });
 });
 
