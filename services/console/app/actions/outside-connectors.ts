@@ -90,12 +90,12 @@ export async function addConnector(input: unknown): Promise<{ ok: true; id: stri
   return { ok: true, id, authKind: checked.value, sentence: foundSentence(checked.value) };
 }
 
-/** "Check it works": asks the server again what it is. It sends no token. */
-export async function checkConnector(id: string, expectToken = false): Promise<ConnectorResult<{ authKind: Connector["authKind"]; sentence: string }>> {
+/** "Check it works": asks the server again what it is, with no token and no override, so a server that stopped needing one is seen as that. */
+export async function checkConnector(id: string): Promise<ConnectorResult<{ authKind: Connector["authKind"]; sentence: string }>> {
   await requireConsoleMember();
   if (!uuid.safeParse(id).success) return { ok: false, message: "That connector is not valid." };
   return run("Lares could not reach that server. Check the address, then try again.", async (w) => {
-    const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id, ...(expectToken ? { expectToken: true } : {}) }, w.actor, TIMEOUT);
+    const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id }, w.actor, TIMEOUT);
     const authKind = connectorSchema.shape.authKind.parse(r.authKind);
     return { authKind, sentence: foundSentence(authKind) };
   });

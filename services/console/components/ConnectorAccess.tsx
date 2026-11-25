@@ -7,7 +7,7 @@ import { Switch } from "@lares/ui/primitives/switch";
 import { SECRET_AS_NAME_MESSAGE, looksLikeSecret } from "@lares/agent-kit/secret-shaped";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
-import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSetTools, connectSwitchOnTrust,
+import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectReviewAndStage, connectSetTools, connectSwitchOnTrust,
   type ConnectIdentity, type ConnectStep, type ConnectTool } from "../app/actions/outside-connect";
 import { removeFromAgent } from "../app/actions/outside-connectors";
 import type { OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
@@ -149,10 +149,10 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
     if (!declared || !declared.ok) { setBusy(false); setError(declared?.message ?? "Lares could not save the connector on the first agent."); return; }
     const looked = await connectLookUpTools({ agent: primary, name: conn.slug, credential: token }).catch(() => undefined);
     if (!looked || !looked.ok) {
-      // The temporary declaration saved above must not stay behind: take it back before returning to the form.
-      const gone = await connectRemoveDeclaration({ agent: primary, name: conn.slug }).catch(() => undefined);
+      // The look-up may already have stored a token revision: removeFromAgent erases it first, then takes the temporary declaration back.
+      const gone = await removeFromAgent({ agent: primary, slug: conn.slug }).catch(() => undefined);
       const why = looked?.message ?? "Lares could not ask the server for its tools.";
-      setError(gone && gone.ok ? why : `${why} The temporary connection could not be removed either (${gone?.message ?? "Lares could not confirm it"}); reload the page and take the connector off ${nameOf(primary)} if it appears.`);
+      setError(gone && gone.ok ? why : `${why} The stored token and the temporary connection could not be erased either (${gone?.message ?? "Lares could not confirm it"}); reload the page and take the connector off ${nameOf(primary)} if it appears.`);
       if (looked && !looked.retryable) setToken("");
       setBusy(false); return;
     }
@@ -166,9 +166,9 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
   async function cancel() {
     if (needsToken && ticked[0]) {
       setBusy(true);
-      const gone = await connectRemoveDeclaration({ agent: ticked[0], name: conn.slug }).catch(() => undefined);
+      const gone = await removeFromAgent({ agent: ticked[0], slug: conn.slug }).catch(() => undefined);
       setBusy(false);
-      if (!gone || !gone.ok) { setError(`The temporary connection could not be removed: ${gone?.message ?? "Lares could not confirm it. Reload the page."}`); return; }
+      if (!gone || !gone.ok) { setError(`The stored token and the temporary connection could not be erased: ${gone?.message ?? "Lares could not confirm it. Reload the page."}`); return; }
     }
     reset();
   }

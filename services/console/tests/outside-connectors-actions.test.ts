@@ -100,6 +100,11 @@ describe("the connector directory actions", () => {
     await addConnector({ name: "Rates", url: "https://tools.example.org/mcp", auth: "automatic" });
     expect(mocks.keeper.mock.calls[2]![1]).not.toHaveProperty("expectToken");
   });
+  it("a recheck sends no Token override, so a server that stopped needing one is recorded as no login", async () => {
+    mocks.keeper.mockResolvedValueOnce({ authKind: "none" });
+    expect(await checkConnector(id)).toMatchObject({ ok: true, value: { authKind: "none" } });
+    expect(mocks.keeper.mock.calls[0]![1]).not.toHaveProperty("expectToken");
+  });
   it("takes a connector off one agent and erases that agent's token only", async () => {
     mocks.targets.mockResolvedValue([{ agentName: "ada", connectionName: "rates", credentialStatus: { accountId: id, generation: 2, state: "active" } }]);
     mocks.removeDeclaration.mockImplementation(async () => { order.push("declaration"); return { ok: true, value: { removed: true } }; });

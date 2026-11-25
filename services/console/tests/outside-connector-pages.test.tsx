@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn(), add: vi.fn(), setTools: vi.fn(), declare: vi.fn(), lookUp: vi.fn(), review: vi.fn(), removeDecl: vi.fn(), check: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push, refresh: mocks.refresh }) }));
-vi.mock("../app/actions/outside-connectors", () => ({ addConnector: mocks.add, checkConnector: mocks.check, renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: vi.fn() }));
+vi.mock("../app/actions/outside-connectors", () => ({ addConnector: mocks.add, checkConnector: mocks.check, renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: mocks.removeDecl }));
 vi.mock("../app/actions/outside-connect", () => ({ connectSetTools: mocks.setTools, connectDeclare: mocks.declare, connectLookUpTools: mocks.lookUp, connectReviewAndStage: mocks.review, connectRemoveDeclaration: mocks.removeDecl,
   connectActivateCredential: vi.fn(), connectApplyAgent: vi.fn(), connectSwitchOnTrust: vi.fn() }));
 import { AddConnectorForm } from "../components/AddConnectorForm";
@@ -121,7 +121,7 @@ describe("the token flows", () => {
     fireEvent.click(screen.getByRole("button", { name: "Find tools" }));
     await screen.findByText(/offers 1 tool/);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await vi.waitFor(() => expect(mocks.removeDecl).toHaveBeenCalledWith({ agent: "ada", name: "rates" }));
+    await vi.waitFor(() => expect(mocks.removeDecl).toHaveBeenCalledWith({ agent: "ada", slug: "rates" }));
     await screen.findByRole("button", { name: "Find tools" });
   });
   it("keeps the form and says why when the temporary declaration cannot be taken back", async () => {
@@ -132,7 +132,7 @@ describe("the token flows", () => {
     fireEvent.click(screen.getByRole("button", { name: "Find tools" }));
     await screen.findByText(/offers 1 tool/);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    await screen.findByText(/could not be removed: The agent is busy/);
+    await screen.findByText(/could not be erased: The agent is busy/);
   });
   it("takes the temporary declaration back when the tool list cannot be read, before returning to the form", async () => {
     mocks.declare.mockResolvedValue({ ok: true, value: {} }); mocks.lookUp.mockResolvedValue({ ok: false, message: "The token was refused.", retryable: true }); mocks.removeDecl.mockResolvedValue({ ok: true, value: { removed: true } });
@@ -141,7 +141,16 @@ describe("the token flows", () => {
     fireEvent.click(screen.getByLabelText(/I allow Lares to send this token/));
     fireEvent.click(screen.getByRole("button", { name: "Find tools" }));
     await screen.findByText("The token was refused.");
-    expect(mocks.removeDecl).toHaveBeenCalledWith({ agent: "ada", name: "rates" });
+    expect(mocks.removeDecl).toHaveBeenCalledTimes(1); // erases a stored token revision, then the declaration, in one action
+    expect(mocks.removeDecl).toHaveBeenCalledWith({ agent: "ada", slug: "rates" });
+  });
+  it("says plainly when the stored token could not be erased after a failed look-up", async () => {
+    mocks.declare.mockResolvedValue({ ok: true, value: {} }); mocks.lookUp.mockResolvedValue({ ok: false, message: "The token was refused.", retryable: true }); mocks.removeDecl.mockResolvedValue({ ok: false, message: "ada: could not erase" });
+    render(<ConnectorAccess conn={conn} uses={[]} allAgents={[agents[0]!]} canWiden keyLines={{}} />);
+    fireEvent.change(screen.getByLabelText(/^Token/), { target: { value: "tok" } });
+    fireEvent.click(screen.getByLabelText(/I allow Lares to send this token/));
+    fireEvent.click(screen.getByRole("button", { name: "Find tools" }));
+    await screen.findByText(/stored token and the temporary connection could not be erased either \(ada: could not erase\)/);
   });
   it("Start over after a failed step returns to the form instead of a blank section", async () => {
     mocks.declare.mockResolvedValueOnce({ ok: true, value: {} }).mockResolvedValueOnce({ ok: false, message: "The agent could not be updated.", retryable: true });
@@ -172,12 +181,12 @@ describe("the token flows", () => {
 });
 
 describe("rename, check and remove", () => {
-  it("refreshes the page when Check it works changes what the connector needs, and keeps a token connector a token connector", async () => {
+  it("refreshes the page when Check it works finds the server no longer needs a token", async () => {
     mocks.check.mockResolvedValue({ ok: true, value: { authKind: "none", sentence: "Found the server. It needs no login." } });
     render(<ConnectorActions id="abc" displayName="Rates" authKind="token" />);
     fireEvent.click(screen.getByRole("button", { name: "Check it works" }));
     await screen.findByText("Found the server. It needs no login.");
-    expect(mocks.check).toHaveBeenCalledWith("abc", true);
+    expect(mocks.check).toHaveBeenCalledWith("abc"); // no Token override on a recheck
     expect(mocks.refresh).toHaveBeenCalled();
   });
   it("warns once that running agents restart before it removes anything", () => {

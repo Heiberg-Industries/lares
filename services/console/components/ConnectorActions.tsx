@@ -24,7 +24,7 @@ export function ConnectorActions({ id, displayName, authKind }: { id: string; di
   }
   async function check() {
     setBusy(true); setMessage({ tone: "working", text: "Checking the server." });
-    const r = await checkConnector(id, authKind === "token").catch(() => ({ ok: false as const, message: "Lares could not confirm that. Try again." }));
+    const r = await checkConnector(id).catch(() => ({ ok: false as const, message: "Lares could not confirm that. Try again." }));
     setBusy(false);
     setMessage(r.ok ? { tone: "success", text: r.value.sentence } : { tone: "error", text: r.message });
     // The check records what it found; the access section below must read the same value.
