@@ -241,6 +241,7 @@
         "outside-connect.connectDeclare",
         "outside-connect.connectLookUpTools",
         "outside-connect.connectReviewAndStage",
+        "outside-connect.connectSetDanger",
         "outside-connect.connectSetTools",
         "outside-connect.connectSwitchOnTrust",
         "outside-connectors.checkConnector",
@@ -999,6 +1000,16 @@
     },
     {
       "id": "outside-connect.connectReviewAndStage",
+      "kind": "action",
+      "file": "app/actions/outside-connect.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/outside/[id]"],
+      "see": "owner"
+    },
+    {
+      "id": "outside-connect.connectSetDanger",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
       "act": "owner",

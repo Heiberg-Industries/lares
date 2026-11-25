@@ -43,7 +43,7 @@ export function AgentDetail({
   schedules: Reading<Array<{ name: string; on: boolean }>>;
   /** The delivery grid's inputs; absent when the definition could not be read or the agent sends nothing on its own. */
   routing?: Omit<DeliveryGridProps, "agent">;
-  outsideTools?: { tools: OutsideToolView[]; inEffect: boolean; evidence?: OutsideToolEvidence };
+  outsideTools?: { tools: OutsideToolView[]; inEffect: boolean; evidence?: OutsideToolEvidence; dangerLive?: Record<string, string[]> };
   /** The finished prompt-cache sentence; null when it could not be read (the line is then left out). */
   promptCache?: string | null;
   /** Who may use or edit this agent, shown first on the Access tab; absent when the definition could not be read. */
@@ -150,7 +150,7 @@ export function AgentDetail({
           {accessSettings}
           {mailboxSettings}
           {providerKeySettings}
-          <OutsideToolsSection agent={agent.name} tools={outsideTools.tools} inEffect={outsideTools.inEffect} evidence={outsideTools.evidence} />
+          <OutsideToolsSection agent={agent.name} tools={outsideTools.tools} inEffect={outsideTools.inEffect} evidence={outsideTools.evidence} dangerLive={outsideTools.dangerLive} />
           {!board.available ? (
             <Notice error>
               Access controls are unavailable. Reload before changing

@@ -108,6 +108,7 @@ export function OutsideToolsSection({
   tools,
   inEffect,
   evidence,
+  dangerLive,
 }: {
   agent: string;
   tools: OutsideToolView[];
@@ -115,6 +116,8 @@ export function OutsideToolsSection({
   inEffect: boolean;
   /** Absent when it was not asked for; each half can be unavailable on its own. */
   evidence?: OutsideToolEvidence;
+  /** Per connection, the danger-zone tools whose fingerprint still matches the stored description. Absent: none shown as live. */
+  dangerLive?: Record<string, string[]>;
 }) {
   if (tools.length === 0) return null;
   const locks = evidence?.locks;
@@ -145,13 +148,13 @@ export function OutsideToolsSection({
               <p>
                 {(t.tools.trusted ?? []).length
                   ? `Run without asking: ${(t.tools.trusted ?? []).map(g => `${g.tool} (switched on ${g.at.slice(0, 10)})`).join(", ")}. These skip the card unless the agent has just read someone else's words. Every other tool asks first, except one marked in red, and a changed description ends this for that tool.`
-                  : (t.tools.danger ?? []).length ? "Every call asks you first, except the tool marked in red." : "Every call asks you first."}
+                  : (dangerLive?.[t.name] ?? []).length ? "Every call asks you first, except the tool marked in red." : "Every call asks you first."}
               </p>
               <p>{keyLine(t.token, evidence?.keys, t.name)}</p>
               {t.tools.allow.length > 0 ? (
                 <ToolList label={`Tools ${t.name} may use`}>
                   {t.tools.allow.map(a => <ToolRow key={a} name={a} kind={t.tools.read.includes(a) ? "read" : "change"}
-                    control={(t.tools.danger ?? []).some(g => g.tool === a) ? <StatusBadge tone="error">{DANGER_BADGE}</StatusBadge> : undefined} />)}
+                    control={(dangerLive?.[t.name] ?? []).includes(a) ? <StatusBadge tone="error">{DANGER_BADGE}</StatusBadge> : undefined} />)}
                 </ToolList>
               ) : <p className="lares-muted">No tools allowed.</p>}
               {lock && (

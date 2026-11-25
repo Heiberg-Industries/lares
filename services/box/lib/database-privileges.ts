@@ -835,6 +835,8 @@ async function revokeDiagnosticGrants(client: PoolClient, database: string): Pro
   await client.query(`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA ${qid(SCHEMA)} FROM ${role}`);
   await client.query(`REVOKE ALL ON SCHEMA ${qid(SCHEMA)} FROM ${role}`);
   await client.query(`REVOKE ALL ON DATABASE ${qid(database)} FROM ${role}`);
+  await client.query(`REVOKE ALL ON TYPE ${qname("budget_money")} FROM ${role}`);
+  for (const fn of ["pg_control_system()", ...WRITE_BUILTINS, ...ADVISORY_LOCKS]) await client.query(`REVOKE ALL ON FUNCTION pg_catalog.${fn} FROM ${role}`);
 }
 
 /**

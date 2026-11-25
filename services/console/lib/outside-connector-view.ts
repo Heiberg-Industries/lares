@@ -72,3 +72,21 @@ export async function knownToolNames(agents: string[], slug: string): Promise<Re
     return {};
   }
 }
+
+/** For one agent: per connection, the tools in the danger zone whose stored fingerprint still matches the description the agent has stored. Empty when it cannot be read. */
+export async function liveDangerTools(agent: string, declared: readonly { name: string; tools: { danger?: readonly { tool: string; pin: string }[] } }[]): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  const wanted = declared.filter(d => (d.tools.danger ?? []).length > 0);
+  if (wanted.length === 0) return out;
+  try {
+    const { rows } = await pool.query<{ tool: string; pin_tools: unknown }>("SELECT tool, pin_tools FROM outside_tool_pins WHERE agent = $1 AND seen_hash IS NULL", [agent]);
+    for (const d of wanted) {
+      const stored = rows.find(r => r.tool === d.name)?.pin_tools;
+      const hashes = new Map<string, string>();
+      if (Array.isArray(stored)) for (const t of stored as { name?: unknown; description?: unknown; inputSchema?: unknown }[]) if (typeof t?.name === "string")
+        hashes.set(t.name, toolPinHash({ name: t.name, ...(typeof t.description === "string" ? { description: t.description } : {}), inputSchema: t.inputSchema }));
+      out[d.name] = (d.tools.danger ?? []).filter(g => hashes.get(g.tool) === g.pin).map(g => g.tool);
+    }
+  } catch { /* none shown as live */ }
+  return out;
+}
