@@ -54,7 +54,7 @@ beforeEach(() => {
   script(join(fake, "setup-backups.sh"), "exit 0");
   writeFileSync(join(fake, "budget-commands.py"), "import os, sys\nopen(os.environ['STUB_LOG'], 'a').write('budget-commands.py ' + ' '.join(sys.argv[1:]) + '\\n')\nsys.exit(78 if os.environ.get('FAIL_REFRESH') else 0)\n");
   writeFileSync(join(fake, "backup.sh"), "# new backup script\n");
-  for(const name of ["export.sh","backup-verify.sh","restore-drill.sh","vault-storage.sh","refresh-recovery.sh","maintenance-custody.py","lares-backup.service","lares-backup.timer","lares-backup-verify.service","lares-backup-verify.timer","lares-restore-drill.service","lares-restore-drill.timer"])copyFileSync(join(OPS,name),join(fake,name));
+  for(const name of ["prune-images.sh","export.sh","backup-verify.sh","restore-drill.sh","vault-storage.sh","refresh-recovery.sh","maintenance-custody.py","lares-backup.service","lares-backup.timer","lares-backup-verify.service","lares-backup-verify.timer","lares-restore-drill.service","lares-restore-drill.timer"])copyFileSync(join(OPS,name),join(fake,name));
 
   copyFileSync(GET, join(fake, "get-lares.sh")); chmodSync(join(fake, "get-lares.sh"), 0o755);
   copyFileSync(join(OPS, "lares"), join(fake, "lares")); chmodSync(join(fake, "lares"), 0o755);
@@ -226,6 +226,15 @@ describe("lares", () => {
     expect(refreshed).toBeGreaterThan(i);
     expect(c[refreshed]).toContain(`--release ${root()}/current/release.json agent-refresh`);
     expect(r.stdout).toMatch(/restarts each running agent/);
+    // Then old release images go, keeping this release and the one before it.
+    expect(c.findIndex((l) => l.startsWith("docker ps -a -q"))).toBeGreaterThan(refreshed);
+    expect(r.stdout).toMatch(/no old release images to remove/);
+  });
+
+  it("update does not clean up images when an agent stayed behind", () => {
+    const r = lares(["update", "--release", RC12, "--yes"], { FAIL_REFRESH: "1" });
+    expect(r.code).toBe(78);
+    expect(calls().some((l) => l.startsWith("docker ps -a -q"))).toBe(false);
   });
 
   it("update says which agents stayed behind, after the release is already current", () => {
