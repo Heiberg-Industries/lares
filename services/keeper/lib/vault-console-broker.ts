@@ -298,7 +298,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     else policyRevision=(await requireConsoleSessionBinding(tuple,db)).policyRevision;
     await db.query("INSERT INTO keeper_audit (operation_id,action,actor,input,outcome,detail,completed_at) VALUES ($1,'outside.run-trusted',$2,$3::jsonb,'pending',$4,NULL)",
      [auditId,tuple.memberId,JSON.stringify({agent,connection:call.connectionName,tool:call.toolName,sessionId:tuple.sessionId,callId:call.callId,
-      ...(doorClaim?{door:doorClaim.door}:{}),...(dangerGrant?{dangerZone:true}:{}),trustGrantedBy:grantor.by,trustGrantedAt:grantor.at}),dangerGrant?'started from the danger zone the owner switched on, no card':'started under the standing trust of the owner, no card']);
+      ...(doorClaim?{door:doorClaim.door}:{}),...(dangerGrant?{dangerZone:true}:{}),trustGrantedBy:grantor.by,trustGrantedAt:grantor.at,trustPin:grantor.pin}),dangerGrant?'started from the danger zone the owner switched on, no card':'started under the standing trust of the owner, no card']);
     return {hash:String(rows.rows[0].hash),policyRevision};
    },transactionDeadline);
    assertNotAborted();

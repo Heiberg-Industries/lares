@@ -1605,7 +1605,7 @@ describe('a lookup under the owner\'s standing trust',()=>{
   const f=await trustedFixture({trust:'danger'});
   expect(await runtime('outside.run-trusted',{...f.binding,call:f.call})).toMatchObject({result:{content:[{type:'text',text:'Fixture result'}]}});
   const rows=await audits();expect(rows).toHaveLength(1);
-  expect(rows[0]!.input).toMatchObject({agent,connection:'registry',tool:'create_note',dangerZone:true,trustGrantedBy:ids.member,trustGrantedAt:'2026-11-25T10:00:00.000Z'});
+  expect(rows[0]!.input).toMatchObject({agent,connection:'registry',tool:'create_note',dangerZone:true,trustGrantedBy:ids.member,trustGrantedAt:'2026-11-25T10:00:00.000Z',trustPin:expect.stringMatching(/^[0-9a-f]{64}$/)});
   expect(rows[0]!.outcome).toBe('ok');
  });
  it('refuses a danger-zone tool once its description moved, was never accepted, or its stored words are gone',async()=>{
