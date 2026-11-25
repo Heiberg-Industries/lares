@@ -196,7 +196,8 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
     chain.start(steps, () => { setToken(""); setPhase("done"); router.refresh(); });
   }
 
-  if (agents.length === 0) return <p className="lares-muted">Every agent already has this connector.</p>;
+  // After a successful run the page refreshes and no agent is left to add; the result stays on screen until the owner moves on.
+  if (agents.length === 0 && phase === "form") return <p className="lares-muted">Every agent already has this connector.</p>;
   const usedCount = rows.filter(r => r.use).length;
   return <section className="lares-stack" aria-label="Give agents access">
     {phase === "form" && <div className="lares-stack">
