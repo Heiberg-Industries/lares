@@ -285,3 +285,37 @@ export async function connectSwitchOnTrust(input: { agent: string; name: string;
     return { switchedOn: added.map(a => a.tool), switchedOff: (current.tools.trusted ?? []).filter(k => !wanted.includes(k.tool)).map(k => k.tool) };
   });
 }
+
+/**
+ * One agent's tools on a connection, set in one save from the connector page: which tools it may use, what each one does, and which
+ * lookups run without asking. A tool that changes something, on an agent whose outside access is read-only, is left out and
+ * returned in `conflicts` with everything else saved; the owner's explicit answer comes back as `widen`.
+ */
+export async function connectSetTools(input: unknown): Promise<ConnectStep<{ conflicts: string[]; droppedTrust: string[] }>> {
+  await requireConsoleMember();
+  const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, widen: z.boolean().optional(),
+    tools: z.array(z.strictObject({ name: z.string().min(1), allowed: z.boolean(), kind: z.enum(["read", "change"]), free: z.boolean() })).max(200) }).safeParse(input);
+  if (!parsed.success) return fail("The tool list is not valid.");
+  const { agent, name, tools, widen } = parsed.data;
+  return step("The tools could not be saved.", async (who) => {
+    const state = await read(who, agent);
+    const current = state.connections.find(c => c.name === name);
+    if (!current) throw new StepFailure("This connector is not on the agent any more.", false);
+    const allow = tools.filter(t => t.allowed).map(t => t.name);
+    if (allow.length === 0) throw new StepFailure("Switch at least one tool on, or take the connector off this agent.", false);
+    const read_ = tools.filter(t => t.allowed && t.kind === "read").map(t => t.name);
+    const wanted = tools.filter(t => t.allowed && t.kind === "read" && t.free).map(t => t.name);
+    const kept = (current.tools.trusted ?? []).filter(k => wanted.includes(k.tool));
+    const added = wanted.filter(t => !kept.some(k => k.tool === t)).map(tool => ({ tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() }));
+    const next = { ...current, tools: { ...current.tools, allow, read: read_, trusted: [...kept, ...added] } };
+    const connections = [...state.connections.filter(c => c.name !== name), next];
+    const saved = stateSchema.parse(await keeper<unknown>("outside.connections.save",
+      { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: state.definitionHash, expectedAccessRevision: state.accessRevision, connections,
+        resolveReadOnlyConflicts: true, ...(widen ? { widenOutsideGrant: true } : {}) }, who.actor, TIMEOUT));
+    if (saved.applicationStatus !== "applied")
+      await keeper<unknown>("outside.connections.apply", { sessionToken: who.sessionToken, name: agent, expectedDefinitionHash: saved.definitionHash, expectedAccessRevision: saved.accessRevision }, who.actor, TIMEOUT);
+    const after = new Set((saved.connections.find(c => c.name === name)?.tools.trusted ?? []).map(t => t.tool));
+    return { conflicts: (saved.conflicts ?? []).filter(c => c.connection === name).map(c => c.tool),
+      droppedTrust: (current.tools.trusted ?? []).map(t => t.tool).filter(t => wanted.includes(t) && !after.has(t)) };
+  });
+}

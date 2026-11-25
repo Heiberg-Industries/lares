@@ -1,11 +1,37 @@
 # Outside tools: declarations, credentials and reviewed descriptions
 
-An agent definition can list outside tool servers under `outsideTools`. The Console's **Outside
-connection settings** page edits those declarations. Saving a change marks it pending; **Apply saved
-declarations** reconciles the definition with the runtime. The page shows saved and applied state
-separately. If Apply's result cannot be confirmed, refresh the page before trying again. Applying a
-declaration does not stage or activate a credential, and removing a declaration does not revoke a
-held credential.
+## The outside tools pages
+
+Open **Integrations**, then **Outside tools**. The owner uses three screens; there is no step list.
+
+- **Directory** (`/integrations/outside`): one row per connector with its state, tool count, the agents that use it and
+  the next action. **Add custom connector** starts a new one. Connections made before the directory existed appear here
+  by themselves the first time the page is opened; nothing is migrated.
+- **Add** (`/integrations/outside/new`): Name, Server URL and Authentication (Automatic, or Token), then **Continue**.
+  Lares saves the connector, asks the server one unauthenticated question and says in one sentence what it found: no
+  login, a token, or a sign-in page. A server that uses a sign-in page is saved but cannot be used yet; sign-in comes in
+  a later release. A failure shows one message and **Try again**, which continues with the saved connector.
+- **Connector page** (`/integrations/outside/<id>`):
+  - **Who can use it**: each agent's tools as a list with the kind (looks things up, or changes something) and a
+    **Run without asking** switch, saved with **Save tools**. A tool that changes something always asks.
+  - **Give an agent access**: choose the agents, paste the token once, **Find tools**, choose the tools, **Give access**.
+    The token is sent to each chosen agent's own locked store in that one action. An agent whose outside access is
+    read-only and a tool that changes something: the page offers **Leave it out** (everything else is saved) or
+    **Let <agent> ask first** (a second confirmation, owner only).
+  - **Replace token**, **Rename** (the label only; agents and tokens are untouched), **Check it works** (asks the
+    server again what it is; it sends no token) and **Remove** (see below).
+  - A reserved empty place at the bottom of the page is for the danger zone, which comes in a later change.
+
+**Remove** takes the connector off every agent, erases the token Lares holds for each of them, and retires the directory
+row, so the name can be used again. Running agents restart, which ends their open conversations. The page says so once
+before it removes anything. If it stops part way, press **Remove** again to continue.
+
+The old addresses `/integrations/connect-outside-tool` and `/agents/<name>/outside-tools` lead to these pages. Editing
+an agent's declarations by hand in the raw definition editor still works and is picked up by the directory.
+
+An agent definition lists outside tool servers under `outsideTools`. Saving a change marks it pending; applying it
+reconciles the definition with the runtime. Applying a declaration does not stage or activate a credential, and removing
+a declaration does not revoke a held credential (the page's **Remove** does, in the order above).
 
 Outside bearer credentials are kept by Keeper in protected, encrypted custody. They are not placed
 in a named file for an agent container, and the agent does not receive the token. A credential
@@ -81,9 +107,8 @@ and channel-specific approval verification remain separate operations.
 
 Every outside tool call asks for approval unless you switched that one tool to **Run without asking**.
 Only a tool that only looks things up can be switched on; a tool that changes something always asks, and
-the console refuses to save it as switched on. On the Connect screen the switch starts ticked only for
-tools the server itself marks as read-only; you can change any switch before connecting, and later on the
-agent's Outside connections page. Switching a tool on records who did it and when.
+the console refuses to save it as switched on. On the connector page the switch starts on only for
+tools the server itself marks as read-only; you can change any switch before giving access, and later under **Who can use it**. Switching a tool on records who did it and when.
 
 A switched-on tool still asks when the agent has just read someone else's words in the same
 conversation, and a result from any outside tool, including one you switched on, counts as someone
@@ -101,10 +126,9 @@ Changing a switch after connecting edits the agent's definition, like any other 
   editor, which has no signed-in member behind it, is accepted only from the host or the installation administrator.
 - The fingerprint of the description a switch is tied to is always taken by the keeper from the description the agent has
   stored (`outside_tool_pins`), never from what a page or a file says. A tool the agent has not yet read from the server
-  cannot be switched on: ask the agent for a look-up once, then switch it on. The Connect screen shows your ticks and offers
-  a "Switch on Run without asking" button once you are connected.
+  cannot be switched on: ask the agent for a look-up once, then switch it on. The connector page switches on the lookups you chose as part of **Give access**.
 - Switching a tool OFF needs no approver rights; anyone who can edit the agent's connections can do it, and an explicit empty list switches everything off.
-- A save that says nothing about the switches (a reconnect, or an edit elsewhere) keeps the ones whose description is unchanged and ends the others; the Connect screen and the connection page say which were ended.
+- A save that says nothing about the switches (a reconnect, or an edit elsewhere) keeps the ones whose description is unchanged and ends the others; the connector page says which were ended.
 - The record holds who and when. "Who" is the signed-in member's email address (the keeper's audit address), not a member id.
 - Until a switch is applied, each save of the definition records the time again; once applied, a switch that did not change
   keeps its original who and when. A switch whose tool description changed counts as new and is recorded again.

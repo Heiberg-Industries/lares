@@ -101,23 +101,6 @@
       "routes": ["GET /api/agents/[name]/avatar"]
     },
     {
-      "id": "/agents/[name]/outside-tools",
-      "kind": "page",
-      "file": "app/agents/[name]/outside-tools/page.tsx",
-      "see": "member",
-      "act": "member",
-      "guards": ["isConsoleOwner", "requireMember", "sessionMember"],
-      "source": "derived",
-      "ownerExtras": true,
-      "actions": [
-        "definition.agentRuntime",
-        "outside-connections.applyOutsideConnections",
-        "outside-connections.getOutsideConnections",
-        "outside-connections.saveOutsideConnections"
-      ],
-      "routes": []
-    },
-    {
       "id": "/agents/new",
       "kind": "page",
       "file": "app/agents/new/page.tsx",
@@ -234,9 +217,20 @@
       ]
     },
     {
-      "id": "/integrations/connect-outside-tool",
+      "id": "/integrations/outside",
       "kind": "page",
-      "file": "app/integrations/connect-outside-tool/page.tsx",
+      "file": "app/integrations/outside/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
+      "source": "derived",
+      "actions": ["outside-connectors.listConnectors"],
+      "routes": []
+    },
+    {
+      "id": "/integrations/outside/[id]",
+      "kind": "page",
+      "file": "app/integrations/outside/[id]/page.tsx",
       "see": "owner",
       "act": "owner",
       "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
@@ -245,12 +239,27 @@
         "outside-connect.connectActivateCredential",
         "outside-connect.connectApplyAgent",
         "outside-connect.connectDeclare",
-        "outside-connect.connectListAgents",
         "outside-connect.connectLookUpTools",
-        "outside-connect.connectRemoveDeclaration",
         "outside-connect.connectReviewAndStage",
-        "outside-connect.connectSwitchOnTrust"
+        "outside-connect.connectSetTools",
+        "outside-connect.connectSwitchOnTrust",
+        "outside-connectors.checkConnector",
+        "outside-connectors.listConnectors",
+        "outside-connectors.removeConnector",
+        "outside-connectors.removeFromAgent",
+        "outside-connectors.renameConnector"
       ],
+      "routes": []
+    },
+    {
+      "id": "/integrations/outside/new",
+      "kind": "page",
+      "file": "app/integrations/outside/new/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": ["outside-connectors.addConnector"],
       "routes": []
     },
     {
@@ -635,8 +644,8 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/agents/[name]/edit", "/agents/[name]/outside-tools", "/agents/new"],
-      "see": "member"
+      "usedBy": ["/agents/[name]/edit", "/agents/new"],
+      "see": "owner"
     },
     {
       "id": "definition.applyConnections",
@@ -935,7 +944,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/connect-outside-tool"],
+      "usedBy": ["/integrations/outside/[id]"],
       "see": "owner"
     },
     {
@@ -945,7 +954,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/connect-outside-tool"],
+      "usedBy": ["/integrations/outside/[id]"],
       "see": "owner"
     },
     {
@@ -955,7 +964,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/connect-outside-tool"],
+      "usedBy": ["/integrations/outside/[id]"],
       "see": "owner"
     },
     {
@@ -965,8 +974,8 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/connect-outside-tool"],
-      "see": "owner"
+      "usedBy": [],
+      "see": "none"
     },
     {
       "id": "outside-connect.connectLookUpTools",
@@ -975,7 +984,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/connect-outside-tool"],
+      "usedBy": ["/integrations/outside/[id]"],
       "see": "owner"
     },
     {
@@ -985,8 +994,8 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/connect-outside-tool"],
-      "see": "owner"
+      "usedBy": [],
+      "see": "none"
     },
     {
       "id": "outside-connect.connectReviewAndStage",
@@ -995,7 +1004,17 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/connect-outside-tool"],
+      "usedBy": ["/integrations/outside/[id]"],
+      "see": "owner"
+    },
+    {
+      "id": "outside-connect.connectSetTools",
+      "kind": "action",
+      "file": "app/actions/outside-connect.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/outside/[id]"],
       "see": "owner"
     },
     {
@@ -1005,38 +1024,68 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/connect-outside-tool"],
+      "usedBy": ["/integrations/outside/[id]"],
       "see": "owner"
     },
     {
-      "id": "outside-connections.applyOutsideConnections",
+      "id": "outside-connectors.addConnector",
       "kind": "action",
-      "file": "app/actions/outside-connections.ts",
-      "act": "member",
-      "guards": ["sessionMember"],
+      "file": "app/actions/outside-connectors.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/agents/[name]/outside-tools"],
-      "see": "member"
+      "usedBy": ["/integrations/outside/new"],
+      "see": "owner"
     },
     {
-      "id": "outside-connections.getOutsideConnections",
+      "id": "outside-connectors.checkConnector",
       "kind": "action",
-      "file": "app/actions/outside-connections.ts",
-      "act": "member",
-      "guards": ["sessionMember"],
+      "file": "app/actions/outside-connectors.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/agents/[name]/outside-tools"],
-      "see": "member"
+      "usedBy": ["/integrations/outside/[id]"],
+      "see": "owner"
     },
     {
-      "id": "outside-connections.saveOutsideConnections",
+      "id": "outside-connectors.listConnectors",
       "kind": "action",
-      "file": "app/actions/outside-connections.ts",
-      "act": "member",
-      "guards": ["sessionMember"],
+      "file": "app/actions/outside-connectors.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/agents/[name]/outside-tools"],
-      "see": "member"
+      "usedBy": ["/integrations/outside", "/integrations/outside/[id]"],
+      "see": "owner"
+    },
+    {
+      "id": "outside-connectors.removeConnector",
+      "kind": "action",
+      "file": "app/actions/outside-connectors.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/outside/[id]"],
+      "see": "owner"
+    },
+    {
+      "id": "outside-connectors.removeFromAgent",
+      "kind": "action",
+      "file": "app/actions/outside-connectors.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/outside/[id]"],
+      "see": "owner"
+    },
+    {
+      "id": "outside-connectors.renameConnector",
+      "kind": "action",
+      "file": "app/actions/outside-connectors.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/outside/[id]"],
+      "see": "owner"
     },
     {
       "id": "outside-discovery.acceptOutsideDescriptorReview",

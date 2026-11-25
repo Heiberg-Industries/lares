@@ -29,20 +29,48 @@ const steps = {
     await page.waitForURL((url) => url.origin === origin && !url.pathname.startsWith("/sign-in") && !url.pathname.startsWith("/api/auth"), { timeout: STEP_MS });
     if (!(await context.cookies()).some((cookie) => cookie.name === "lares_session")) throw new Error("Signed in, but no session cookie was issued");
   },
-  // The Connect screen for an outside tool with a token, pressed as a person would, to the end.
+  // The outside tools pages with a token server, pressed as a person would, to the end: Add, the connector page, one
+  // token typed once and sent to the chosen agent, and the lookup that runs without asking.
   async "connect-outside"(page) {
-    await page.goto(`${origin}/integrations/connect-outside-tool?agent=${settings.agent}`);
-    await page.getByLabel("Server address").fill(settings.mcpUrl, { timeout: 30_000 });
-    await page.getByLabel("Token (if the server needs one)").fill(settings.mcpToken);
-    await page.getByLabel(/I allow Lares to send this token/).check();
-    await page.getByRole("button", { name: "Connect" }).click();
+    const NAME = "Vendor lookups";
+    const shot = (name, width = 1280) => page.setViewportSize({ width, height: 900 })
+      .then(() => page.screenshot({ path: `${settings.screenshotDir}/outside-${name}-${width}.png`, fullPage: true })).catch(() => {});
+    await page.goto(`${origin}/integrations/outside`);
+    // A retry finds the connector from an earlier attempt and carries on from its page.
+    const existing = page.getByRole("link", { name: NAME });
+    if (await existing.count()) {
+      await existing.first().click();
+    } else {
+      await page.getByRole("link", { name: "Add custom connector" }).click();
+      await page.getByLabel(/^Name/).fill(NAME, { timeout: 30_000 });
+      await page.getByLabel(/^Server URL/).fill(settings.mcpUrl);
+      await page.getByLabel(/^Authentication/).selectOption("token");
+      await shot("add");
+      await page.getByRole("button", { name: "Continue" }).click();
+    }
+    await page.getByRole("heading", { name: NAME }).waitFor({ timeout: 240_000 });
+    if (!(await page.getByText(/^Found the server\. It asks for a token\./).count()) && !(await page.getByText(/Token ·/).count())) throw new Error("The connector page does not say the server asks for a token");
+    console.log("the page says the server asks for a token");
+    const give = page.getByRole("region", { name: "Give agents access" });
+    const boxes = give.getByRole("checkbox");
+    if (!(await boxes.first().isChecked())) await boxes.first().check({ timeout: 30_000 });
+    await give.getByLabel(/^Token/).fill(settings.mcpToken);
+    await give.getByLabel(/I allow Lares to send this token/).check();
+    await give.getByRole("button", { name: "Find tools" }).click();
     await page.getByText(/offers 1 tool/).waitFor({ timeout: 240_000 });
-    await page.getByRole("button", { name: "Connect" }).click();
-    await page.getByText(/^Connected\./).waitFor({ timeout: 480_000 });
-    console.log(`the screen says: ${(await page.getByText(/^Connected\./).first().innerText()).slice(0, 200)}`);
-    // The lookup the server marks read-only was switched on to run without asking by this same Connect, with no separate step.
-    await page.getByText(/lookup-company run without asking/).waitFor({ timeout: 60_000 });
-    console.log("the screen says the lookup runs without asking");
+    await give.getByRole("button", { name: "Give access" }).click();
+    await page.getByText(/^Done\./).waitFor({ timeout: 480_000 });
+    console.log(`the page says: ${(await page.getByText(/^Done\./).first().innerText()).slice(0, 200)}`);
+    // The lookup the server marks read-only was switched on to run without asking by this same action.
+    const free = page.getByLabel(/Run lookup-company without asking/).first();
+    await free.waitFor({ timeout: 120_000 });
+    if ((await free.getAttribute("aria-checked")) !== "true") throw new Error("lookup-company does not run without asking on the connector page");
+    console.log("the page shows the lookup runs without asking");
+    await shot("connector"); await shot("connector", 390);
+    await page.goto(`${origin}/integrations/outside`);
+    await page.getByRole("link", { name: NAME }).first().waitFor({ timeout: 30_000 });
+    await shot("directory"); await shot("directory", 390);
+    await page.setViewportSize({ width: 1280, height: 900 });
   },
   // One question that makes the agent call the connected tool; the person answers its card.
   async "outside-call"(page) {

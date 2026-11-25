@@ -12,7 +12,7 @@ vi.mock("../lib/keeper-client", () => ({
     constructor(message: string, readonly outcomeMayBeUnknown = false) { super(message); this.name = "KeeperUnavailableError"; }
   },
 }));
-import { connectActivateCredential, connectApplyAgent, connectDeclare, connectSwitchOnTrust, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage } from "../app/actions/outside-connect";
+import { connectActivateCredential, connectApplyAgent, connectDeclare, connectSwitchOnTrust, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSetTools } from "../app/actions/outside-connect";
 import { KeeperRefusedError, KeeperUnavailableError } from "../lib/keeper-client";
 import { PENDING_TOOL } from "../lib/outside-connect-words";
 
@@ -208,5 +208,37 @@ describe("connect: switch on run without asking", () => {
       .mockRejectedValueOnce(new KeeperRefusedError('"find_rate" cannot run without asking yet: the agent has not read its description from the server.'));
     const result = await connectSwitchOnTrust({ agent: "worker", name: "rates", tools: ["find_rate"] });
     expect(result).toMatchObject({ ok: false, message: expect.stringMatching(/has not read its description/) });
+  });
+});
+
+const trust = (tool: string) => ({ tool, pin: h("f"), by: "owner@example.test", at: "2026-11-25T00:00:00.000Z" });
+
+describe("connect: set one agent's tools from the connector page", () => {
+  const withTools = (allow: string[], read: string[], trusted: unknown[] = []) => ({ ...declared(allow, read), tools: { allow, read, trusted } });
+  it("saves the allowed tools, kinds and switches in one save, binds new switches to the stored description, and applies", async () => {
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [withTools(["find_rate"], ["find_rate"])] }))
+      .mockResolvedValueOnce(state({ applicationStatus: "pending", connections: [withTools(["find_rate", "set_rate"], ["find_rate"], [trust("find_rate")])] }))
+      .mockResolvedValueOnce(state());
+    const result = await connectSetTools({ agent: "worker", name: "rates", tools: [
+      { name: "find_rate", allowed: true, kind: "read", free: true }, { name: "set_rate", allowed: true, kind: "change", free: true }, { name: "drop_rate", allowed: false, kind: "change", free: false }] });
+    expect(result).toEqual({ ok: true, value: { conflicts: [], droppedTrust: [] } });
+    expect(calls()).toEqual(["outside.connections.get", "outside.connections.save", "outside.connections.apply"]);
+    const sent = (mocks.keeper.mock.calls[1]![1] as { connections: { tools: { allow: string[]; read: string[]; trusted: { tool: string }[] } }[]; resolveReadOnlyConflicts: boolean }).connections[0]!.tools;
+    expect(sent.allow).toEqual(["find_rate", "set_rate"]);
+    expect(sent.read).toEqual(["find_rate"]);
+    expect(sent.trusted.map(t => t.tool)).toEqual(["find_rate"]); // a tool that changes something never runs without asking
+    expect(mocks.keeper.mock.calls[1]![1]).toMatchObject({ resolveReadOnlyConflicts: true });
+  });
+  it("returns read-only conflicts and the switches the keeper ended, and refuses an empty list", async () => {
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [withTools(["find_rate"], ["find_rate"], [trust("find_rate")])] }))
+      .mockResolvedValueOnce(state({ connections: [withTools(["find_rate"], ["find_rate"])], conflicts: [{ connection: "rates", tool: "set_rate" }] }));
+    const result = await connectSetTools({ agent: "worker", name: "rates", widen: true, tools: [
+      { name: "find_rate", allowed: true, kind: "read", free: true }, { name: "set_rate", allowed: true, kind: "change", free: false }] });
+    expect(result).toEqual({ ok: true, value: { conflicts: ["set_rate"], droppedTrust: ["find_rate"] } });
+    expect(mocks.keeper.mock.calls[1]![1]).toMatchObject({ widenOutsideGrant: true });
+    mocks.keeper.mockClear();
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [withTools(["find_rate"], ["find_rate"])] }));
+    expect(await connectSetTools({ agent: "worker", name: "rates", tools: [{ name: "find_rate", allowed: false, kind: "read", free: false }] }))
+      .toMatchObject({ ok: false, message: expect.stringContaining("at least one tool") });
   });
 });

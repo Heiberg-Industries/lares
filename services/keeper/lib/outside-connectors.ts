@@ -274,12 +274,17 @@ export function registerOutsideConnectorActions(o: ConnectorOptions): void {
   });
 
   registerAction({
-    name: 'outside.connector-probe', input: z.strictObject({ sessionToken, id: uuid }), secretFields: ['sessionToken'],
-    run: async ({ sessionToken: token, id }) => {
+    name: 'outside.connector-probe', input: z.strictObject({ sessionToken, id: uuid, expectToken: z.boolean().default(false) }), secretFields: ['sessionToken'],
+    run: async ({ sessionToken: token, id, expectToken }) => {
       await requireOwner(token);
       if (!o.probe) throw new KeeperRefusedError('Outside tools are not switched on for this installation.');
       const row = await load(pool, id);
-      const kind = classifyProbe(await o.probe(row.url));
+      const answer = await o.probe(row.url);
+      // The owner said it needs a token: an answer that is not a clear 401 (some servers answer an unauthenticated question with
+      // something else) does not overrule that. Only a server that points at a sign-in page of its own is recorded as one.
+      let kind: ConnectorAuthKind;
+      try { kind = classifyProbe(answer); } catch (error) { if (!expectToken) throw error; kind = 'token'; }
+      if (expectToken && kind === 'none') kind = 'token';
       // Recorded, never acted on: a sign-in server is saved as one and stays unusable until sign-in is built.
       const saved = (await pool.query<Row>(`UPDATE outside_connectors SET auth_kind=$2,probed_at=clock_timestamp() WHERE id=$1 AND retired_at IS NULL RETURNING ${COLUMNS}`, [id, kind])).rows[0];
       if (!saved) throw new KeeperRefusedError('There is no such connector (it may have been removed).');

@@ -18,7 +18,7 @@ export default async function IntegrationsPage() {
     <Page className="lares-stack">
       <PageHeader title="Integrations" description="Services shared by the whole installation. Only the owner turns them on or changes them."
         actions={<>
-          <Button asChild><Link href="/integrations/connect-outside-tool">Connect an outside tool</Link></Button>
+          <Button asChild><Link href="/integrations/outside">Outside tools</Link></Button>
           <Button variant="outline" asChild><Link href="/voice">Email writing style</Link></Button>
           <Button variant="outline" asChild><Link href="/meetings">Meetings</Link></Button>
         </>} />
