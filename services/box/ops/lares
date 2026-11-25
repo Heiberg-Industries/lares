@@ -114,7 +114,7 @@ export LARES_PREFIX="$PREFIX"
 export DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-$ROOT}"
 
 cmd_update() {
-  local name="" file="" extra=() fetch=() new on code dry=0
+  local name="" file="" extra=() fetch=() new on code dry=0 prune=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --release)
@@ -178,6 +178,12 @@ cmd_update() {
     exit "$code"
   fi
 
+  # Old release images: keep the release now running and the one before it (rollback needs those),
+  # remove the rest, never an image a container uses. A failure here never fails the update.
+  prune=("$OPS/prune-images.sh" --releases-dir "$ROOT/releases" --keep "$new/release.json")
+  # `previous` is the release this update left (set above, or from the update before when this is a re-run).
+  if [ -L "$ROOT/previous" ] && [ -f "$ROOT/previous/release.json" ]; then prune+=(--keep "$ROOT/previous/release.json"); fi
+  bash "${prune[@]}" || printf 'lares: could not clean up old release images (the update itself is done). Run docker image ls to see what is left.\n' >&2
 }
 
 cmd_rollback() {
