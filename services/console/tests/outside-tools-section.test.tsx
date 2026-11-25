@@ -141,6 +141,11 @@ describe("getOutsideToolEvidence", () => {
     expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} dangerLive={{}} />)).not.toContain("marked in red");
     expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} dangerLive={{ [withDanger.name]: ["set_rate"] }} />)).toContain("One tool that changes something is marked in red");
     expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} dangerLive={{}} />)).not.toContain("Runs without asking: changes something");
+    const dangerOnly = { ...withDanger, tools: { ...withDanger.tools, trusted: [] } } as typeof rates;
+    const live = renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[dangerOnly]} dangerLive={{ [dangerOnly.name]: ["set_rate"] }} />);
+    expect(live).toContain("Every other call asks you first.");
+    expect(live).not.toContain("Every call asks you first.");
+    expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[dangerOnly]} dangerLive={{}} />)).toContain("Every call asks you first.");
     expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} />)).not.toContain("Runs without asking: changes something");
   });
 });
