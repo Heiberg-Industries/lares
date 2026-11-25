@@ -1,21 +1,18 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireConsolePage } from "../../../lib/auth";
 import { Page } from "@lares/ui/patterns";
-import { Button } from "@lares/ui/primitives/button";
 import { getConnectionRows } from "../../../lib/connections";
 import { getBoardRows } from "../../../lib/board";
 import { getCredentialView } from "../../../lib/credentials";
 import { getClippingView } from "../../../lib/clipping";
 import { getNotionSyncStatus } from "../../../lib/queries";
 import { getNotionProposalsView } from "../../../lib/notion-proposals";
-import { anyOutsideToolsInUse, declaredOutsideTools, getOutsideToolEvidence, type OutsideToolEvidence } from "../../../lib/outside-tools";
+import { anyOutsideToolsInUse } from "../../../lib/outside-tools";
 import { getGatewayStatusView } from "../../../lib/gateway-status";
 import { listAgents } from "../../../lib/agents";
 import { agentNames } from "../../../lib/connection-words";
 import { gatewayAgents, integrationCard } from "../../../lib/integrations-grid";
-import { IntegrationDetail, IntegrationHeader } from "../../../components/IntegrationDetail";
-import { OutsideToolsOverview } from "../../../components/OutsideToolsOverview";
+import { IntegrationDetail } from "../../../components/IntegrationDetail";
 import { NotionCredential } from "../../../components/NotionCredential";
 import { NotionProposalsCard } from "../../../components/NotionProposalsCard";
 import { ClippingCard } from "../../../components/ClippingCard";
@@ -63,19 +60,6 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
   const [rows, credential, outsideToolsInUse, gateway] = await Promise.all([getConnectionRows(), getCredentialView(), anyOutsideToolsInUse(), getGatewayStatusView()]);
   const card = integrationCard(id, { rows, credential, outsideToolsInUse, gateway });
   if (!card) notFound();
-
-  if (card.id === "outside") {
-    const declared = await declaredOutsideTools();
-    const evidence: Record<string, OutsideToolEvidence> = {};
-    await Promise.all((declared ?? []).map(async (a) => { evidence[a.agent] = await getOutsideToolEvidence(a.agent); }));
-    return (
-      <Page className="lares-stack">
-        <IntegrationHeader card={{ ...card, line: "Tools from servers outside Lares. Connect one with its address, and a token if it needs one, then choose which agents get it." }} />
-        <div className="lares-actions"><Button asChild><Link href="/integrations/connect-outside-tool">Connect an outside tool</Link></Button></div>
-        <OutsideToolsOverview declared={declared} evidence={evidence} />
-      </Page>
-    );
-  }
 
   const [board, notion, clipping, agents] = await Promise.all([
     getBoardRows({ strict: true }).catch(() => null),

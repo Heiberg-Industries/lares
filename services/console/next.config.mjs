@@ -2,6 +2,13 @@
 export default {
   output: "standalone",
   reactStrictMode: true,
+  // The old outside-tool screens are gone; their addresses lead to the new pages.
+  async redirects() {
+    return [
+      { source: "/integrations/connect-outside-tool", destination: "/integrations/outside/new", permanent: true },
+      { source: "/agents/:name/outside-tools", destination: "/integrations/outside", permanent: true },
+    ];
+  },
   experimental: { cpus: 1, serverActions: { bodySizeLimit: "3mb" } },
   outputFileTracingIncludes: {
     "/*": ["../../packages/agent-kit/templates/*/definition.json", "../../packages/agent-kit/templates/*/role.md"],

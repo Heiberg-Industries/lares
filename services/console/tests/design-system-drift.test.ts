@@ -50,15 +50,15 @@ describe("controls and styling come from the design system", () => {
 
 describe("tool lists and messages", () => {
   it("the screens that list outside tools use ToolList, and never join tool names into one line", () => {
-    for (const file of ["components/OutsideToolsOverview.tsx", "components/OutsideToolsSection.tsx", "components/ConnectOutsideTool.tsx"]) {
+    for (const file of ["components/ConnectorAccess.tsx", "components/OutsideToolsSection.tsx"]) {
       const source = read(root, file);
       expect(source, `${file}: list tools with ToolList and ToolRow from @lares/ui/patterns.`).toContain("<ToolList");
       expect(source, `${file}: do not join tool names into a sentence.`).not.toMatch(/tools\.join\(|lookups|others\.join/);
     }
   });
 
-  it("the Connect screen words every message through a Notice tone, not a bare paragraph", () => {
-    expect(read(root, "components/ConnectOutsideTool.tsx")).not.toMatch(/<p role="(alert|status)"/);
+  it("the outside tools screens word every message through a Notice tone, not a bare paragraph", () => {
+    for (const file of ["components/ConnectorAccess.tsx", "components/AddConnectorForm.tsx", "components/ConnectorActions.tsx"]) expect(read(root, file)).not.toMatch(/<p role="(alert|status)"/);
   });
 });
 

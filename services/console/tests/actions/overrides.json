@@ -19,7 +19,6 @@
     "/sign-in": "A signed-out person has to be able to sign in."
   },
   "awaitingOwnerDecision": {
-    "/accounts": "Each member sees and manages only their own connected mail and calendar. The owner rule says every page except chat and membership is owner-only; the owner has not yet said whether this page is an exception.",
-    "/agents/[name]/outside-tools": "A member who has edit access to one agent can manage that agent's outside connections; the keeper checks that access. The owner has not yet said whether this page is an exception."
+    "/accounts": "Each member sees and manages only their own connected mail and calendar. The owner rule says every page except chat and membership is owner-only; the owner has not yet said whether this page is an exception."
   }
 }

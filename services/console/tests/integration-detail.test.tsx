@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 const m = vi.hoisted(() => ({
   guard: vi.fn(), rows: vi.fn(), board: vi.fn(), credential: vi.fn(), clipping: vi.fn(), sync: vi.fn(), proposals: vi.fn(),
-  inUse: vi.fn(), declared: vi.fn(), evidence: vi.fn(), gateway: vi.fn(), agents: vi.fn(),
+  inUse: vi.fn(), evidence: vi.fn(), gateway: vi.fn(), agents: vi.fn(),
 }));
 vi.mock("../lib/auth", () => ({ requireConsolePage: m.guard }));
 vi.mock("next/navigation", () => ({ notFound: () => { throw new Error("NEXT_NOT_FOUND"); } }));
@@ -15,7 +15,7 @@ vi.mock("../lib/agents", () => ({ listAgents: m.agents }));
 vi.mock("../lib/clipping", () => ({ getClippingView: m.clipping }));
 vi.mock("../lib/queries", () => ({ getNotionSyncStatus: m.sync }));
 vi.mock("../lib/notion-proposals", () => ({ getNotionProposalsView: m.proposals }));
-vi.mock("../lib/outside-tools", () => ({ anyOutsideToolsInUse: m.inUse, declaredOutsideTools: m.declared, getOutsideToolEvidence: m.evidence }));
+vi.mock("../lib/outside-tools", () => ({ anyOutsideToolsInUse: m.inUse }));
 vi.mock("../components/AutonomyControl", () => ({ AutonomyControl: ({ capability }: { capability: string }) => <span>dial:{capability}</span> }));
 vi.mock("../components/NotionCredential", () => ({ NotionCredential: () => <section>NOTION-CREDENTIAL</section> }));
 vi.mock("../components/NotionProposalsCard", () => ({ NotionProposalsCard: () => <section>NOTION-PROPOSALS</section> }));
@@ -47,7 +47,6 @@ beforeEach(() => {
   m.clipping.mockResolvedValue({ kind: "unavailable" });
   m.sync.mockResolvedValue({ lastRunAt: "2026-10-08T10:00:00Z", synced: 7, needsYou: 0, retrying: 0, unmatched: 0 });
   m.proposals.mockResolvedValue({ proposals: [], frozen: [] });
-  m.declared.mockResolvedValue([]); m.evidence.mockResolvedValue({ keys: { available: false }, locks: { available: false } });
 });
 
 it("refuses a non-owner the way the grid does, and finds no page for an unknown or personal id", async () => {
@@ -139,39 +138,6 @@ it("holds the Notion key, sync status and proposals on the Notion page, with a M
 it("holds the clipping card on the Readability page only", async () => {
   expect(await show("readability")).toContain("CLIPPING-CARD");
   expect(await show("twenty")).not.toContain("CLIPPING-CARD");
-});
-
-it("lists the outside tools per agent with key and description checks, and links to the agent's page", async () => {
-  m.declared.mockResolvedValue([
-    { agent: "assistant", displayName: "Assistant", servers: [
-      { name: "docs", needsKey: true, tools: ["search"] }, { name: "maps", needsKey: true, tools: ["route"] },
-      { name: "wiki", needsKey: true, tools: ["lookup"] }, { name: "open", needsKey: false, tools: ["ping"] }] },
-  ]);
-  m.evidence.mockResolvedValue({
-    keys: { available: true, value: { docs: "file", maps: "missing", wiki: null } },
-    locks: { available: true, value: { open: { pinHash: "a", seenHash: "b", seenAt: "2026-10-08T10:00:00.000Z", pinTools: null, seenTools: null } } },
-  });
-  const html = await show("outside");
-  expect(html).toContain("Tools from servers outside Lares. Connect one with its address, and a token if it needs one, then choose which agents get it.");
-  expect(html).toContain("Assistant");
-  expect(html).toContain("Key file in place.");
-  expect(html).toContain("Key file missing");
-  expect(html).toContain("Key status unavailable: the keeper could not check the key.");
-  expect(html).toContain("Locked: its tool descriptions changed.");
-  expect(html).toContain('href="/agents/assistant/outside-tools"');
-  expect(html).toContain('href="/integrations/connect-outside-tool"');
-  expect(html).toContain("Connect an outside tool");
-  expect(html).not.toContain("one agent at a time");
-  expect(m.evidence).toHaveBeenCalledWith("assistant");
-});
-
-it("says when the keeper could not be asked, when no agent uses outside tools, and when definitions are unreadable", async () => {
-  m.declared.mockResolvedValue([{ agent: "assistant", displayName: "Assistant", servers: [{ name: "docs", needsKey: true, tools: ["search"] }] }]);
-  expect(await show("outside")).toContain("Key status unavailable: the keeper could not be asked.");
-  m.declared.mockResolvedValue([]);
-  expect(await show("outside")).toContain("No agent uses outside tools yet. Use Connect an outside tool to add some.");
-  m.declared.mockResolvedValue(null);
-  expect(await show("outside")).toContain("Outside tools could not be read. Reload the page to try again.");
 });
 
 it("shows the gateway status the grid shows, and which agents use it by display name", async () => {
