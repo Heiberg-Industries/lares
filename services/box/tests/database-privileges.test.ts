@@ -6,7 +6,7 @@ import { Pool, type PoolClient } from "pg";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { quietPool } from "./helpers/quiet-pool.js";
 import { PgBudgetAdmissionStore } from "@lares/agent-kit/budget-admission-store";
-import { ENGINE_TABLE_PRIVILEGES, provisionEngineDatabasePrivileges } from "../lib/database-privileges.js";
+import { ENGINE_TABLE_PRIVILEGES, provisionEngineDatabasePrivileges, refreshEngineDatabasePrivileges, diagnosticLoginState } from "../lib/database-privileges.js";
 import { MEMBER_SCOPE, tablesInBoxSql } from "../lib/member-scope.js";
 import { LEDGER_DDL } from "../lib/migration-ledger.js";
 
@@ -82,6 +82,9 @@ async function removeTestOwnedOutsideCustodyGrants(): Promise<void> {
   const database = container.getDatabase().replaceAll('"', '""');
   await admin.query(`REVOKE CONNECT ON DATABASE "${database}" FROM lares_outside_custody`);
   await admin.query("REVOKE USAGE ON SCHEMA public FROM lares_outside_custody");
+  for (const name of ["pg_advisory_lock", "pg_advisory_lock_shared", "pg_try_advisory_lock", "pg_try_advisory_lock_shared", "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared", "pg_try_advisory_xact_lock", "pg_try_advisory_xact_lock_shared"]) {
+    for (const args of ["bigint", "integer,integer"]) await admin.query(`REVOKE EXECUTE ON FUNCTION pg_catalog.${name}(${args}) FROM lares_outside_custody`);
+  }
   for (const table of ENGINE_TABLE_PRIVILEGES.outsideCustody) {
     await admin.query(`REVOKE SELECT, INSERT, DELETE ON TABLE public."${table}" FROM lares_outside_custody`);
   }
@@ -208,6 +211,137 @@ describe("engine database privilege foundation", () => {
     await expectDenied(()=>financial.query("DELETE FROM agent_provider_keys"));
     await expectDenied(()=>outsideCustody.query("SELECT agent FROM agent_provider_keys"));
     expect((await app.query("DELETE FROM agent_provider_keys WHERE agent='key-fixture-agent'")).rowCount).toBe(1);
+  });
+
+  it("gives the diagnostic login a read of non-secret columns and no secret column, no write and no function", async () => {
+    // The login has no password until `lares db` sets a short one; here the operator sets one.
+    const diagnosticPassword = Buffer.from("diagnostic-role-test-password-0123456");
+    await admin.query(`ALTER ROLE lares_diagnostic PASSWORD '${diagnosticPassword.toString("ascii")}'`);
+    const diagnostic = loginPool("lares_diagnostic", diagnosticPassword);
+    try {
+      await app.query("INSERT INTO outside_connectors(slug,display_name,url,auth_kind,created_by) VALUES('diag-fixture','Diagnostic fixture','https://tools.example.org/mcp','token','owner')");
+      // Reads state.
+      expect((await diagnostic.query("SELECT slug, state FROM outside_connectors WHERE slug='diag-fixture'")).rows).toEqual([{ slug: "diag-fixture", state: "setup" }]);
+      await diagnostic.query("SELECT account_id, state, active_revision FROM outside_custody_accounts");
+      await diagnostic.query("SELECT credential_revision, revision_purpose FROM outside_custody_revisions");
+      await diagnostic.query("SELECT outcome, operation_kind FROM outside_custody_operations");
+      await diagnostic.query("SELECT outcome FROM approval_asks");
+      await diagnostic.query("SELECT action, outcome, detail FROM keeper_audit");
+      // Sealed and secret columns are refused, by name and by `SELECT *`.
+      await expectDenied(() => diagnostic.query("SELECT ciphertext FROM outside_custody_revisions"));
+      await expectDenied(() => diagnostic.query("SELECT nonce FROM outside_custody_revisions"));
+      await expectDenied(() => diagnostic.query("SELECT policy_json FROM outside_custody_revisions"));
+      await expectDenied(() => diagnostic.query("SELECT result_ciphertext FROM outside_custody_operations"));
+      await expectDenied(() => diagnostic.query("SELECT * FROM outside_custody_revisions"));
+      await expectDenied(() => diagnostic.query("SELECT input FROM keeper_audit"));
+      await expectDenied(() => diagnostic.query("SELECT payload_hash FROM approval_asks"));
+      await expectDenied(() => diagnostic.query("SELECT token_hash FROM member_sessions"));
+      await expectDenied(() => diagnostic.query("SELECT * FROM oauth_tokens"));
+      await expectDenied(() => diagnostic.query("SELECT * FROM connected_account_credentials"));
+      await expectDenied(() => diagnostic.query("SELECT * FROM agent_provider_keys"));
+      await expectDenied(() => diagnostic.query("SELECT * FROM schema_migrations"));
+      // Changes nothing: by default the session is read-only (25006) ...
+      for (const statement of ["UPDATE outside_connectors SET display_name='x'", "DELETE FROM outside_connectors", "INSERT INTO repairs(kind,ref,severity,what) VALUES('k','r','info','w')"]) {
+        await expect(diagnostic.query(statement)).rejects.toMatchObject({ code: "25006" });
+      }
+      expect((await diagnostic.query("SHOW default_transaction_read_only")).rows[0].default_transaction_read_only).toBe("on");
+      // ... and even a session that switches that off is refused by the grants themselves.
+      const writer = await diagnostic.connect();
+      try {
+        await writer.query("SET default_transaction_read_only = off");
+        await expectDenied(() => writer.query("UPDATE outside_connectors SET display_name='x'"));
+        await expectDenied(() => writer.query("DELETE FROM outside_connectors"));
+        await expectDenied(() => writer.query("INSERT INTO repairs(kind,ref,severity,what) VALUES('k','r','info','w')"));
+        await expectDenied(() => writer.query("TRUNCATE outside_connectors"));
+        await expectDenied(() => writer.query("CREATE TABLE diag_scratch(x int)"));
+        await expectDenied(() => writer.query("CREATE TEMP TABLE diag_scratch(x int)"));
+        await expectDenied(() => writer.query("GRANT SELECT ON outside_connectors TO PUBLIC"));
+        await expect(writer.query("SET ROLE lares_app")).rejects.toThrow();
+        // Built-ins PUBLIC could once call that write without a table grant are closed too.
+        for (const statement of ["SELECT lo_creat(-1)", "SELECT lo_create(0)", "SELECT lo_from_bytea(0, 'x'::bytea)", "SELECT lo_import('/etc/hostname')", "SELECT pg_logical_emit_message(true, 'x', 'y')"]) {
+          await expectDenied(() => writer.query(statement));
+        }
+        expect((await admin.query("SELECT count(*)::int AS n FROM pg_largeobject_metadata")).rows[0].n).toBe(0);
+      } finally { writer.release(); }
+    } finally {
+      await diagnostic.end();
+      await admin.query("ALTER ROLE lares_diagnostic PASSWORD NULL");
+      await app.query("DELETE FROM outside_connectors WHERE slug='diag-fixture'");
+    }
+  });
+
+  it("gives an installation made before the diagnostic login that login when its update refreshes the permissions", async () => {
+    await admin.query("DROP OWNED BY lares_diagnostic");
+    await admin.query("DROP ROLE lares_diagnostic");
+    const operator = await admin.connect();
+    try {
+      expect(await refreshEngineDatabasePrivileges(operator, { expectedDatabase: container.getDatabase() })).toEqual({ status: "repaired" });
+      expect(await refreshEngineDatabasePrivileges(operator, { expectedDatabase: container.getDatabase() })).toEqual({ status: "verified" });
+    } finally { operator.release(); }
+    const role = (await admin.query("SELECT rolcanlogin, rolsuper, (SELECT rolpassword IS NULL FROM pg_authid a WHERE a.oid=r.oid) AS nopw FROM pg_roles r WHERE r.rolname='lares_diagnostic'")).rows[0];
+    expect(role).toEqual({ rolcanlogin: true, rolsuper: false, nopw: true });
+  });
+
+  it("closes the write-capable built-ins to PUBLIC, and the refresh closes them again when they were reopened", async () => {
+    await admin.query("GRANT EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) TO PUBLIC");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    const operator = await admin.connect();
+    try {
+      expect(await refreshEngineDatabasePrivileges(operator, { expectedDatabase: container.getDatabase() })).toEqual({ status: "repaired" });
+    } finally { operator.release(); }
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+    expect((await admin.query("SELECT has_function_privilege('public','pg_catalog.lo_creat(integer)','EXECUTE') AS open")).rows[0].open).toBe(false);
+  }, 60_000);
+
+  it("keeps advisory locks away from the diagnostic login while the engine logins can still take them", async () => {
+    const diagnosticPassword = Buffer.from("diagnostic-role-test-password-0123456");
+    await admin.query(`ALTER ROLE lares_diagnostic PASSWORD '${diagnosticPassword.toString("ascii")}'`);
+    const diagnostic = loginPool("lares_diagnostic", diagnosticPassword);
+    try {
+      for (const statement of ["SELECT pg_advisory_lock(1)", "SELECT pg_try_advisory_lock(1)", "SELECT pg_advisory_lock_shared(1,2)", "SELECT pg_advisory_xact_lock(1)", "SELECT pg_try_advisory_xact_lock_shared(1,2)"]) {
+        await expectDenied(() => diagnostic.query(statement));
+      }
+      for (const pool of [app, financial, outsideCustody]) {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT pg_advisory_xact_lock(7)");
+          await client.query("SELECT pg_try_advisory_xact_lock(8,9)");
+          await client.query("COMMIT");
+          await client.query("SELECT pg_advisory_lock(7)");
+          await client.query("SELECT pg_advisory_unlock(7)");
+        } finally { client.release(); }
+      }
+    } finally {
+      await diagnostic.end();
+      await admin.query("ALTER ROLE lares_diagnostic PASSWORD NULL");
+    }
+  }, 60_000);
+
+  it("notices the diagnostic login's own settings drifting, and the refresh puts them back", async () => {
+    await admin.query("ALTER ROLE lares_diagnostic SET default_transaction_read_only = off");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    const operator = await admin.connect();
+    try {
+      expect(await refreshEngineDatabasePrivileges(operator, { expectedDatabase: container.getDatabase() })).toEqual({ status: "repaired" });
+    } finally { operator.release(); }
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+    const config = (await admin.query("SELECT rolconfig FROM pg_roles WHERE rolname='lares_diagnostic'")).rows[0].rolconfig as string[];
+    expect([...config].sort()).toEqual(["default_transaction_read_only=on", "statement_timeout=30s"]);
+    // A setting the login saved for itself is removed the same way.
+    await admin.query("ALTER ROLE lares_diagnostic SET search_path = pg_temp");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    const again = await admin.connect();
+    try { await refreshEngineDatabasePrivileges(again, { expectedDatabase: container.getDatabase() }); } finally { again.release(); }
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+  }, 60_000);
+
+  it("reports the diagnostic login as ok, and as wrong when it could read a sealed column", async () => {
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+    await admin.query("GRANT SELECT (ciphertext) ON outside_custody_revisions TO lares_diagnostic");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    await admin.query("REVOKE SELECT (ciphertext) ON outside_custody_revisions FROM lares_diagnostic");
+    expect(await diagnosticLoginState(admin)).toBe("ok");
   });
 
   it("lets only the application login read and write the connector directory",async()=>{

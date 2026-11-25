@@ -28,6 +28,8 @@
 #   lares budget recover [--check]                      prove the ledger against the database and lift a freeze
 #   lares budget setup [options]                        ask for the monthly limits and switch model
 #                                                       spending on for this installation
+#   lares db [psql options]                             open a read-only look at the installation's database
+#                                                       (a login that sees no secret and changes nothing)
 #   lares agent start <name> [--member <email>] [--yes]
 #                                                       connect a person to an agent and start it
 #   lares agent import <dir> [--yes]                    create the agents in <dir> (one agent folder,
@@ -81,6 +83,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
        lares budget recover [--check]
        lares budget setup [--installation-limit <usd>] [--person-limit <usd>] [--prices <in,out,cache-read,cache-write>] [--yes]
+       lares db [psql options]
        lares agent start <name> [--member <email>] [--yes]
        lares agent import <dir> [--yes]
        lares agent refresh
@@ -97,7 +100,7 @@ EOF
 cmd="$1"
 shift
 case "$cmd" in
-  update|rollback|restore|doctor|import-preview|vault|voices|owner-bootstrap|backups|budget|agent|provider-key) ;;
+  update|rollback|restore|doctor|import-preview|vault|voices|owner-bootstrap|backups|budget|agent|provider-key|db) ;;
   -h|--help) usage; exit "$EX_USAGE" ;;
   *) printf 'lares: I do not know the command %s.\n' "'$cmd'" >&2; usage; exit "$EX_USAGE" ;;
 esac
@@ -111,7 +114,7 @@ export LARES_PREFIX="$PREFIX"
 export DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-$ROOT}"
 
 cmd_update() {
-  local name="" file="" extra=() fetch=() new on code dry=0
+  local name="" file="" extra=() fetch=() new on code dry=0 prune=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --release)
@@ -171,10 +174,16 @@ cmd_update() {
   code=0
   ( budget_commands agent-refresh ) || code=$?
   if [ "$code" -ne 0 ]; then
-    printf 'lares: now on %s, but not every agent moved to it (the lines above name them). Each one named there runs the previous software until it is started again.\n' "$name" >&2
+    printf 'lares: now on %s, but not every agent moved to it (the lines above name them). Each one named there runs the previous software until it is started again. To retry them all, run: sudo lares agent refresh\n' "$name" >&2
     exit "$code"
   fi
 
+  # Old release images: keep the release now running and the one before it (rollback needs those),
+  # remove the rest, never an image a container uses. A failure here never fails the update.
+  prune=("$OPS/prune-images.sh" --releases-dir "$ROOT/releases" --keep "$new/release.json")
+  # `previous` is the release this update left (set above, or from the update before when this is a re-run).
+  if [ -L "$ROOT/previous" ] && [ -f "$ROOT/previous/release.json" ]; then prune+=(--keep "$ROOT/previous/release.json"); fi
+  bash "${prune[@]}" || printf 'lares: could not clean up old release images (the update itself is done). Run docker image ls to see what is left.\n' >&2
 }
 
 cmd_rollback() {
@@ -563,6 +572,53 @@ cmd_agent() {
   budget_commands agent-start "$@"
 }
 
+# A read-only look at the database. The diagnostic login has no stored password: each run sets a
+# random one that lasts at most an hour, signs in with it, and clears it when psql ends. That login
+# reads named non-secret columns only and cannot write (database-privileges.ts).
+# THREE SEPARATE STEPS, so the operator secret is never near the person's psql: (1) a container with
+# the root-only operator credential sets the temporary password from a fixed statement; (2) a second
+# container with NO secret mounted runs psql as the diagnostic login (so a shell escape inside psql
+# reaches only that login's own temporary password); (3) the operator container clears the password.
+# ONE RUN AT A TIME: all three steps hold a flock, because the login has one password; a second run
+# says so instead of changing the password under the first.
+db_session_cleanup() {
+  operator_db_run -f "$DBS_COMPOSE" -- psql -X -qAt -U lares_operator -d "$DBS_DB" \
+    -c "ALTER ROLE lares_diagnostic PASSWORD NULL VALID UNTIL 'infinity'" >/dev/null 2>&1 </dev/null \
+    || printf 'lares db: could not clear the temporary password; it expires by itself within an hour.\n' >&2
+}
+
+cmd_db() {
+  case "${1:-}" in
+    -h|--help)
+      printf 'lares db [psql options]: open a read-only look at the database as a login that sees no secret and changes nothing.\nExamples:\n  sudo lares db\n  sudo lares db -c "SELECT slug, state FROM outside_connectors"\nOnly one lares db session can be open at a time.\n' >&2
+      return 0 ;;
+  esac
+  # shellcheck source=engine-run.sh
+  . "$OPS/engine-run.sh"
+  local pw expires code=0 role
+  DBS_COMPOSE="$DB_COMPOSE_DIR/compose.yaml" DBS_DB="${PGDATABASE:-lares_state}" DBS_LOCK="$PREFIX/run/lares-db.lock"
+  local compose="$DBS_COMPOSE" db="$DBS_DB" lock="$DBS_LOCK"
+  mkdir -p "$PREFIX/run"
+  command -v flock >/dev/null 2>&1 || die "this server has no flock program, so lares db cannot keep two sessions apart. Nothing was changed." "$EX_REFUSED"
+  # An advisory lock the kernel holds for as long as this process (and the psql it starts) lives, and
+  # drops by itself when it ends or is killed: nothing stale to clean up, nothing to race on.
+  exec 9>"$lock"
+  flock -n 9 || die "another lares db session is open. Close it and run this again; the login has one temporary password. Nothing was changed." "$EX_REFUSED"
+  # Cleared on every way out, so a killed terminal does not leave the password set until it expires.
+  trap db_session_cleanup EXIT
+  role=$(operator_db_run -f "$compose" -- psql -X -qAt -U lares_operator -d "$db" -c "SELECT 1 FROM pg_roles WHERE rolname = 'lares_diagnostic'" </dev/null 2>/dev/null || true)
+  [ "$role" = 1 ] || die "this installation has no diagnostic login yet. It is created by lares update; update to a release that has it. Nothing was changed." "$EX_REFUSED"
+  pw=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  expires=$(date -u -d "@$(( $(date +%s) + 3600 ))" '+%Y-%m-%d %H:%M:%S+00')
+  printf "ALTER ROLE lares_diagnostic PASSWORD '%s' VALID UNTIL '%s'\n" "$pw" "$expires" \
+    | operator_db_run -f "$compose" -- psql -X -qAt -v ON_ERROR_STOP=1 -U lares_operator -d "$db" >/dev/null \
+    || die "could not set the temporary password. Nothing was changed." "$EX_REFUSED"
+  local tty=""
+  if [ -t 0 ] && [ -t 1 ]; then tty=1; fi
+  LARES_DIAGNOSTIC_PGPASSWORD="$pw" OPERATOR_DB_TTY="$tty" diagnostic_db_run -f "$compose" -- psql -X -d "$db" "$@" || code=$?
+  return "$code"
+}
+
 cmd_provider_key() {
   [ "${1:-}" = set ] || { printf 'lares: the provider-key command is: lares provider-key set --key-file <path>\n' >&2; usage; exit "$EX_USAGE"; }
   shift
@@ -581,5 +637,6 @@ case "$cmd" in
   doctor) cmd_doctor "$@" ;;
   budget) cmd_budget "$@" ;;
   agent) cmd_agent "$@" ;;
+  db) cmd_db "$@" ;;
   provider-key) cmd_provider_key "$@" ;;
 esac

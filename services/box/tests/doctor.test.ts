@@ -108,6 +108,16 @@ describe("lares doctor", () => {
     expect(withLogin.state).toBe("warn");
   });
 
+  it("checks the read-only diagnostic login: unknown without the root login, a warning to update when it does not exist", async () => {
+    const without = find(await runDoctor({ db: fakeDb({}), env: {}, sqlDir: SQL_DIR, now: new Date(), installed: true }), "diagnostic");
+    expect(without.state).toBe("unknown");
+    expect(without.fix).toBe("Run `sudo lares doctor`.");
+    const missing = find(await runDoctor({ db: fakeDb({}), ledgerDb: fakeDb({}), env: {}, sqlDir: SQL_DIR, now: new Date(), installed: true }), "diagnostic");
+    expect(missing.state).toBe("warn");
+    expect(missing.fix).toContain("lares update");
+    expect(doctorReport([missing])).toContain("Diagnostic database login");
+  });
+
   it("says the backup is unproven when nothing has ever recorded a verdict", async () => {
     const rs = await runDoctor({
       db: fakeDb({ "FROM backup_status": [{ check_name: "verify", ok: null, checked_at: null, last_pass_at: null, detail: null, target: null }] }),

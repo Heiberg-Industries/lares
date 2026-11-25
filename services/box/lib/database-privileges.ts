@@ -7,12 +7,15 @@ const ROLE_MARKERS = {
   application: "lares-engine-database-role:v1:application",
   financial: "lares-engine-database-role:v1:financial",
   outsideCustody: "lares-engine-database-role:v1:outside-custody",
+  diagnostic: "lares-engine-database-role:v1:diagnostic",
 } as const;
 
 const OWNER = "lares_schema_owner";
 const APPLICATION = "lares_app";
 const FINANCIAL = "lares_financial";
 const OUTSIDE_CUSTODY = "lares_outside_custody";
+const DIAGNOSTIC = "lares_diagnostic";
+const ALL_ROLES = [OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY, DIAGNOSTIC];
 const SCHEMA = "public";
 
 const FINANCIAL_TABLES = [
@@ -56,6 +59,29 @@ export const ENGINE_TABLE_PRIVILEGES = {
   outsideCustody: ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations", "outside_execution_approvals", "private_metadata_devices"],
   ledger: LEDGER_TABLES,
 } as const;
+
+/**
+ * What the read-only diagnostic login may read: named columns of non-secret state, and nothing
+ * else. A column that is not listed here is unreadable to it, so a column a later release adds
+ * stays hidden until someone lists it. Never listed: sealed values (nonce, ciphertext, policy
+ * text), hashes of secrets, request payloads, tokens, refresh material, message text.
+ */
+export const DIAGNOSTIC_SELECT_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  outside_connectors: ["id", "slug", "display_name", "url", "auth_kind", "description", "catalogue_hash", "catalogue_at", "state", "created_by", "created_at", "probed_at", "retired_at"],
+  outside_custody_accounts: ["account_id", "owner_member_id", "resource_id", "connection_name", "generation", "active_revision", "candidate_revision", "consent_generation", "state", "created_at", "updated_at"],
+  outside_custody_revisions: ["account_id", "owner_member_id", "credential_revision", "generation", "consent_generation", "revision_purpose", "operation_id", "created_at"],
+  outside_custody_operations: ["operation_id", "account_id", "owner_member_id", "actor_member_id", "operation_kind", "request_id", "event_phase", "expected_generation", "result_generation", "credential_revision", "outcome", "evidence_kind", "created_at"],
+  outside_execution_approvals: ["call_id", "request_id", "agent", "connection_name", "account_id", "credential_revision", "tool_name", "expires_at", "consumed_at", "created_at"],
+  approval_asks: ["request_id", "call_id", "agent", "tool", "asked_at", "answered_at", "outcome", "answered_via", "used_at", "use_count"],
+  approval_events: ["id", "agent", "capability", "tool", "decision", "reason", "call_id", "at"],
+  keeper_audit: ["id", "operation_id", "action", "actor", "outcome", "detail", "at", "completed_at"],
+  update_history: ["id", "started_at", "finished_at", "from_release", "to_release", "snapshot_id", "outcome", "detail"],
+  repairs: ["kind", "ref", "severity", "what", "how_to_fix", "breaks_in", "opened_at", "last_seen_at", "resolved_at"],
+  backup_status: ["check_name", "ok", "checked_at", "last_pass_at", "detail", "target", "created_at"],
+};
+
+/** The read-only diagnostic login's name (it has no password until `lares db` sets a short-lived one). */
+export const DIAGNOSTIC_DATABASE_ROLE = DIAGNOSTIC;
 
 /** Fixed role names shared by offline setup and other engine proof tooling. */
 export const ENGINE_DATABASE_ROLES = { owner: OWNER, application: APPLICATION, financial: FINANCIAL, outsideCustody: OUTSIDE_CUSTODY } as const;
@@ -196,6 +222,32 @@ const OUTSIDE_CUSTODY_AUTHORITY_TABLES = [
   "vault_areas", "vault_backing_stores",
 ] as const;
 
+/**
+ * PostgreSQL built-ins that PUBLIC may call by default and that write something outside any table
+ * grant: large objects (stored in the system catalogs, created and written with no table
+ * privilege) and WAL messages. They are closed to PUBLIC, so no login of this installation,
+ * including the read-only diagnostic one, reaches them; the operator (a superuser) still can.
+ * Not closed: pg_notify, which only queues a transient message and changes no stored data.
+ */
+const WRITE_BUILTINS = [
+  "lo_create(oid)", "lo_creat(integer)", "lo_unlink(oid)", "lo_open(oid,integer)", "lowrite(integer,bytea)",
+  "lo_truncate(integer,integer)", "lo_truncate64(integer,bigint)", "lo_from_bytea(oid,bytea)", "lo_put(oid,bigint,bytea)",
+  "pg_logical_emit_message(boolean,text,text)", "pg_logical_emit_message(boolean,text,bytea)",
+] as const;
+
+/**
+ * Advisory locks are held in the server's shared memory and block anyone who asks for the same key,
+ * so a login that only reads must not be able to take one the keeper then waits on. They are closed
+ * to PUBLIC and given back to the three logins the engine itself runs as; the unlock functions stay
+ * open (they release only the caller's own locks).
+ */
+const ADVISORY_LOCKS = ["pg_advisory_lock", "pg_advisory_lock_shared", "pg_try_advisory_lock", "pg_try_advisory_lock_shared",
+  "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared", "pg_try_advisory_xact_lock", "pg_try_advisory_xact_lock_shared"]
+  .flatMap((name) => [`${name}(bigint)`, `${name}(integer,integer)`]);
+
+/** What a managed diagnostic login's own settings must be, exactly. */
+const DIAGNOSTIC_SETTINGS = ["default_transaction_read_only=on", "statement_timeout=30s"] as const;
+
 const FUNCTION_CALL_GRANTS = {
   application: ["update_history_images_are_digests(jsonb)"],
   financial: ["update_history_images_are_digests(jsonb)", "budget_retire_member(text, boolean)"],
@@ -317,7 +369,7 @@ async function requireRoleState(client: PoolClient): Promise<"fresh" | "managed-
     const owner = row.rolname === OWNER;
     if (row.comment !== expectedMarker || row.rolsuper || row.rolcreaterole || row.rolcreatedb || row.rolreplication || row.rolbypassrls || row.rolcanlogin !== !owner || row.rolinherit || row.rolconfig !== null || row.rolvaliduntil !== null) throw safeFailure();
   }
-  const memberships = await queryRows(client, `SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles g ON g.oid=m.member WHERE r.rolname=ANY($1::text[]) OR g.rolname=ANY($1::text[]) LIMIT 1`, [[OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY]]);
+  const memberships = await queryRows(client, `SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles g ON g.oid=m.member WHERE r.rolname=ANY($1::text[]) OR g.rolname=ANY($1::text[]) LIMIT 1`, [ALL_ROLES]);
   if (memberships.length !== 0) throw safeFailure();
   return rows.length === 3 ? "managed-three" : "managed";
 }
@@ -333,7 +385,7 @@ async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
        AND a.grantee <> c.relowner
       AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=a.grantee AND g.rolname=ANY($2::text[]))
      LIMIT 1
-  `, [SCHEMA, [OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY]]);
+  `, [SCHEMA, ALL_ROLES]);
   if (badTableAcl.length !== 0) throw safeFailure();
 
   const foreignRoutineAcl = await queryRows(client, `
@@ -343,7 +395,7 @@ async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e')
        AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=a.grantee AND g.rolname=ANY($2::text[]))
      LIMIT 1
-  `, [SCHEMA, [OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY]]);
+  `, [SCHEMA, ALL_ROLES]);
   if (foreignRoutineAcl.length !== 0) throw safeFailure();
 
   const unexpectedGrantOptions = await queryRows(client, `
@@ -364,7 +416,7 @@ async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
      WHERE n.nspname=$1 AND a.grantee<>t.typowner AND a.grantee<>0
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_type'::regclass AND d.objid=t.oid AND d.deptype='e')
        AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=a.grantee AND g.rolname=ANY($2::text[])) LIMIT 1
-  `,[SCHEMA,[OWNER,APPLICATION,FINANCIAL,OUTSIDE_CUSTODY]]);
+  `,[SCHEMA,ALL_ROLES]);
   if (foreignTypeAcl.length) throw safeFailure();
 
   const publicTableAcl = await queryRows(client, `
@@ -383,7 +435,7 @@ async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
      WHERE n.nspname=$1 AND a.attnum>0 AND NOT a.attisdropped AND x.grantee<>0
        AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=x.grantee AND g.rolname=ANY($2::text[]))
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e') LIMIT 1
-  `,[SCHEMA,[OWNER,APPLICATION,FINANCIAL,OUTSIDE_CUSTODY]]);
+  `,[SCHEMA,ALL_ROLES]);
   if (publicTableAcl.length || publicColumnAcl.length || foreignColumnAcl.length) throw safeFailure();
 }
 
@@ -455,7 +507,7 @@ async function requireManagedState(client: PoolClient, database: string, custody
     SELECT 1 FROM pg_shdepend s JOIN pg_roles r ON r.oid=s.refobjid
      WHERE s.refclassid='pg_authid'::regclass AND r.rolname=ANY($1::text[])
        AND s.deptype='o' AND r.rolname<>$2 LIMIT 1
-  `,[[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],OWNER]);
+  `,[[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY,DIAGNOSTIC],OWNER]);
   if (managedRoleOwnership.length) throw safeFailure();
   const unexpectedAclAuthority = await queryRows(client, `
     SELECT 1 FROM pg_shdepend s JOIN pg_roles grantee ON grantee.oid=s.refobjid
@@ -474,14 +526,49 @@ async function requireManagedState(client: PoolClient, database: string, custody
              OR (s.classid='pg_proc'::regclass AND (
                (p.pronamespace=(SELECT oid FROM pg_namespace WHERE nspname=$4) AND p.proname || '(' || oidvectortypes(p.proargtypes) || ')'=ANY($6::text[]))
                OR (p.oid='pg_catalog.pg_control_system()'::regprocedure)
+               OR (p.oid=ANY(ARRAY(SELECT ('pg_catalog.'||x)::regprocedure::oid FROM unnest($7::text[]) x)))
              ))
              OR (s.classid='pg_type'::regclass AND t.typnamespace=(SELECT oid FROM pg_namespace WHERE nspname=$4) AND t.typname='budget_money')
            ))
          )
        ) LIMIT 1
-  `,[[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],database,SCHEMA,[...ENGINE_TABLE_PRIVILEGES.ordinary,...ENGINE_TABLE_PRIVILEGES.financial,...ENGINE_TABLE_PRIVILEGES.applicationOnly,...ENGINE_TABLE_PRIVILEGES.outsideCustody,...ENGINE_TABLE_PRIVILEGES.ledger,...ENGINE_SEQUENCES],ENGINE_FUNCTIONS]);
+  `,[[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY,DIAGNOSTIC],[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY,DIAGNOSTIC],database,SCHEMA,[...ENGINE_TABLE_PRIVILEGES.ordinary,...ENGINE_TABLE_PRIVILEGES.financial,...ENGINE_TABLE_PRIVILEGES.applicationOnly,...ENGINE_TABLE_PRIVILEGES.outsideCustody,...ENGINE_TABLE_PRIVILEGES.ledger,...ENGINE_SEQUENCES],ENGINE_FUNCTIONS,ADVISORY_LOCKS]);
   if (unexpectedAclAuthority.length) throw safeFailure();
+  await requireDiagnosticRole(client);
   await requireManagedAcls(client,database,custody);
+}
+
+async function diagnosticRoleExists(client: PoolClient): Promise<boolean> {
+  return (await queryRows(client, "SELECT 1 FROM pg_roles WHERE rolname=$1", [DIAGNOSTIC])).length > 0;
+}
+
+/** The diagnostic login, when present, must be exactly what this file creates: it can log in, is
+ *  nothing else, carries the marker, and has no password stored until `lares db` sets one. */
+async function requireDiagnosticRole(client: PoolClient): Promise<void> {
+  const rows = await queryRows<{ rolsuper: boolean; rolinherit: boolean; rolcreaterole: boolean; rolcreatedb: boolean; rolcanlogin: boolean; rolreplication: boolean; rolbypassrls: boolean; rolconfig: string[] | null; comment: string | null }>(client, `
+    SELECT r.rolsuper, r.rolinherit, r.rolcreaterole, r.rolcreatedb, r.rolcanlogin, r.rolreplication, r.rolbypassrls, r.rolconfig, d.description AS comment
+      FROM pg_roles r LEFT JOIN pg_shdescription d ON d.objoid=r.oid AND d.classoid='pg_authid'::regclass WHERE r.rolname=$1`, [DIAGNOSTIC]);
+  const row = rows[0];
+  if (!row) return;
+  if (row.comment !== ROLE_MARKERS.diagnostic || row.rolsuper || row.rolinherit || row.rolcreaterole || row.rolcreatedb || !row.rolcanlogin || row.rolreplication || row.rolbypassrls) throw safeFailure();
+  // The login may change its own settings (PostgreSQL lets any login do that), so anything other than
+  // the two this file sets is drift, and the refresh puts them back.
+  if (sorted(row.rolconfig ?? []).join("\0") !== sorted(DIAGNOSTIC_SETTINGS).join("\0")) throw safeFailure();
+}
+
+async function setDiagnosticSettings(client: PoolClient): Promise<void> {
+  await client.query(`ALTER ROLE ${qid(DIAGNOSTIC)} RESET ALL`);
+  await client.query(`ALTER ROLE ${qid(DIAGNOSTIC)} SET default_transaction_read_only = on`);
+  await client.query(`ALTER ROLE ${qid(DIAGNOSTIC)} SET statement_timeout = '30s'`);
+}
+
+/** Create the diagnostic login when it is missing. Returns true when it was created. */
+async function ensureDiagnosticRole(client: PoolClient): Promise<boolean> {
+  if (await diagnosticRoleExists(client)) return false;
+  await client.query(`CREATE ROLE ${qid(DIAGNOSTIC)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 2`);
+  await client.query(`COMMENT ON ROLE ${qid(DIAGNOSTIC)} IS '${ROLE_MARKERS.diagnostic}'`);
+  await setDiagnosticSettings(client);
+  return true;
 }
 
 async function requireManagedAcls(client: PoolClient, database: string, custody = true): Promise<void> {
@@ -489,11 +576,12 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
     FROM pg_database d CROSS JOIN LATERAL aclexplode(COALESCE(d.datacl,acldefault('d'::"char",d.datdba))) a
     LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE d.datname=$1 AND a.grantee<>d.datdba`;
   const custodyDb = custody ? [expectedAclKey(OUTSIDE_CUSTODY,"CONNECT")] : [];
-  await requireAcl(client, dbAcl, [database], [expectedAclKey(APPLICATION,"CONNECT"),expectedAclKey(FINANCIAL,"CONNECT"),...custodyDb]);
+  const diagnostic = await diagnosticRoleExists(client);
+  await requireAcl(client, dbAcl, [database], [expectedAclKey(APPLICATION,"CONNECT"),expectedAclKey(FINANCIAL,"CONNECT"),...custodyDb,...(diagnostic?[expectedAclKey(DIAGNOSTIC,"CONNECT")]:[])]);
   const schemaAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, a.privilege_type AS privilege, a.is_grantable AS grantable
     FROM pg_namespace n CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl,acldefault('n'::"char",n.nspowner))) a
     LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE n.nspname=$1 AND a.grantee<>n.nspowner`;
-  await requireAcl(client, schemaAcl, [SCHEMA], [expectedAclKey(APPLICATION,"USAGE"),expectedAclKey(FINANCIAL,"USAGE"),...(custody?[expectedAclKey(OUTSIDE_CUSTODY,"USAGE")]:[])]);
+  await requireAcl(client, schemaAcl, [SCHEMA], [expectedAclKey(APPLICATION,"USAGE"),expectedAclKey(FINANCIAL,"USAGE"),...(custody?[expectedAclKey(OUTSIDE_CUSTODY,"USAGE")]:[]),...(diagnostic?[expectedAclKey(DIAGNOSTIC,"USAGE")]:[])]);
 
   for (const table of [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.applicationOnly, ...(custody?ENGINE_TABLE_PRIVILEGES.outsideCustody:[]), ...ENGINE_TABLE_PRIVILEGES.ledger]) {
     const ordinary = (ENGINE_TABLE_PRIVILEGES.ordinary as readonly string[]).includes(table);
@@ -517,11 +605,12 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
       const financialCustodySelect = custody && (FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS[table] ?? []).includes(column.name) || (FINANCIAL_APPLICATION_SELECT_COLUMNS[table] ?? []).includes(column.name);
       const custodySelect = custody && (OUTSIDE_CUSTODY_SELECT_COLUMNS[table] ?? []).includes(column.name);
       const custodyUpdate = custody && (OUTSIDE_CUSTODY_UPDATE_COLUMNS[table] ?? []).includes(column.name);
+      const diagnosticSelect = diagnostic && (DIAGNOSTIC_SELECT_COLUMNS[table] ?? []).includes(column.name);
       const columnAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, x.privilege_type AS privilege, x.is_grantable AS grantable
         FROM pg_attribute a CROSS JOIN LATERAL aclexplode(NULLIF(a.attacl,'{}'::aclitem[])) x
         LEFT JOIN pg_roles r ON r.oid=x.grantee JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname=$1 AND c.relname=$2 AND a.attname=$3`;
-      await requireAcl(client,columnAcl,[SCHEMA,table,column.name],[...(allowed?[expectedAclKey(FINANCIAL,"UPDATE")]:[]),...(financialCustodySelect?[expectedAclKey(FINANCIAL,"SELECT")]:[]),...(custodySelect?[expectedAclKey(OUTSIDE_CUSTODY,"SELECT")]:[]),...(custodyUpdate?[expectedAclKey(OUTSIDE_CUSTODY,"UPDATE")]:[])]);
+      await requireAcl(client,columnAcl,[SCHEMA,table,column.name],[...(allowed?[expectedAclKey(FINANCIAL,"UPDATE")]:[]),...(financialCustodySelect?[expectedAclKey(FINANCIAL,"SELECT")]:[]),...(custodySelect?[expectedAclKey(OUTSIDE_CUSTODY,"SELECT")]:[]),...(custodyUpdate?[expectedAclKey(OUTSIDE_CUSTODY,"UPDATE")]:[]),...(diagnosticSelect?[expectedAclKey(DIAGNOSTIC,"SELECT")]:[])]);
     }
   }
 
@@ -555,6 +644,17 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
     FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f'::"char",p.proowner))) a
     LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE p.oid='pg_catalog.pg_control_system()'::regprocedure AND a.grantee<>p.proowner`;
   await requireAcl(client,controlAcl,[],[expectedAclKey(FINANCIAL,"EXECUTE")]);
+  for (const fn of ADVISORY_LOCKS) {
+    await requireAcl(client,`SELECT COALESCE(r.rolname,'PUBLIC') AS grantee,a.privilege_type AS privilege,a.is_grantable AS grantable
+      FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f'::"char",p.proowner))) a
+      LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE p.oid=('pg_catalog.'||$1)::regprocedure AND a.grantee<>p.proowner`,[fn],
+      [APPLICATION, FINANCIAL, ...(custody ? [OUTSIDE_CUSTODY] : [])].map((role) => expectedAclKey(role, "EXECUTE")));
+  }
+  for (const fn of WRITE_BUILTINS) {
+    await requireAcl(client,`SELECT COALESCE(r.rolname,'PUBLIC') AS grantee,a.privilege_type AS privilege,a.is_grantable AS grantable
+      FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f'::"char",p.proowner))) a
+      LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE p.oid=('pg_catalog.'||$1)::regprocedure AND a.grantee<>p.proowner`,[fn],[]);
+  }
 
   const unsafeSettings = await queryRows(client, `
     SELECT 1 FROM pg_db_role_setting s LEFT JOIN pg_database d ON d.oid=s.setdatabase
@@ -611,6 +711,14 @@ async function applyGrants(client: PoolClient): Promise<void> {
   for (const [table, columns] of Object.entries(OUTSIDE_CUSTODY_UPDATE_COLUMNS)) {
     await client.query(`GRANT UPDATE (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
   }
+  if (await diagnosticRoleExists(client)) {
+    await setDiagnosticSettings(client);
+    await client.query(`GRANT CONNECT ON DATABASE ${qid(database)} TO ${qid(DIAGNOSTIC)}`);
+    await client.query(`GRANT USAGE ON SCHEMA ${qid(SCHEMA)} TO ${qid(DIAGNOSTIC)}`);
+    for (const [table, columns] of Object.entries(DIAGNOSTIC_SELECT_COLUMNS)) {
+      await client.query(`GRANT SELECT (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(DIAGNOSTIC)}`);
+    }
+  }
   for (const sequence of ONLINE_SEQUENCE_USAGE) {
     await client.query(`GRANT USAGE ON SEQUENCE ${qname(sequence)} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
   }
@@ -624,6 +732,11 @@ async function applyGrants(client: PoolClient): Promise<void> {
   for (const fn of FUNCTION_CALL_GRANTS.financial) await client.query(`GRANT EXECUTE ON FUNCTION ${qname(fn.slice(0, fn.indexOf("(")))}${fn.slice(fn.indexOf("("))} TO ${qid(FINANCIAL)}`);
   await client.query(`REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM PUBLIC`);
   await client.query(`GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO ${qid(FINANCIAL)}`);
+  for (const fn of WRITE_BUILTINS) await client.query(`REVOKE EXECUTE ON FUNCTION pg_catalog.${fn} FROM PUBLIC`);
+  for (const fn of ADVISORY_LOCKS) {
+    await client.query(`REVOKE EXECUTE ON FUNCTION pg_catalog.${fn} FROM PUBLIC`);
+    await client.query(`GRANT EXECUTE ON FUNCTION pg_catalog.${fn} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}, ${qid(OUTSIDE_CUSTODY)}`);
+  }
   await client.query(`REVOKE ALL ON TABLE ${qname("schema_migrations")} FROM ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
   for (const table of ENGINE_TABLE_PRIVILEGES.ledger) await client.query(`REVOKE ALL ON TABLE ${qname(table)} FROM ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
 }
@@ -678,6 +791,8 @@ export async function provisionEngineDatabasePrivileges(
       await operator.query(`CREATE ROLE ${qid(OUTSIDE_CUSTODY)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${outsideCustodyPassword}'`);
       await operator.query(`COMMENT ON ROLE ${qid(OUTSIDE_CUSTODY)} IS '${ROLE_MARKERS.outsideCustody}'`);
     }
+
+    await ensureDiagnosticRole(operator);
 
     const database = qid(identity.database);
     await operator.query(`REVOKE CONNECT, TEMP ON DATABASE ${database} FROM PUBLIC`);
@@ -738,8 +853,11 @@ export async function refreshEngineDatabasePrivileges(
     }
     await requireInventory(operator);
     await requireOnlyExpectedGrants(operator);
+    // An installation older than the diagnostic login gets it here: roles cannot be made by a
+    // migration (the schema owner may not create them), and every update ends in this function.
+    const diagnosticCreated = await ensureDiagnosticRole(operator);
     await operator.query("SAVEPOINT lares_grants_before");
-    let complete = true;
+    let complete = !diagnosticCreated;
     try { await requireManagedState(operator, identity.database, true); } catch { complete = false; }
     await operator.query("ROLLBACK TO SAVEPOINT lares_grants_before");
     if (!complete) {
@@ -770,5 +888,33 @@ export async function engineDatabasePrivilegesMatch(client: Pick<PoolClient, "qu
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Read-only: is the diagnostic login there and what it should be? "missing": no such login (an
+ * installation not yet updated to a release that has it). "wrong": it exists but is not what this
+ * file creates, its grants differ from the fixed list, it can write something, or it can read a
+ * column that is not on its list. Anything unreadable counts as "wrong". Changes nothing.
+ */
+export async function diagnosticLoginState(client: Pick<PoolClient, "query">): Promise<"ok" | "missing" | "wrong"> {
+  const reader = client as PoolClient;
+  try {
+    if (!(await diagnosticRoleExists(reader))) return "missing";
+    await requireDiagnosticRole(reader);
+    if (!(await engineDatabasePrivilegesMatch(reader))) return "wrong";
+    const writable = await queryRows(reader, `
+      SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+       WHERE n.nspname=$1 AND c.relkind IN ('r','p') AND has_table_privilege($2, c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,SELECT') LIMIT 1
+    `, [SCHEMA, DIAGNOSTIC]);
+    if (writable.length !== 0) return "wrong";
+    const unlisted = await queryRows<{ table: string; column: string }>(reader, `
+      SELECT c.relname AS "table", a.attname AS "column" FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+       WHERE n.nspname=$1 AND c.relkind IN ('r','p') AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege($2, c.oid, a.attnum, 'SELECT')
+    `, [SCHEMA, DIAGNOSTIC]);
+    if (unlisted.some((row) => !(DIAGNOSTIC_SELECT_COLUMNS[row.table] ?? []).includes(row.column))) return "wrong";
+    return "ok";
+  } catch {
+    return "wrong";
   }
 }
