@@ -4,6 +4,12 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 ## Unreleased
 
+- `lares update` now removes the images of older releases after it succeeds, keeping the release now running and the one before it. It never removes an image a container uses or an image no release names, and it says how much space it freed. A server no longer fills up after many releases.
+
+- `lares update` already restarts each running agent onto the new release; when one does not come back it now also says how to retry them all (`sudo lares agent refresh`). The release notes no longer tell you to run that step after every update.
+
+- `sudo lares db` opens a read-only look at the database as a new login that sees no secret and changes nothing. A server gets the login with its next update. `lares doctor` checks it.
+
 - `sudo lares voices map` reports which member and connected account each mailbox's writing voice belongs to, and changes nothing. A mailbox is matched to an account only when exactly one connected Google account has exactly that address as Google reported it; otherwise it is held, and the report says why. Add `--map <mailbox>=<account id>` to link a held mailbox yourself, and `--apply` to make the changes; they are made together and checked, or not at all. `--apply` also copies the shared default card into the installation owner's new writing profile when there is exactly one active owner; with several, name one with `--default-owner <member id>`. Agents do not use these profiles yet: drafting works exactly as before.
 
 - `sudo lares doctor --test-model` now works on a new installation with no extra flags. It asks your model provider whether it accepts the installation's provider key (a free call that does no model work) and says plainly when the key was refused. It sends no test completion: the built-in gateway takes only calls the spending limits have approved, and the doctor cannot ask for that. Before, the command was refused unless you named a gateway, an alias and a key file, and even then it could not reach or use the built-in gateway.

@@ -174,7 +174,7 @@ cmd_update() {
   code=0
   ( budget_commands agent-refresh ) || code=$?
   if [ "$code" -ne 0 ]; then
-    printf 'lares: now on %s, but not every agent moved to it (the lines above name them). Each one named there runs the previous software until it is started again.\n' "$name" >&2
+    printf 'lares: now on %s, but not every agent moved to it (the lines above name them). Each one named there runs the previous software until it is started again. To retry them all, run: sudo lares agent refresh\n' "$name" >&2
     exit "$code"
   fi
 

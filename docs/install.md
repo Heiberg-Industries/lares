@@ -941,6 +941,13 @@ update too. Only when both worked does it make the new release the current one a
 can run the same command again. Switch on backups (section 9) before your first update; without a
 verified backup the update refuses.
 
+When the new release is current, the same command restarts each running agent once, onto the new
+release's software, so there is no separate step to run. If one agent does not come back, the update
+names it and how to start it again, the other agents are not held back, and `sudo lares agent
+refresh` retries them all. Last it removes the images of older releases from the server, keeping the
+release now running and the one before it (so a rollback stays possible), never an image a container
+uses, and never an image no release names. It says how much disk space that freed.
+
 The repair step refreshes the installed backup programs, helpers and service units before new
 Vault stores are initialized. Existing backup settings and enabled timers are preserved; a
 missing destination still leaves backups off (section 9).
@@ -955,6 +962,14 @@ and it names the backup that was taken before the update. To go back past a data
 restore that backup. If the keeper renders an agent's compose file from its own configuration,
 the keeper's configured image comes back the next time it applies the agent, so change that
 configuration too.
+
+**Looking at the database.** `sudo lares db` opens a read-only view of the installation's database for
+operators and agents. It signs in as a login that reads named non-secret columns (outside
+connections, their custody history without any sealed value, approvals, update and backup history,
+the keeper's action log without its inputs) and can change nothing. It sees no token, key or
+refresh material. Each run sets a random password that lasts at most an hour and is cleared when you
+leave. Give it psql options to run one query: `sudo lares db -c "SELECT slug, state FROM outside_connectors"`.
+A server gets this login with its next `lares update`; `lares doctor` has a line that checks it.
 
 **Disk space.** An optional `disk-guard` timer can report root-disk usage to an uptime monitor;
 `install.sh` does not install it (see [`services/box/ops/README.md`](../services/box/ops/README.md#disk-guard-optional)).
