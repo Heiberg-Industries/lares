@@ -98,6 +98,16 @@ describe("prune-images.sh", () => {
     expect(removed()).toEqual([]);
   });
 
+  it("removes nothing when any one of the release files to keep cannot be read", () => {
+    release("r1", { engine: ref("engine", 1) });
+    const current = release("r2", { engine: ref("engine", 2) });
+    mkdirSync(join(releases, "r0"), { recursive: true });
+    writeFileSync(join(releases, "r0", "release.json"), "{ not json");
+    docker([`${ref("engine", 1)} idA`, `${ref("engine", 2)} idB`], []);
+    expect(run(["--releases-dir", releases, "--keep", current, "--keep", join(releases, "r0", "release.json")])).toContain("no image was removed");
+    expect(removed()).toEqual([]);
+  });
+
   it("carries on and exits 0 when one removal fails", () => {
     release("r1", { a: ref("a", 1), b: ref("b", 1) });
     const current = release("r2", { a: ref("a", 2), b: ref("b", 2) });

@@ -46,11 +46,17 @@ PY
 }
 
 all_refs=$(refs "$releases_dir"/*/release.json) || all_refs=""
-keep_refs=$(refs "${keep[@]}") || keep_refs=""
-if [ -z "$keep_refs" ]; then
-  note "the release files to keep could not be read, so no image was removed"
-  exit 0
-fi
+# EVERY keep file must be readable and name at least one image: a keep list that is only partly
+# known could let the release that was meant to stay be removed.
+keep_refs=""
+for file in "${keep[@]}"; do
+  one=$(refs "$file") || one=""
+  if [ -z "$one" ]; then
+    note "the release file $file could not be read or names no image, so no image was removed"
+    exit 0
+  fi
+  keep_refs+="$one"$'\n'
+done
 
 # Image ids that a container (running or not) is made from.
 used_ids=""
