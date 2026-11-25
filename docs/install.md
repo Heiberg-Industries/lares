@@ -600,7 +600,7 @@ chat and charged to you as an owner job.
 ### Choosing where messages go
 
 Each agent starts some conversations itself: the morning and evening brief, the weekly summary,
-nudges, deadline warnings, proposals, e-mail triage, meeting follow-ups, outreach replies, CRM
+nudges, deadline warnings, proposals, e-mail triage, meeting follow-ups, outreach replies, track
 routing, the digest and reminders. On the agent's page, **Schedules** tab, **Where messages go**
 is a grid: a row per kind of message, a column per door (web chat, Slack, Telegram). Number the
 doors 1st, 2nd and 3rd per row. The message tries them in order and skips doors that are not

@@ -53,7 +53,7 @@ sit under "Earlier messages". A dot beside Chat in the sidebar shows while somet
 The page looks for new messages when it opens and about every 30 seconds while the tab is visible
 (the dot every 60); nothing is pushed.
 
-A message that asks the agent to do something (a CRM routing proposal, an outreach reply, a
+A message that asks the agent to do something (a track routing proposal, an outreach reply, a
 meeting follow-up to send) arrives as the facts plus a Reply. The approval card then appears in
 that chat, and in Waiting on you. Meeting follow-ups routed to web chat are never sent
 automatically for this reason.
@@ -105,7 +105,7 @@ chat and charged to you as an owner job.
 
 On the Schedules tab. A grid with one row per kind of message the agent starts by itself (morning
 brief, evening brief, weekly summary, nudges, deadlines, proposals, email triage, meeting
-follow-up, outreach replies, CRM routing, digest, reminders) and one column per door (web chat,
+follow-up, outreach replies, track routing, digest, reminders) and one column per door (web chat,
 Slack, Telegram). Number the doors 1st, 2nd and 3rd for each row. The message tries them in that
 order, skipping any door that is not connected, and **web chat is always the last resort**, so
 nothing is dropped. A door that is not connected is labelled "(not connected)". Rows you have not
