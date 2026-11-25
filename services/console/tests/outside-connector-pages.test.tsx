@@ -96,6 +96,14 @@ describe("the connector page", () => {
 const tools = [{ name: "find_rate", description: "Finds a rate.", inputSchema: { type: "object" }, readOnly: true as const }];
 const looked = { ok: true, value: { identity: { accountId: "a" }, serverName: "Rates 1", tools } };
 
+describe("tools that no agent may use now", () => {
+  it("stay listed, off, so they can be switched on again", () => {
+    render(<ConnectorAccess conn={conn} uses={uses} allAgents={agents} canWiden keyLines={{}} known={["find_rate", "set_rate", "gone_rate"]} />);
+    const sw = screen.getByLabelText("Ada may use gone_rate");
+    expect(sw.getAttribute("aria-checked")).toBe("false");
+  });
+});
+
 describe("the token flows", () => {
   it("Cancel on the tool list takes back the temporary declaration on the first agent", async () => {
     mocks.declare.mockResolvedValue({ ok: true, value: {} }); mocks.lookUp.mockResolvedValue(looked); mocks.removeDecl.mockResolvedValue({ ok: true, value: { removed: true } });
@@ -117,6 +125,29 @@ describe("the token flows", () => {
     await screen.findByText(/offers 1 tool/);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await screen.findByText(/could not be removed: The agent is busy/);
+  });
+  it("takes the temporary declaration back when the tool list cannot be read, before returning to the form", async () => {
+    mocks.declare.mockResolvedValue({ ok: true, value: {} }); mocks.lookUp.mockResolvedValue({ ok: false, message: "The token was refused.", retryable: true }); mocks.removeDecl.mockResolvedValue({ ok: true, value: { removed: true } });
+    render(<ConnectorAccess conn={conn} uses={[]} allAgents={[agents[0]!]} canWiden keyLines={{}} />);
+    fireEvent.change(screen.getByLabelText(/^Token/), { target: { value: "tok" } });
+    fireEvent.click(screen.getByLabelText(/I allow Lares to send this token/));
+    fireEvent.click(screen.getByRole("button", { name: "Find tools" }));
+    await screen.findByText("The token was refused.");
+    expect(mocks.removeDecl).toHaveBeenCalledWith({ agent: "ada", name: "rates" });
+  });
+  it("Start over after a failed step returns to the form instead of a blank section", async () => {
+    mocks.declare.mockResolvedValueOnce({ ok: true, value: {} }).mockResolvedValueOnce({ ok: false, message: "The agent could not be updated.", retryable: true });
+    mocks.lookUp.mockResolvedValue(looked);
+    render(<ConnectorAccess conn={conn} uses={[]} allAgents={[agents[0]!]} canWiden keyLines={{}} />);
+    fireEvent.change(screen.getByLabelText(/^Token/), { target: { value: "tok" } });
+    fireEvent.click(screen.getByLabelText(/I allow Lares to send this token/));
+    fireEvent.click(screen.getByRole("button", { name: "Find tools" }));
+    await screen.findByText(/offers 1 tool/);
+    fireEvent.click(screen.getByRole("button", { name: "Give access" }));
+    await screen.findByText("The agent could not be updated.");
+    fireEvent.click(screen.getByRole("button", { name: "Start over" }));
+    await screen.findByRole("button", { name: "Find tools" });
+    expect(mocks.refresh).toHaveBeenCalled();
   });
   it("Replace token shows the descriptions first, and records them only against what the owner read", async () => {
     mocks.lookUp.mockResolvedValue(looked); mocks.review.mockResolvedValue({ ok: false, message: "The server now describes find_rate differently.", retryable: false });

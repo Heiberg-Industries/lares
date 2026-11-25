@@ -39,14 +39,14 @@ function useChain() {
     retry: () => void run(at.current), reset() { setState("idle"); setFailure(null); } };
 }
 
-function WorkNotice({ chain }: { chain: ReturnType<typeof useChain> }) {
+function WorkNotice({ chain, onStartOver }: { chain: ReturnType<typeof useChain>; onStartOver: () => void }) {
   return <>
     {chain.state === "working" && <Notice tone="working">Working: {chain.label}. This can take a minute while the agent restarts.</Notice>}
     {chain.state === "failed" && chain.failure && <div className="lares-stack">
       <Notice tone="error">{chain.failure.message}</Notice>
       <div className="lares-actions">
         {chain.failure.retryable && <Button type="button" onClick={chain.retry}>Try again</Button>}
-        <Button type="button" variant="outline" onClick={chain.reset}>Start over</Button>
+        <Button type="button" variant="outline" onClick={onStartOver}>Start over</Button>
       </div>
     </div>}
   </>;
@@ -126,6 +126,8 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
   const needsToken = conn.authKind === "token";
   const nameOf = (a: string) => agents.find(x => x.name === a)?.displayName ?? a;
 
+  /** Back to the form. Whatever a failed run saved is shown again by a refresh of the page. */
+  function startOver() { reset(); router.refresh(); }
   function reset() { setPhase("form"); setToken(""); setConsent(false); setRows([]); setError(""); setNotes([]); setConflict(null); chain.reset(); seen.current = undefined; }
 
   async function findTools() {
@@ -145,8 +147,15 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
     const declared = await connectDeclare({ agent: primary, provisional: true, connection: base }).catch(() => undefined);
     if (!declared || !declared.ok) { setBusy(false); setError(declared?.message ?? "Lares could not save the connector on the first agent."); return; }
     const looked = await connectLookUpTools({ agent: primary, name: conn.slug, credential: token }).catch(() => undefined);
+    if (!looked || !looked.ok) {
+      // The temporary declaration saved above must not stay behind: take it back before returning to the form.
+      const gone = await connectRemoveDeclaration({ agent: primary, name: conn.slug }).catch(() => undefined);
+      const why = looked?.message ?? "Lares could not ask the server for its tools.";
+      setError(gone && gone.ok ? why : `${why} The temporary connection could not be removed either (${gone?.message ?? "Lares could not confirm it"}); reload the page and take the connector off ${nameOf(primary)} if it appears.`);
+      if (looked && !looked.retryable) setToken("");
+      setBusy(false); return;
+    }
     setBusy(false);
-    if (!looked || !looked.ok) { setError(looked?.message ?? "Lares could not ask the server for its tools."); if (looked && !looked.retryable) setToken(""); return; }
     seen.current = looked.value.tools; setServerName(looked.value.serverName);
     setRows(looked.value.tools.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, use: true, kind: t.readOnly ? "read" : "change", seen: true, free: t.readOnly === true })));
     setPhase("pick");
@@ -235,7 +244,7 @@ function GiveAccess({ conn, agents, canWiden }: { conn: Conn; agents: Agent[]; c
       <div className="lares-actions"><Button type="button" onClick={connect}>Give access</Button><Button type="button" variant="outline" disabled={busy} onClick={() => void cancel()}>Cancel</Button></div>
     </div>}
     {phase === "connecting" && <div className="lares-stack">
-      <WorkNotice chain={chain} />
+      <WorkNotice chain={chain} onStartOver={startOver} />
       {conflict && <div className="lares-stack">
         <Notice tone="needs-you">{readOnlyChoiceWords(nameOf(conflict.agent), conflict.tools)}</Notice>
         <div className="lares-actions">
@@ -310,7 +319,7 @@ function ReplaceToken({ conn, agents }: { conn: Conn; agents: Agent[] }) {
       <p>If the server changed a description since you last accepted it, this is where you see it. Accepting records exactly this text.</p>
       <ToolList label="Descriptions the server gives now">{tools.map(t => <ToolRow key={t.name} name={t.name} kind={t.readOnly ? "read" : "change"} description={t.description}>
         {t.inputSchema && <details><summary>What it asks for</summary><pre>{JSON.stringify(t.inputSchema, null, 2)}</pre></details>}</ToolRow>)}</ToolList>
-      <WorkNotice chain={chain} />
+      <WorkNotice chain={chain} onStartOver={close} />
       <div className="lares-actions"><Button type="button" disabled={chain.state === "working"} onClick={replace}>Accept these descriptions and replace the token</Button><Button type="button" variant="outline" onClick={close}>Cancel</Button></div>
     </div>}
     {done && <Notice tone="success">The new token is locked away.</Notice>}
@@ -318,10 +327,12 @@ function ReplaceToken({ conn, agents }: { conn: Conn; agents: Agent[] }) {
 }
 
 /** Everything on the connector page that changes who can use it. */
-export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines }: { conn: Conn; uses: AgentUse[]; allAgents: Agent[]; canWiden: boolean; keyLines: Record<string, string> }) {
+export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines, known = [] }: { conn: Conn; uses: AgentUse[]; allAgents: Agent[]; canWiden: boolean; keyLines: Record<string, string>; known?: string[] }) {
   const universe = (() => {
     const seenNames = new Map<string, "read" | "change">();
     for (const u of uses) for (const t of u.tools) if (!seenNames.has(t.name) || t.kind === "change") seenNames.set(t.name, t.kind);
+    // A tool the agents have read from the server but none may use now stays listed (always asks), so it can be switched on again.
+    for (const name of known) if (!seenNames.has(name)) seenNames.set(name, "change");
     return [...seenNames].map(([name, kind]) => ({ name, kind }));
   })();
   const without = allAgents.filter(a => !uses.some(u => u.agent === a.name));

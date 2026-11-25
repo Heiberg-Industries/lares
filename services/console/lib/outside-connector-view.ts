@@ -34,3 +34,19 @@ export async function agentUsesByConnector(): Promise<Record<string, AgentUse[]>
     return null;
   }
 }
+
+/**
+ * Tool names the agents have read from this connector's server (the descriptions they pinned), so a tool switched off for its last
+ * agent stays on the page and can be switched on again. Empty when none were kept or the record could not be read.
+ */
+export async function knownToolNames(agents: string[], slug: string): Promise<string[]> {
+  if (agents.length === 0) return [];
+  try {
+    const { rows } = await pool.query<{ pin_tools: unknown }>("SELECT pin_tools FROM outside_tool_pins WHERE agent = ANY($1::text[]) AND tool = $2 AND pin_tools IS NOT NULL", [agents, slug]);
+    const names = new Set<string>();
+    for (const r of rows) if (Array.isArray(r.pin_tools)) for (const t of r.pin_tools as { name?: unknown }[]) if (typeof t?.name === "string" && t.name !== "connect-pending") names.add(t.name);
+    return [...names].sort();
+  } catch {
+    return [];
+  }
+}
