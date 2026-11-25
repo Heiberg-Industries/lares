@@ -138,6 +138,8 @@ describe("getOutsideToolEvidence", () => {
   it("shows the red badge only for a danger-zone tool whose description still matches", () => {
     const withDanger = { ...rates, tools: { ...rates.tools, allow: ["find_rate", "set_rate"], read: ["find_rate"], danger: [{ tool: "set_rate", by: "o", at: "2026-11-25T10:00:00Z", pin: "a".repeat(64) }] } } as typeof rates;
     expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} dangerLive={{ [withDanger.name]: ["set_rate"] }} />)).toContain("Runs without asking: changes something");
+    expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} dangerLive={{}} />)).not.toContain("marked in red");
+    expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} dangerLive={{ [withDanger.name]: ["set_rate"] }} />)).toContain("One tool that changes something is marked in red");
     expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} dangerLive={{}} />)).not.toContain("Runs without asking: changes something");
     expect(renderToStaticMarkup(<OutsideToolsSection agent="agent-one" inEffect tools={[withDanger]} />)).not.toContain("Runs without asking: changes something");
   });

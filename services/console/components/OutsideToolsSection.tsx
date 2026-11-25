@@ -148,7 +148,8 @@ export function OutsideToolsSection({
               <p>
                 {(t.tools.trusted ?? []).length
                   ? `Run without asking: ${(t.tools.trusted ?? []).map(g => `${g.tool} (switched on ${g.at.slice(0, 10)})`).join(", ")}. These skip the card unless the agent has just read someone else's words. Every other tool asks first, except one marked in red, and a changed description ends this for that tool.`
-                  : (dangerLive?.[t.name] ?? []).length ? "Every call asks you first, except the tool marked in red." : "Every call asks you first."}
+                  : "Every call asks you first."}
+                {(dangerLive?.[t.name] ?? []).length > 0 && ` ${(dangerLive?.[t.name] ?? []).length === 1 ? "One tool that changes something is marked in red and runs without asking" : `${(dangerLive?.[t.name] ?? []).length} tools that change something are marked in red and run without asking`}.`}
               </p>
               <p>{keyLine(t.token, evidence?.keys, t.name)}</p>
               {t.tools.allow.length > 0 ? (
