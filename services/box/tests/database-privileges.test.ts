@@ -82,6 +82,9 @@ async function removeTestOwnedOutsideCustodyGrants(): Promise<void> {
   const database = container.getDatabase().replaceAll('"', '""');
   await admin.query(`REVOKE CONNECT ON DATABASE "${database}" FROM lares_outside_custody`);
   await admin.query("REVOKE USAGE ON SCHEMA public FROM lares_outside_custody");
+  for (const name of ["pg_advisory_lock", "pg_advisory_lock_shared", "pg_try_advisory_lock", "pg_try_advisory_lock_shared", "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared", "pg_try_advisory_xact_lock", "pg_try_advisory_xact_lock_shared"]) {
+    for (const args of ["bigint", "integer,integer"]) await admin.query(`REVOKE EXECUTE ON FUNCTION pg_catalog.${name}(${args}) FROM lares_outside_custody`);
+  }
   for (const table of ENGINE_TABLE_PRIVILEGES.outsideCustody) {
     await admin.query(`REVOKE SELECT, INSERT, DELETE ON TABLE public."${table}" FROM lares_outside_custody`);
   }
@@ -288,7 +291,50 @@ describe("engine database privilege foundation", () => {
     } finally { operator.release(); }
     expect(await diagnosticLoginState(admin)).toBe("ok");
     expect((await admin.query("SELECT has_function_privilege('public','pg_catalog.lo_creat(integer)','EXECUTE') AS open")).rows[0].open).toBe(false);
-  });
+  }, 60_000);
+
+  it("keeps advisory locks away from the diagnostic login while the engine logins can still take them", async () => {
+    const diagnosticPassword = Buffer.from("diagnostic-role-test-password-0123456");
+    await admin.query(`ALTER ROLE lares_diagnostic PASSWORD '${diagnosticPassword.toString("ascii")}'`);
+    const diagnostic = loginPool("lares_diagnostic", diagnosticPassword);
+    try {
+      for (const statement of ["SELECT pg_advisory_lock(1)", "SELECT pg_try_advisory_lock(1)", "SELECT pg_advisory_lock_shared(1,2)", "SELECT pg_advisory_xact_lock(1)", "SELECT pg_try_advisory_xact_lock_shared(1,2)"]) {
+        await expectDenied(() => diagnostic.query(statement));
+      }
+      for (const pool of [app, financial, outsideCustody]) {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT pg_advisory_xact_lock(7)");
+          await client.query("SELECT pg_try_advisory_xact_lock(8,9)");
+          await client.query("COMMIT");
+          await client.query("SELECT pg_advisory_lock(7)");
+          await client.query("SELECT pg_advisory_unlock(7)");
+        } finally { client.release(); }
+      }
+    } finally {
+      await diagnostic.end();
+      await admin.query("ALTER ROLE lares_diagnostic PASSWORD NULL");
+    }
+  }, 60_000);
+
+  it("notices the diagnostic login's own settings drifting, and the refresh puts them back", async () => {
+    await admin.query("ALTER ROLE lares_diagnostic SET default_transaction_read_only = off");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    const operator = await admin.connect();
+    try {
+      expect(await refreshEngineDatabasePrivileges(operator, { expectedDatabase: container.getDatabase() })).toEqual({ status: "repaired" });
+    } finally { operator.release(); }
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+    const config = (await admin.query("SELECT rolconfig FROM pg_roles WHERE rolname='lares_diagnostic'")).rows[0].rolconfig as string[];
+    expect([...config].sort()).toEqual(["default_transaction_read_only=on", "statement_timeout=30s"]);
+    // A setting the login saved for itself is removed the same way.
+    await admin.query("ALTER ROLE lares_diagnostic SET search_path = pg_temp");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    const again = await admin.connect();
+    try { await refreshEngineDatabasePrivileges(again, { expectedDatabase: container.getDatabase() }); } finally { again.release(); }
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+  }, 60_000);
 
   it("reports the diagnostic login as ok, and as wrong when it could read a sealed column", async () => {
     expect(await diagnosticLoginState(admin)).toBe("ok");
