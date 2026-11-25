@@ -223,6 +223,21 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
       if (new Set((t.tools.trusted ?? []).map((x) => x.tool)).size !== (t.tools.trusted ?? []).length) {
         out.push({ check: "outside-tools", message: `outside tool "${t.name}": a tool is listed twice under run-without-asking` });
       }
+      // The danger zone is its own list: only a tool the agent is allowed, that changes something (not marked read), on a grant that is not read-only.
+      const danger = t.tools.danger ?? [];
+      if (danger.map((x) => x.tool).some(looksLikeSecret)) {
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": ${SECRET_AS_NAME_MESSAGE}` });
+      }
+      const dangerStray = danger.map((x) => x.tool).filter((x) => !allow.has(x) || t.tools.read.includes(x));
+      if (dangerStray.length > 0) {
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": ${dangerStray.length} tool(s) in the danger zone are not allowed tools that change something — only an allowed tool that is not marked as only looking things up can be there` });
+      }
+      if (new Set(danger.map((x) => x.tool)).size !== danger.length) {
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": a tool is listed twice in the danger zone` });
+      }
+      if (danger.length > 0 && grant?.scope === "read") {
+        out.push({ check: "outside-tools", message: `outside tool "${t.name}": ${danger.length} tool(s) are in the danger zone but the grant is read-only — widen the grant to write-with-confirm first` });
+      }
       if (grant?.scope === "read") {
         const reads = new Set(t.tools.read);
         const writes = t.tools.allow.filter((x) => !reads.has(x));

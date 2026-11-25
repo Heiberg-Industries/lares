@@ -1,11 +1,11 @@
 "use client";
 import { useRef, useState } from "react";
 import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
-import { ToolList, ToolRow } from "@lares/ui/patterns";
+import { StatusBadge, ToolList, ToolRow } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { acceptOutsideDescriptions } from "../app/actions/definition";
 import type { DescribedTool, OutsideToolEvidence, OutsideToolLock } from "../lib/outside-tools";
-import { keyLine } from "../lib/outside-tools-words";
+import { DANGER_BADGE, keyLine } from "../lib/outside-tools-words";
 
 /** A declaration plus its display host, worked out on the server (the address check uses node-only code). */
 export type OutsideToolView = OutsideToolDeclaration & { host?: string };
@@ -108,6 +108,7 @@ export function OutsideToolsSection({
   tools,
   inEffect,
   evidence,
+  dangerLive,
 }: {
   agent: string;
   tools: OutsideToolView[];
@@ -115,6 +116,8 @@ export function OutsideToolsSection({
   inEffect: boolean;
   /** Absent when it was not asked for; each half can be unavailable on its own. */
   evidence?: OutsideToolEvidence;
+  /** Per connection, the danger-zone tools whose fingerprint still matches the stored description. Absent: none shown as live. */
+  dangerLive?: Record<string, string[]>;
 }) {
   if (tools.length === 0) return null;
   const locks = evidence?.locks;
@@ -145,12 +148,14 @@ export function OutsideToolsSection({
               <p>
                 {(t.tools.trusted ?? []).length
                   ? `Run without asking: ${(t.tools.trusted ?? []).map(g => `${g.tool} (switched on ${g.at.slice(0, 10)})`).join(", ")}. These skip the card unless the agent has just read someone else's words. Every other tool asks first, and a changed description ends this for that tool.`
-                  : "Every call asks you first."}
+                  : (dangerLive?.[t.name] ?? []).length > 0 ? "Every other call asks you first." : "Every call asks you first."}
+                {(dangerLive?.[t.name] ?? []).length > 0 && ` ${(dangerLive?.[t.name] ?? []).length === 1 ? "One tool that changes something is marked in red and runs without asking" : `${(dangerLive?.[t.name] ?? []).length} tools that change something are marked in red and run without asking`}.`}
               </p>
               <p>{keyLine(t.token, evidence?.keys, t.name)}</p>
               {t.tools.allow.length > 0 ? (
                 <ToolList label={`Tools ${t.name} may use`}>
-                  {t.tools.allow.map(a => <ToolRow key={a} name={a} kind={t.tools.read.includes(a) ? "read" : "change"} />)}
+                  {t.tools.allow.map(a => <ToolRow key={a} name={a} kind={t.tools.read.includes(a) ? "read" : "change"}
+                    control={(dangerLive?.[t.name] ?? []).includes(a) ? <StatusBadge tone="error">{DANGER_BADGE}</StatusBadge> : undefined} />)}
                 </ToolList>
               ) : <p className="lares-muted">No tools allowed.</p>}
               {lock && (

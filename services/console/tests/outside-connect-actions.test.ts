@@ -12,7 +12,7 @@ vi.mock("../lib/keeper-client", () => ({
     constructor(message: string, readonly outcomeMayBeUnknown = false) { super(message); this.name = "KeeperUnavailableError"; }
   },
 }));
-import { connectActivateCredential, connectApplyAgent, connectDeclare, connectSwitchOnTrust, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSetTools } from "../app/actions/outside-connect";
+import { connectActivateCredential, connectApplyAgent, connectDeclare, connectSwitchOnTrust, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSetDanger, connectSetTools } from "../app/actions/outside-connect";
 import { KeeperRefusedError, KeeperUnavailableError } from "../lib/keeper-client";
 import { PENDING_TOOL } from "../lib/outside-connect-words";
 
@@ -240,5 +240,33 @@ describe("connect: set one agent's tools from the connector page", () => {
     mocks.keeper.mockResolvedValueOnce(state({ connections: [withTools(["find_rate"], ["find_rate"])] }));
     expect(await connectSetTools({ agent: "worker", name: "rates", tools: [{ name: "find_rate", allowed: false, kind: "read", free: false }] }))
       .toMatchObject({ ok: false, message: expect.stringContaining("at least one tool") });
+  });
+});
+
+describe("connect: the danger zone", () => {
+  const request = { agent: "worker", name: "rates", tool: "set_rate", on: true, typedName: "set_rate" };
+  it("asks the keeper with the typed name, then applies what it saved", async () => {
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [declared(["find_rate", "set_rate"], ["find_rate"])] }))
+      .mockResolvedValueOnce(state({ definitionHash: h("b"), accessRevision: 3, applicationStatus: "pending", connections: [declared(["find_rate", "set_rate"], ["find_rate"])] }))
+      .mockResolvedValueOnce(state({ definitionHash: h("b"), accessRevision: 3 }));
+    expect(await connectSetDanger(request)).toEqual({ ok: true, value: { on: true } });
+    expect(calls()).toEqual(["outside.connections.get", "outside.danger.set", "outside.connections.apply"]);
+    expect(mocks.keeper.mock.calls[1]![1]).toMatchObject({ name: "worker", connection: "rates", tool: "set_rate", on: true, typedName: "set_rate", sessionToken: session, expectedDefinitionHash: h("a"), expectedAccessRevision: 2 });
+  });
+  it("says what the keeper refused, in its own words, and applies nothing", async () => {
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [declared(["set_rate"])] })).mockRejectedValueOnce(new KeeperRefusedError("Only the installation's owner can use the danger zone."));
+    const result = await connectSetDanger(request);
+    expect(result).toMatchObject({ ok: false, message: expect.stringContaining("Only the installation's owner") });
+    expect(calls()).toEqual(["outside.connections.get", "outside.danger.set"]);
+  });
+  it("refuses a request that is not valid before it reaches the keeper", async () => {
+    expect(await connectSetDanger({ ...request, extra: true })).toMatchObject({ ok: false });
+    expect(await connectSetDanger({ ...request, on: "yes" })).toMatchObject({ ok: false });
+    expect(mocks.keeper).not.toHaveBeenCalled();
+  });
+  it("stops when the connector is no longer on the agent", async () => {
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [] }));
+    expect(await connectSetDanger(request)).toMatchObject({ ok: false, retryable: false });
+    expect(calls()).toEqual(["outside.connections.get"]);
   });
 });

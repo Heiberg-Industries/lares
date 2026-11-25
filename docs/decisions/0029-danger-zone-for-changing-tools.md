@@ -1,7 +1,7 @@
 # ADR 0029 — Outside tools that change something may run without asking only through a per-tool danger zone
 
 **Date:** 2026-11-24
-**Status:** Accepted 2026-11-24 (not built yet)
+**Status:** Accepted 2026-11-24, built
 **Supersedes:** —
 **Amends / reconciles:** ADR-0019, the rule that a tool which changes something always asks the owner first (for the part that says "can never be switched on"). The rest of ADR-0019 stands.
 

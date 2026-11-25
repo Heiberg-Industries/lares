@@ -16,6 +16,7 @@ import { getPermissionEvents } from "../../../lib/console-overview";
 import { checkOutsideUrl, outsideToolsInEffect } from "@lares/agent-kit/outside-tools";
 import { AgentDetail } from "../../../components/AgentDetail";
 import { getOutsideToolEvidence } from "../../../lib/outside-tools";
+import { liveDangerTools } from "../../../lib/outside-connector-view";
 import { fallbackNotes } from "../../../lib/delivery-notes";
 import { getPromptCacheLine } from "../../../lib/agent-detail";
 export const dynamic = "force-dynamic";
@@ -58,6 +59,7 @@ export default async function AgentPage({
         inEffect: outsideToolsInEffect(saved).length > 0,
         // Asked only when there is something to show; never throws (each half can be unavailable).
         evidence: saved.outsideTools?.length ? await getOutsideToolEvidence(name) : undefined,
+        dangerLive: await liveDangerTools(name, saved.outsideTools ?? []),
       }
     : undefined;
   // The delivery grid belongs to agents that start messages on their own (the chief of staff).

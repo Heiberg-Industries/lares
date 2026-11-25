@@ -1,15 +1,18 @@
 // What the connector pages show about which agents use a connector, read from the agents' saved definitions
 // (the same source the agent pages read). A connector is matched to an agent's declaration by its technical name.
+import { toolPinHash } from "@lares/agent-kit/outside-pins";
 import { pool } from "./db";
 
 export interface AgentUse {
   agent: string;
   displayName: string;
   needsKey: boolean;
-  tools: { name: string; kind: "read" | "change"; free: boolean }[];
+  /** `danger`: the designated owner let this tool, which changes something, run without asking (`on`), or did and the tool's description changed since,
+   *  so it is switched off again (`changed`). */
+  tools: { name: string; kind: "read" | "change"; free: boolean; danger?: "on" | "changed" | null }[];
 }
 
-type Declared = { name?: unknown; token?: unknown; tools?: { allow?: unknown; read?: unknown; trusted?: unknown } };
+type Declared = { name?: unknown; token?: unknown; tools?: { allow?: unknown; read?: unknown; trusted?: unknown; danger?: unknown } };
 const strings = (v: unknown): string[] => Array.isArray(v) ? v.filter((t): t is string => typeof t === "string") : [];
 
 /** connector name -> the agents that have it. `null` when the definitions could not be read. The placeholder tool is never shown. */
@@ -19,13 +22,32 @@ export async function agentUsesByConnector(): Promise<Record<string, AgentUse[]>
       `SELECT name, definition FROM agent_definitions
         WHERE status = 'valid' AND jsonb_typeof(definition->'outsideTools') = 'array' AND jsonb_array_length(definition->'outsideTools') > 0 ORDER BY name`);
     const out: Record<string, AgentUse[]> = {};
+    // A danger-zone permission is bound to the description the owner typed the name against. If the stored description now hashes
+    // differently (or is gone), the runtime has already stopped it, and the page says so instead of showing a live red badge.
+    const pins = new Map<string, Map<string, string>>();
+    const wanted = rows.filter(r => Array.isArray(r.definition.outsideTools) && (r.definition.outsideTools as Declared[]).some(s => Array.isArray(s?.tools?.danger) && s.tools.danger.length > 0)).map(r => r.name);
+    if (wanted.length > 0) {
+      const found = await pool.query<{ agent: string; tool: string; pin_tools: unknown }>("SELECT agent, tool, pin_tools FROM outside_tool_pins WHERE agent = ANY($1::text[]) AND seen_hash IS NULL", [wanted]);
+      for (const p of found.rows) {
+        const byName = new Map<string, string>();
+        if (Array.isArray(p.pin_tools)) for (const t of p.pin_tools as { name?: unknown; description?: unknown; inputSchema?: unknown }[]) if (typeof t?.name === "string")
+          byName.set(t.name, toolPinHash({ name: t.name, ...(typeof t.description === "string" ? { description: t.description } : {}), inputSchema: t.inputSchema }));
+        pins.set(`${p.agent}\u0000${p.tool}`, byName);
+      }
+    }
     for (const r of rows) {
       const list = Array.isArray(r.definition.outsideTools) ? r.definition.outsideTools as Declared[] : [];
       for (const s of list) {
         if (typeof s?.name !== "string") continue;
         const read = new Set(strings(s.tools?.read));
         const free = new Set(Array.isArray(s.tools?.trusted) ? (s.tools.trusted as { tool?: unknown }[]).flatMap(t => typeof t?.tool === "string" ? [t.tool] : []) : []);
-        const tools = strings(s.tools?.allow).filter(t => t !== "connect-pending").map(name => ({ name, kind: read.has(name) ? "read" as const : "change" as const, free: free.has(name) }));
+        const dangerPins = new Map<string, string>(Array.isArray(s.tools?.danger) ? (s.tools.danger as { tool?: unknown; pin?: unknown }[]).flatMap(t => typeof t?.tool === "string" && typeof t?.pin === "string" ? [[t.tool, t.pin] as [string, string]] : []) : []);
+        const now = pins.get(`${r.name}\u0000${s.name}`);
+        const tools = strings(s.tools?.allow).filter(t => t !== "connect-pending").map(name => {
+          const kind = read.has(name) ? "read" as const : "change" as const, bound = dangerPins.get(name);
+          const danger = kind === "change" && bound !== undefined ? (now?.get(name) === bound ? "on" as const : "changed" as const) : null;
+          return { name, kind, free: free.has(name), danger };
+        });
         (out[s.name] ??= []).push({ agent: r.name, displayName: typeof r.definition.display === "string" ? r.definition.display : r.name, needsKey: s.token === true, tools });
       }
     }
@@ -49,4 +71,22 @@ export async function knownToolNames(agents: string[], slug: string): Promise<Re
   } catch {
     return {};
   }
+}
+
+/** For one agent: per connection, the tools in the danger zone whose stored fingerprint still matches the description the agent has stored. Empty when it cannot be read. */
+export async function liveDangerTools(agent: string, declared: readonly { name: string; tools: { danger?: readonly { tool: string; pin: string }[] } }[]): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  const wanted = declared.filter(d => (d.tools.danger ?? []).length > 0);
+  if (wanted.length === 0) return out;
+  try {
+    const { rows } = await pool.query<{ tool: string; pin_tools: unknown }>("SELECT tool, pin_tools FROM outside_tool_pins WHERE agent = $1 AND seen_hash IS NULL", [agent]);
+    for (const d of wanted) {
+      const stored = rows.find(r => r.tool === d.name)?.pin_tools;
+      const hashes = new Map<string, string>();
+      if (Array.isArray(stored)) for (const t of stored as { name?: unknown; description?: unknown; inputSchema?: unknown }[]) if (typeof t?.name === "string")
+        hashes.set(t.name, toolPinHash({ name: t.name, ...(typeof t.description === "string" ? { description: t.description } : {}), inputSchema: t.inputSchema }));
+      out[d.name] = (d.tools.danger ?? []).filter(g => hashes.get(g.tool) === g.pin).map(g => g.tool);
+    }
+  } catch { /* none shown as live */ }
+  return out;
 }

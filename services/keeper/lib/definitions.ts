@@ -361,14 +361,49 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         }
         return kept;
     }
-    async function restampTrust(name: string, declared: AgentDefinition['outsideTools'], actor: string, mayGrant: () => Promise<boolean>): Promise<NonNullable<AgentDefinition['outsideTools']>> {
+    /** The danger zone. NOTHING a caller sends for it is believed: a saved, imported or agent-authored definition, and the
+     *  console's ordinary connection saves, all arrive with whatever list they like and it is thrown away here. What stays is
+     *  each applied entry that still points at an allowed tool that changes something and still matches the description stored
+     *  for it. Only `outside.danger.set` passes a `change`, and it has already checked who is asking. */
+    type DangerGrants = NonNullable<NonNullable<AgentDefinition['outsideTools']>[number]['tools']['danger']>;
+    async function dangerAfter(name: string, entry: NonNullable<AgentDefinition['outsideTools']>[number], applied: DangerGrants,
+        change: { connection: string; tool: string; on: boolean; by: string; now: string } | undefined): Promise<DangerGrants> {
+        const kept: DangerGrants = [];
+        for (const grant of applied) {
+            if (!entry.tools.allow.includes(grant.tool) || entry.tools.read.includes(grant.tool)) continue;
+            if (change && change.connection === entry.name && change.tool === grant.tool) continue;
+            const tool = await storedTool(name, entry.name, grant.tool);
+            if (tool && toolPinHash(tool) === grant.pin) kept.push(grant);
+        }
+        if (change && change.on && change.connection === entry.name) {
+            if (!entry.tools.allow.includes(change.tool) || entry.tools.read.includes(change.tool))
+                refused('The danger zone is only for a tool the agent may use that changes something.');
+            const found = await storedTool(name, entry.name, change.tool);
+            if (!found) refused('This tool cannot be switched on yet: the agent has not read its description from the server. Start a conversation with the agent first.');
+            kept.push({ tool: change.tool, by: change.by, at: change.now, pin: toolPinHash(found!) });
+        }
+        return kept;
+    }
+    async function restampTrust(name: string, declared: AgentDefinition['outsideTools'], actor: string, mayGrant: () => Promise<boolean>,
+        danger?: { connection: string; tool: string; on: boolean }): Promise<NonNullable<AgentDefinition['outsideTools']>> {
         const entries = declared ?? [];
         const previous = await appliedOutsideTools(name);
+        // The danger list is edited against what is SAVED now, not against what is applied. The edits do not change the definition's identity
+        // hash, so nothing else would notice that a switch-off is saved but not yet applied; building from the applied list would bring it back.
+        // Every caller is inside the namespace lock, so two edits can never read the same saved list.
+        const saved = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: active(name) } }).then(l => l.definition.outsideTools ?? [], () => []);
+        const now = new Date().toISOString();
+        const change = danger ? { ...danger, by: actor, now } : undefined;
         const out: NonNullable<AgentDefinition['outsideTools']> = [];
+        const withDanger = async (entry: NonNullable<AgentDefinition['outsideTools']>[number]) => {
+            const { danger: _sent, ...tools } = entry.tools;
+            const list = await dangerAfter(name, entry, saved.find(p => p.name === entry.name)?.tools.danger ?? [], change);
+            return list.length > 0 ? { ...entry, tools: { ...tools, danger: list } } : { ...entry, tools };
+        };
         for (const entry of entries) {
             const before = previous.find(p => p.name === entry.name)?.tools.trusted ?? [];
             const sent = entry.tools.trusted ?? (await carryOver(name, entry, before));
-            if (sent.length === 0 && entry.tools.trusted === undefined) { out.push(entry); continue; }
+            if (sent.length === 0 && entry.tools.trusted === undefined) { out.push(await withDanger(entry)); continue; }
             const fixed: typeof sent = [];
             let allowed: boolean | undefined;
             for (const grant of sent) {
@@ -381,7 +416,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                     refused(`A tool you switched on to run without asking cannot do so yet: the agent has not read its description from the server. Start a conversation with the agent first, then switch it on.`);
                 fixed.push({ ...grant, pin: toolPinHash(found!) });
             }
-            out.push(...stampTrust([{ ...entry, tools: { ...entry.tools, trusted: fixed } }], previous, actor, new Date().toISOString()));
+            for (const stamped of stampTrust([{ ...entry, tools: { ...entry.tools, trusted: fixed } }], previous, actor, now)) out.push(await withDanger(stamped));
         }
         return out;
     }
@@ -417,8 +452,10 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         })) refused('Current agent edit access is required to manage connections.');
         return { member, loaded, revision };
     }
-    async function admittedConnectionEdit(input: z.infer<typeof outsideConnectionsReadInput> & Partial<z.infer<typeof outsideConnectionsWriteInput>>, ctx: ActionContext, write: boolean) {
+    async function admittedConnectionEdit(input: z.infer<typeof outsideConnectionsReadInput> & Partial<z.infer<typeof outsideConnectionsWriteInput>>, ctx: ActionContext, write: boolean,
+        danger?: { connection: string; tool: string; on: boolean }) {
         nameOf(input.name);
+        let dangerPriorPin: string | null = null;
         return locked(async () => {
             const client = connection.getStore();
             if (!client) throw new Error('Connection access requires the definition namespace client.');
@@ -432,7 +469,20 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
             }
             const initial = await connectionSnapshot(client, input, true);
-            if (!input.connections) refused('Connection changes are required.');
+            if (!input.connections && !danger) refused('Connection changes are required.');
+            if (danger) {
+                // The danger zone belongs to the installation's designated owner alone, from this signed-in console session. Another owner of the
+                // organisation, a member, an editor, a card answer and a definition save or import all stop here or never reach this code.
+                const who = o.designatedOwnerId === initial.member.id
+                    ? (await client.query<{ status: string; org_role: string }>('SELECT status,org_role FROM users WHERE id=$1', [initial.member.id])).rows[0] : undefined;
+                if (!who || who.status !== 'active' || who.org_role !== 'owner') refused("Only the installation's owner can use the danger zone.");
+                const entry = (initial.loaded.definition.outsideTools ?? []).find(c => c.name === danger.connection);
+                if (!entry || !entry.tools.allow.includes(danger.tool) || entry.tools.read.includes(danger.tool))
+                    refused('The danger zone is only for a tool this agent may use that changes something.');
+                dangerPriorPin = (entry.tools.danger ?? []).find(g => g.tool === danger.tool)?.pin ?? null;
+                if (initial.loaded.definition.grants.find(g => g.capability === OUTSIDE_CAPABILITY)?.scope === 'read')
+                    refused("This agent's outside access is read-only, so a tool that changes something cannot run at all. Widen it first.");
+            }
             // Who switched a tool on, and when, is written here by the keeper, never from the browser.
             if (input.widenOutsideGrant) {
                 // Raising what outside tools may do is the owner's decision alone, not an editor's: checked here, against the signed-in session's own member.
@@ -440,7 +490,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                     ? (await client.query<{ status: string; org_role: string }>('SELECT status,org_role FROM users WHERE id=$1', [initial.member.id])).rows[0] : undefined;
                 if (!who || who.status !== 'active' || who.org_role !== 'owner') refused("Only the owner can widen an agent's outside access.");
             }
-            const stamped = await restampTrust(input.name, input.connections, ctx.actor, async () => { try { await requireConsoleAgentUse(input.name, initial.member.id, o.pool as never); return true; } catch { return false; } });
+            const stamped = await restampTrust(input.name, input.connections ?? initial.loaded.definition.outsideTools ?? [], ctx.actor, async () => { try { await requireConsoleAgentUse(input.name, initial.member.id, o.pool as never); return true; } catch { return false; } }, danger);
             if (new Set(stamped.map(connection => connection.name)).size !== stamped.length)
                 refused('Connection names must be unique.');
             const definition = { ...initial.loaded.definition } as AgentDefinition & { outsideTools?: AgentDefinition['outsideTools'] };
@@ -476,7 +526,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
             const result = await finishSave(saveInput, ctx, false, prepared.d, loaded);
             const application = await connectionApplication(o.pool, input.name, connections);
-            return { name: result.name, definitionHash: result.hash, accessRevision: nextRevision, connections, ...application, ...(conflicts.length ? { conflicts } : {}) };
+            return { name: result.name, definitionHash: result.hash, accessRevision: nextRevision, connections, ...application, ...(conflicts.length ? { conflicts } : {}), dangerPriorPin };
         });
     }
     // `leaveOutWaiting`: a refresh applies the definition without an entry still waiting for its key, so a read
@@ -601,6 +651,23 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
     registerAction({ name: 'outside.connections.save', input: outsideConnectionsWriteInput, secretFields: ['sessionToken'],
         successDetail: (result: { definitionHash: string; accessRevision: number }) => JSON.stringify({ definitionHash: result.definitionHash, accessRevision: result.accessRevision }),
         run: (input, ctx) => admittedConnectionEdit(input, ctx, true) });
+    // The danger zone: one tool that changes something may run without a card. Designated owner only, from a signed-in console
+    // session, one tool at a time, typed name required to switch on. Every on and off is an audit record of who, when, which connection,
+    // which tool and the exact description fingerprint it was bound to. The console applies the saved definition afterwards, like any connection edit.
+    const outsideDangerInput = outsideConnectionsReadInput.extend({
+        expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/), expectedAccessRevision: z.number().int().positive(),
+        connection: z.string().regex(OUTSIDE_TOOL_NAME_RE), tool: z.string().min(1).max(200), on: z.boolean(), typedName: z.string().max(200),
+    });
+    registerAction({ name: 'outside.danger.set', input: outsideDangerInput, secretFields: ['sessionToken'],
+        successDetail: (result: { definitionHash: string; accessRevision: number; connections: NonNullable<AgentDefinition['outsideTools']>; danger: { connection: string; tool: string; on: boolean }; dangerPriorPin?: string | null }) =>
+            JSON.stringify({ definitionHash: result.definitionHash, accessRevision: result.accessRevision, connection: result.danger.connection, tool: result.danger.tool, on: result.danger.on,
+                fingerprint: result.connections.find(c => c.name === result.danger.connection)?.tools.danger?.find(g => g.tool === result.danger.tool)?.pin ?? result.dangerPriorPin ?? null }),
+        run: async (input, ctx) => {
+            if (input.on && input.typedName !== input.tool) refused("Type the tool's name exactly to switch it on.");
+            const danger = { connection: input.connection, tool: input.tool, on: input.on };
+            const result = await admittedConnectionEdit({ sessionToken: input.sessionToken, name: input.name, expectedDefinitionHash: input.expectedDefinitionHash, expectedAccessRevision: input.expectedAccessRevision }, ctx, true, danger);
+            return { ...result, danger };
+        } });
     const successDetail = (result: {
         hash: string;
     }) => JSON.stringify({ hash: result.hash });

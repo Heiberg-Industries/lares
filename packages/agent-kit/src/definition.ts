@@ -95,6 +95,12 @@ export const outsideToolSchema = z.strictObject({
      *  owner saw it (`toolPinHash`): a changed description no longer matches, so the trust is void. OPTIONAL WITH NO DEFAULT, like `outsideTools`, so an
      *  untrusting entry keeps its hash. Trust ends when a tool's description changes. */
     trusted: z.array(z.strictObject({ tool: z.string().min(1), by: z.string().min(1).max(256), at: z.string().datetime({ offset: true }), pin: z.string().regex(/^[a-f0-9]{64}$/) })).optional(),
+    /** The danger zone: tools that CHANGE something (not in `read`) which the installation's designated owner let run without
+     *  a card, one tool at a time, from the console only. A separate list from `trusted`, so "trusted tools must be lookups"
+     *  keeps its meaning. Same record and the same fingerprint binding as `trusted`. The keeper alone writes it: whatever a
+     *  saved, imported or agent-authored definition says here is thrown away and only the applied, still-matching entries are kept.
+     *  OPTIONAL WITH NO DEFAULT, like `trusted`. */
+    danger: z.array(z.strictObject({ tool: z.string().min(1), by: z.string().min(1).max(256), at: z.string().datetime({ offset: true }), pin: z.string().regex(/^[a-f0-9]{64}$/) })).optional(),
   }),
   runsAt: z.string().min(1).optional(),
 });
@@ -183,7 +189,7 @@ export function hashOf(loaded: Pick<LoadedDefinition, "definition" | "dutiesMd" 
   // not credential scope: Keeper re-reads them from the applied definition on every call and checks them against the pin.
   const d = loaded.definition;
   const identity = d.outsideTools === undefined ? d
-    : { ...d, outsideTools: d.outsideTools.map(({ tools: { trusted: _trusted, ...tools }, ...entry }) => ({ ...entry, tools })) };
+    : { ...d, outsideTools: d.outsideTools.map(({ tools: { trusted: _trusted, danger: _danger, ...tools }, ...entry }) => ({ ...entry, tools })) };
   const canonical = JSON.stringify(canonicalize(identity));
   return createHash("sha256")
     .update(canonical).update("\n--\n")

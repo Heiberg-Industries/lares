@@ -19,7 +19,7 @@ import { boundText, DEFAULT_READ_LIMIT } from '@lares/agent-kit/bounded-text';
 import { requireBoundExactApproval } from '@lares/agent-kit/approval-execution';
 import { outsideApprovalAdapter } from '@lares/agent-kit/outside-approval';
 import { openRepair } from '@lares/agent-kit/repairs';
-import { outsideToolsInEffect, trustGrantFor } from '@lares/agent-kit/outside-tools';
+import { outsideToolsInEffect, trustGrantFor, dangerGrantFor } from '@lares/agent-kit/outside-tools';
 import { entryConfigHash, toolPinHash, allowedTools, descriptionsHash, keptTools, pgPinStore } from '@lares/agent-kit/outside-pins';
 import { autonomyOf } from '@lares/agent-kit/manifest';
 import { outsidePayloadHash } from '@lares/agent-kit/outside-execution-receipts';
@@ -276,7 +276,11 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
      AND NOT r.pending AND a.status='valid' AND r.applied_definition IS NOT NULL FOR SHARE OF r,a`,[agent,incarnation]);
     if(rows.rows.length!==1)throw new Error('trust');
     const definition=parseDefinition(rows.rows[0].applied_definition),entry=outsideToolsInEffect(definition).find(e=>e.name===call.connectionName);
-    const grantor=entry&&entry.tools.allow.includes(call.toolName)?trustGrantFor(entry,call.toolName):undefined;
+    // A lookup the owner switched on, or a tool that changes something which the designated owner put in the danger zone.
+    // The danger zone is a separate list, so a changing tool is never found through the lookups' list.
+    const lookupGrant=entry&&entry.tools.allow.includes(call.toolName)?trustGrantFor(entry,call.toolName):undefined;
+    const dangerGrant=entry&&!lookupGrant&&entry.tools.allow.includes(call.toolName)?dangerGrantFor(entry,call.toolName):undefined;
+    const grantor=lookupGrant??dangerGrant;
     if(!entry||!grantor)throw new Error('trust');
     const board=await db.query("SELECT level FROM ratchet WHERE agent=$1 AND capability='outside' AND action='' FOR SHARE",[agent]);
     if(!['gated','autonomous'].includes(String(board.rows[0]?.level??autonomyOf(definition,'outside'))))throw new Error('trust');
@@ -294,7 +298,7 @@ export async function serveConsoleVaultBroker(pool:AuthorityPool,consoleSigningK
     else policyRevision=(await requireConsoleSessionBinding(tuple,db)).policyRevision;
     await db.query("INSERT INTO keeper_audit (operation_id,action,actor,input,outcome,detail,completed_at) VALUES ($1,'outside.run-trusted',$2,$3::jsonb,'pending',$4,NULL)",
      [auditId,tuple.memberId,JSON.stringify({agent,connection:call.connectionName,tool:call.toolName,sessionId:tuple.sessionId,callId:call.callId,
-      ...(doorClaim?{door:doorClaim.door}:{}),trustGrantedBy:grantor.by,trustGrantedAt:grantor.at}),'started under the standing trust of the owner, no card']);
+      ...(doorClaim?{door:doorClaim.door}:{}),...(dangerGrant?{dangerZone:true}:{}),trustGrantedBy:grantor.by,trustGrantedAt:grantor.at,trustPin:grantor.pin}),dangerGrant?'started from the danger zone the owner switched on, no card':'started under the standing trust of the owner, no card']);
     return {hash:String(rows.rows[0].hash),policyRevision};
    },transactionDeadline);
    assertNotAborted();
