@@ -1,7 +1,7 @@
 // `lares db`, driven with a `docker` stub: the psql the person types into must run in a container with
 // no operator secret mounted, the temporary password is set before and cleared after, and one session at a time.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +33,8 @@ beforeEach(() => {
   mkdirSync(join(prefix, "etc/lares/operator"), { recursive: true });
   writeFileSync(join(prefix, "etc/lares/operator/database-password"), "operator-secret\n");
   writeFileSync(join(prefix, "opt/lares/compose.yaml"), "services: {}\n");
+  // flock is a Linux program; this stand-in takes the same advisory lock through Python on fd 9.
+  stub("flock", `exec python3 -c 'import fcntl,sys; fcntl.flock(9, fcntl.LOCK_EX|fcntl.LOCK_NB)' 2>/dev/null`);
   stub("id", "echo 0");
   stub("stat", "echo 0:600");
   stub("date", 'case "$*" in *-d*) echo "2030-01-01 00:00:00+00";; *) exec /bin/date "$@";; esac');
@@ -81,15 +83,19 @@ describe("lares db", () => {
     expect(readFileSync(log, "utf8").split("\n").filter((l) => l.startsWith("docker ")).join("\n")).not.toContain(password);
   });
 
-  it("refuses a second session while one is open, and clears a lock left by a killed one", () => {
-    const lock = join(prefix, "run/lares-db.lock");
-    mkdirSync(lock, { recursive: true });
-    writeFileSync(join(lock, "pid"), String(process.pid));
-    const refused = lares(["db", "-c", "SELECT 1"]);
-    expect(refused.status).toBe(78);
-    expect(refused.stderr).toContain("another lares db session is open");
-    expect(runs()).toEqual([]);
-    writeFileSync(join(lock, "pid"), "999999");
+  it("refuses a second session while one holds the lock, and needs no clean-up once it has ended", () => {
+    mkdirSync(join(prefix, "run"), { recursive: true });
+    const holder = spawn("python3", ["-c", `import fcntl,time,sys
+f=open(sys.argv[1],'w'); fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); time.sleep(30)`, join(prefix, "run/lares-db.lock")], { stdio: ["ignore", "pipe", "ignore"] });
+    try {
+      const ready = spawnSync("python3", ["-c", "import time; time.sleep(1)"]);
+      expect(ready.status).toBe(0);
+      const refused = lares(["db", "-c", "SELECT 1"]);
+      expect(refused.status).toBe(78);
+      expect(refused.stderr).toContain("another lares db session is open");
+      expect(runs()).toEqual([]);
+    } finally { holder.kill(); }
+    spawnSync("python3", ["-c", "import time; time.sleep(0.5)"]);
     expect(lares(["db", "-c", "SELECT 1"]).status).toBe(0);
     expect(runs().length).toBe(4);
   });

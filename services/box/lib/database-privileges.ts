@@ -222,6 +222,19 @@ const OUTSIDE_CUSTODY_AUTHORITY_TABLES = [
   "vault_areas", "vault_backing_stores",
 ] as const;
 
+/**
+ * PostgreSQL built-ins that PUBLIC may call by default and that write something outside any table
+ * grant: large objects (stored in the system catalogs, created and written with no table
+ * privilege) and WAL messages. They are closed to PUBLIC, so no login of this installation,
+ * including the read-only diagnostic one, reaches them; the operator (a superuser) still can.
+ * Not closed: pg_notify, which only queues a transient message and changes no stored data.
+ */
+const WRITE_BUILTINS = [
+  "lo_create(oid)", "lo_creat(integer)", "lo_unlink(oid)", "lo_open(oid,integer)", "lowrite(integer,bytea)",
+  "lo_truncate(integer,integer)", "lo_truncate64(integer,bigint)", "lo_from_bytea(oid,bytea)", "lo_put(oid,bigint,bytea)",
+  "pg_logical_emit_message(boolean,text,text)", "pg_logical_emit_message(boolean,text,bytea)",
+] as const;
+
 const FUNCTION_CALL_GRANTS = {
   application: ["update_history_images_are_digests(jsonb)"],
   financial: ["update_history_images_are_digests(jsonb)", "budget_retire_member(text, boolean)"],
@@ -609,6 +622,11 @@ async function requireManagedAcls(client: PoolClient, database: string, custody 
     FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f'::"char",p.proowner))) a
     LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE p.oid='pg_catalog.pg_control_system()'::regprocedure AND a.grantee<>p.proowner`;
   await requireAcl(client,controlAcl,[],[expectedAclKey(FINANCIAL,"EXECUTE")]);
+  for (const fn of WRITE_BUILTINS) {
+    await requireAcl(client,`SELECT COALESCE(r.rolname,'PUBLIC') AS grantee,a.privilege_type AS privilege,a.is_grantable AS grantable
+      FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f'::"char",p.proowner))) a
+      LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE p.oid=('pg_catalog.'||$1)::regprocedure AND a.grantee<>p.proowner`,[fn],[]);
+  }
 
   const unsafeSettings = await queryRows(client, `
     SELECT 1 FROM pg_db_role_setting s LEFT JOIN pg_database d ON d.oid=s.setdatabase
@@ -685,6 +703,7 @@ async function applyGrants(client: PoolClient): Promise<void> {
   for (const fn of FUNCTION_CALL_GRANTS.financial) await client.query(`GRANT EXECUTE ON FUNCTION ${qname(fn.slice(0, fn.indexOf("(")))}${fn.slice(fn.indexOf("("))} TO ${qid(FINANCIAL)}`);
   await client.query(`REVOKE EXECUTE ON FUNCTION pg_catalog.pg_control_system() FROM PUBLIC`);
   await client.query(`GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO ${qid(FINANCIAL)}`);
+  for (const fn of WRITE_BUILTINS) await client.query(`REVOKE EXECUTE ON FUNCTION pg_catalog.${fn} FROM PUBLIC`);
   await client.query(`REVOKE ALL ON TABLE ${qname("schema_migrations")} FROM ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
   for (const table of ENGINE_TABLE_PRIVILEGES.ledger) await client.query(`REVOKE ALL ON TABLE ${qname(table)} FROM ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
 }

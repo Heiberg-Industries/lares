@@ -254,6 +254,11 @@ describe("engine database privilege foundation", () => {
         await expectDenied(() => writer.query("CREATE TEMP TABLE diag_scratch(x int)"));
         await expectDenied(() => writer.query("GRANT SELECT ON outside_connectors TO PUBLIC"));
         await expect(writer.query("SET ROLE lares_app")).rejects.toThrow();
+        // Built-ins PUBLIC could once call that write without a table grant are closed too.
+        for (const statement of ["SELECT lo_creat(-1)", "SELECT lo_create(0)", "SELECT lo_from_bytea(0, 'x'::bytea)", "SELECT lo_import('/etc/hostname')", "SELECT pg_logical_emit_message(true, 'x', 'y')"]) {
+          await expectDenied(() => writer.query(statement));
+        }
+        expect((await admin.query("SELECT count(*)::int AS n FROM pg_largeobject_metadata")).rows[0].n).toBe(0);
       } finally { writer.release(); }
     } finally {
       await diagnostic.end();
@@ -272,6 +277,17 @@ describe("engine database privilege foundation", () => {
     } finally { operator.release(); }
     const role = (await admin.query("SELECT rolcanlogin, rolsuper, (SELECT rolpassword IS NULL FROM pg_authid a WHERE a.oid=r.oid) AS nopw FROM pg_roles r WHERE r.rolname='lares_diagnostic'")).rows[0];
     expect(role).toEqual({ rolcanlogin: true, rolsuper: false, nopw: true });
+  });
+
+  it("closes the write-capable built-ins to PUBLIC, and the refresh closes them again when they were reopened", async () => {
+    await admin.query("GRANT EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) TO PUBLIC");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    const operator = await admin.connect();
+    try {
+      expect(await refreshEngineDatabasePrivileges(operator, { expectedDatabase: container.getDatabase() })).toEqual({ status: "repaired" });
+    } finally { operator.release(); }
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+    expect((await admin.query("SELECT has_function_privilege('public','pg_catalog.lo_creat(integer)','EXECUTE') AS open")).rows[0].open).toBe(false);
   });
 
   it("reports the diagnostic login as ok, and as wrong when it could read a sealed column", async () => {
