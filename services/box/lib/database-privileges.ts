@@ -838,3 +838,31 @@ export async function engineDatabasePrivilegesMatch(client: Pick<PoolClient, "qu
     return false;
   }
 }
+
+/**
+ * Read-only: is the diagnostic login there and what it should be? "missing": no such login (an
+ * installation not yet updated to a release that has it). "wrong": it exists but is not what this
+ * file creates, its grants differ from the fixed list, it can write something, or it can read a
+ * column that is not on its list. Anything unreadable counts as "wrong". Changes nothing.
+ */
+export async function diagnosticLoginState(client: Pick<PoolClient, "query">): Promise<"ok" | "missing" | "wrong"> {
+  const reader = client as PoolClient;
+  try {
+    if (!(await diagnosticRoleExists(reader))) return "missing";
+    await requireDiagnosticRole(reader);
+    if (!(await engineDatabasePrivilegesMatch(reader))) return "wrong";
+    const writable = await queryRows(reader, `
+      SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+       WHERE n.nspname=$1 AND c.relkind IN ('r','p') AND has_table_privilege($2, c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,SELECT') LIMIT 1
+    `, [SCHEMA, DIAGNOSTIC]);
+    if (writable.length !== 0) return "wrong";
+    const unlisted = await queryRows<{ table: string; column: string }>(reader, `
+      SELECT c.relname AS "table", a.attname AS "column" FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+       WHERE n.nspname=$1 AND c.relkind IN ('r','p') AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege($2, c.oid, a.attnum, 'SELECT')
+    `, [SCHEMA, DIAGNOSTIC]);
+    if (unlisted.some((row) => !(DIAGNOSTIC_SELECT_COLUMNS[row.table] ?? []).includes(row.column))) return "wrong";
+    return "ok";
+  } catch {
+    return "wrong";
+  }
+}

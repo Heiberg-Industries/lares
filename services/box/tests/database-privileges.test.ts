@@ -6,7 +6,7 @@ import { Pool, type PoolClient } from "pg";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { quietPool } from "./helpers/quiet-pool.js";
 import { PgBudgetAdmissionStore } from "@lares/agent-kit/budget-admission-store";
-import { ENGINE_TABLE_PRIVILEGES, provisionEngineDatabasePrivileges, refreshEngineDatabasePrivileges } from "../lib/database-privileges.js";
+import { ENGINE_TABLE_PRIVILEGES, provisionEngineDatabasePrivileges, refreshEngineDatabasePrivileges, diagnosticLoginState } from "../lib/database-privileges.js";
 import { MEMBER_SCOPE, tablesInBoxSql } from "../lib/member-scope.js";
 import { LEDGER_DDL } from "../lib/migration-ledger.js";
 
@@ -272,6 +272,14 @@ describe("engine database privilege foundation", () => {
     } finally { operator.release(); }
     const role = (await admin.query("SELECT rolcanlogin, rolsuper, (SELECT rolpassword IS NULL FROM pg_authid a WHERE a.oid=r.oid) AS nopw FROM pg_roles r WHERE r.rolname='lares_diagnostic'")).rows[0];
     expect(role).toEqual({ rolcanlogin: true, rolsuper: false, nopw: true });
+  });
+
+  it("reports the diagnostic login as ok, and as wrong when it could read a sealed column", async () => {
+    expect(await diagnosticLoginState(admin)).toBe("ok");
+    await admin.query("GRANT SELECT (ciphertext) ON outside_custody_revisions TO lares_diagnostic");
+    expect(await diagnosticLoginState(admin)).toBe("wrong");
+    await admin.query("REVOKE SELECT (ciphertext) ON outside_custody_revisions FROM lares_diagnostic");
+    expect(await diagnosticLoginState(admin)).toBe("ok");
   });
 
   it("lets only the application login read and write the connector directory",async()=>{

@@ -42,7 +42,7 @@ import type { SettingReader } from "@lares/vault-format/settings";
 import { settingByName } from "@lares/vault-format/settings";
 import { checkOutsideTools, checkParity, type ParityInput } from "./doctor-parity.js";
 import { checkSettings, type FileProbe, type ProbeFile } from "@lares/vault-format/settings-check";
-import { engineDatabasePrivilegesMatch } from "./database-privileges.js";
+import { diagnosticLoginState, engineDatabasePrivilegesMatch } from "./database-privileges.js";
 
 export type CheckState = "ok" | "warn" | "fail" | "unknown";
 
@@ -229,6 +229,26 @@ async function checkPermissions(operatorDb: Queryable | undefined): Promise<Chec
     state: "fail",
     say: "The database logins' permissions differ from what this release names, so some database reads or writes are refused (a chat can be refused with \"I could not verify permission to spend\").",
     fix: "Update to a release whose update repairs them: `sudo lares update --release <name>`. If this keeps failing after an update, do not change anything by hand; ask for help.",
+  };
+}
+
+/** The read-only diagnostic login (`lares db`) must exist and see only what it is meant to. */
+async function checkDiagnosticLogin(operatorDb: Queryable | undefined): Promise<CheckResult> {
+  if (!operatorDb) {
+    return { id: "diagnostic", state: "unknown", say: "The diagnostic database login can only be checked with the root-only database login.", fix: "Run `sudo lares doctor`." };
+  }
+  const state = await diagnosticLoginState(operatorDb as Parameters<typeof diagnosticLoginState>[0]);
+  if (state === "ok") {
+    return { id: "diagnostic", state: "ok", say: "The read-only diagnostic database login is in place: it reads non-secret state and can change nothing (`sudo lares db`).", fix: null };
+  }
+  if (state === "missing") {
+    return { id: "diagnostic", state: "warn", say: "This installation has no read-only diagnostic database login yet, so its database cannot be inspected safely.", fix: "Update to a release that has it: `sudo lares update --release <name>`. The update creates it." };
+  }
+  return {
+    id: "diagnostic",
+    state: "fail",
+    say: "The read-only diagnostic database login is not what this release names: it may see a column it should not, or be able to change something.",
+    fix: "Do not use `lares db`. Update to a release whose update repairs it: `sudo lares update --release <name>`. If this keeps failing after an update, ask for help.",
   };
 }
 
@@ -866,7 +886,8 @@ export async function runDoctor(deps: DoctorDeps): Promise<CheckResult[]> {
     ? await checkProviderKey(deps.testProviderKey)
     : await checkGateway(deps.testModel);
 
-  return [settings, database, migrations, ...(permissions ? [permissions] : []), owner, backup, repairs, gateway, ...(deps.parity ? [checkParity(deps.parity), checkOutsideTools(deps.parity)] : [])];
+  const diagnostic = installed ? (db ? await checkDiagnosticLogin(deps.ledgerDb) : unknownBecauseNoDatabase("diagnostic")) : undefined;
+  return [settings, database, migrations, ...(permissions ? [permissions] : []), ...(diagnostic ? [diagnostic] : []), owner, backup, repairs, gateway, ...(deps.parity ? [checkParity(deps.parity), checkOutsideTools(deps.parity)] : [])];
 }
 
 const CHECK_NAME: Record<string, string> = {
@@ -874,6 +895,7 @@ const CHECK_NAME: Record<string, string> = {
   database: "Database connection",
   migrations: "Database migrations",
   permissions: "Database permissions",
+  diagnostic: "Diagnostic database login",
   owner: "Installation owner",
   backup: "Backups",
   repairs: "Known issues",
