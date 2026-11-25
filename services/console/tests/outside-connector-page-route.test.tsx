@@ -8,7 +8,7 @@ vi.mock("../app/actions/outside-connectors", () => ({ listConnectors: m.list, ad
 vi.mock("../app/actions/outside-connect", () => ({}));
 vi.mock("../lib/agents", () => ({ listAgents: async () => [{ name: "ada", displayName: "Ada" }] }));
 vi.mock("../lib/outside-tools", () => ({ getOutsideToolEvidence: async () => ({ keys: { available: false }, locks: { available: false } }) }));
-vi.mock("../lib/outside-connector-view", () => ({ agentUsesByConnector: m.uses, knownToolNames: async () => [] }));
+vi.mock("../lib/outside-connector-view", () => ({ agentUsesByConnector: m.uses, knownToolNames: async () => ({}) }));
 import ConnectorPage from "../app/integrations/outside/[id]/page";
 
 const id = "00000000-0000-4000-8000-000000000001";

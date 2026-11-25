@@ -10,7 +10,7 @@ import { REMOVE_WARNING } from "../lib/outside-connector-words";
 type Message = { tone: "working" | "success" | "error" | "info"; text: string } | null;
 
 /** Rename (label only), Check it works, and Remove. Replace token sits with the agents' access, where the tokens are. */
-export function ConnectorActions({ id, displayName }: { id: string; displayName: string }) {
+export function ConnectorActions({ id, displayName, authKind }: { id: string; displayName: string; authKind?: "none" | "token" | "signin" }) {
   const router = useRouter();
   const [renaming, setRenaming] = useState(false), [label, setLabel] = useState(displayName);
   const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>(null);
@@ -24,9 +24,11 @@ export function ConnectorActions({ id, displayName }: { id: string; displayName:
   }
   async function check() {
     setBusy(true); setMessage({ tone: "working", text: "Checking the server." });
-    const r = await checkConnector(id).catch(() => ({ ok: false as const, message: "Lares could not confirm that. Try again." }));
+    const r = await checkConnector(id, authKind === "token").catch(() => ({ ok: false as const, message: "Lares could not confirm that. Try again." }));
     setBusy(false);
     setMessage(r.ok ? { tone: "success", text: r.value.sentence } : { tone: "error", text: r.message });
+    // The check records what it found; the access section below must read the same value.
+    if (r.ok && r.value.authKind !== authKind) router.refresh();
   }
   async function remove() {
     setBusy(true); setMessage({ tone: "working", text: "Removing. This can take a minute while agents restart." });

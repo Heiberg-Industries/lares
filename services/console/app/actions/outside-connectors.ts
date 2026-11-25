@@ -12,6 +12,7 @@ import { suggestConnectionName, uniqueConnectionName } from "../../lib/outside-c
 import { foundSentence } from "../../lib/outside-connector-words";
 import { listOutsideDiscoveryTargets, removeOutsideCredential } from "./outside-discovery";
 import { connectRemoveDeclaration } from "./outside-connect";
+import { agentUsesByConnector } from "../../lib/outside-connector-view";
 
 const connectorSchema = z.object({
   id: z.string().uuid(), slug: z.string(), displayName: z.string(), url: z.string(), authKind: z.enum(["none", "token", "signin"]),
@@ -81,7 +82,8 @@ export async function addConnector(input: unknown): Promise<{ ok: true; id: stri
   if (!created.ok) return created;
   id = created.value;
   const checked = await run<Connector["authKind"]>("Lares could not reach that server. Check the address, then try again.", async (w) => {
-    const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id }, w.actor, TIMEOUT);
+    // "Token" is the owner's word and stands, even if the unauthenticated question got an unexpected answer.
+    const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id, ...(parsed.data.auth === "token" ? { expectToken: true } : {}) }, w.actor, TIMEOUT);
     return connectorSchema.shape.authKind.parse(r.authKind);
   });
   if (!checked.ok) return { ok: false, message: checked.message, id };
@@ -89,11 +91,11 @@ export async function addConnector(input: unknown): Promise<{ ok: true; id: stri
 }
 
 /** "Check it works": asks the server again what it is. It sends no token. */
-export async function checkConnector(id: string): Promise<ConnectorResult<{ authKind: Connector["authKind"]; sentence: string }>> {
+export async function checkConnector(id: string, expectToken = false): Promise<ConnectorResult<{ authKind: Connector["authKind"]; sentence: string }>> {
   await requireConsoleMember();
   if (!uuid.safeParse(id).success) return { ok: false, message: "That connector is not valid." };
   return run("Lares could not reach that server. Check the address, then try again.", async (w) => {
-    const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id }, w.actor, TIMEOUT);
+    const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id, ...(expectToken ? { expectToken: true } : {}) }, w.actor, TIMEOUT);
     const authKind = connectorSchema.shape.authKind.parse(r.authKind);
     return { authKind, sentence: foundSentence(authKind) };
   });
@@ -120,14 +122,18 @@ export async function removeConnector(id: string): Promise<ConnectorResult<{ age
   return run("The connector could not be removed. Press Remove again to continue.", async (w) => {
     const connector = (await list(w)).find(c => c.id === id);
     if (!connector) throw new Said("There is no such connector (it may have been removed).");
-    const targets = (await listOutsideDiscoveryTargets()).filter(t => t.connectionName === connector.slug);
+    // Every agent that declares the connector, with or without a token: the discovery list only knows token connections.
+    const uses = await agentUsesByConnector();
+    if (uses === null) throw new Said("Lares could not read which agents use this connector, so nothing was removed. Try again.");
+    const targets = await listOutsideDiscoveryTargets();
     const agents: string[] = [];
-    for (const t of targets) {
+    for (const use of uses[connector.slug] ?? []) {
+      const t = targets.find(x => x.agentName === use.agent && x.connectionName === connector.slug);
       // The held token first: the keeper can only erase it while the agent still declares the connection.
-      await eraseHeldToken(t);
-      const gone = await connectRemoveDeclaration({ agent: t.agentName, name: connector.slug });
-      if (!gone.ok) throw new Said(`${t.agentName}: ${gone.message}`);
-      agents.push(t.agentName);
+      if (t) await eraseHeldToken(t);
+      const gone = await connectRemoveDeclaration({ agent: use.agent, name: connector.slug });
+      if (!gone.ok) throw new Said(`${use.agent}: ${gone.message}`);
+      agents.push(use.agent);
     }
     await keeper("outside.connector-retire", { sessionToken: w.sessionToken, id }, w.actor, TIMEOUT);
     return { agents };

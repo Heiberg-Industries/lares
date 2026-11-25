@@ -117,6 +117,16 @@ it('probes without a login: 200 from a server that speaks MCP is no login, 401 w
   expect((await pool.query('SELECT auth_kind FROM outside_connectors')).rows).toEqual([{ auth_kind: 'token' }]);
 });
 
+it('keeps a token connector a token connector when the owner said so, whatever an unauthenticated question got back, except a sign-in page', async () => {
+  const { connector } = await create();
+  for (const odd of [{ status: 200, wwwAuthenticate: null, mcp: true }, { status: 404, wwwAuthenticate: null, mcp: false }, { status: 403, wwwAuthenticate: 'Bearer', mcp: false }]) {
+    answer = odd;
+    expect(await asOwner('outside.connector-probe', { id: connector.id, expectToken: true })).toMatchObject({ authKind: 'token', usable: true });
+  }
+  answer = { status: 401, wwwAuthenticate: 'Bearer resource_metadata="https://tools.example.org/.well-known/oauth-protected-resource"', mcp: false };
+  expect(await asOwner('outside.connector-probe', { id: connector.id, expectToken: true })).toMatchObject({ authKind: 'signin' });
+});
+
 it('does not guess when the server answers something else, and leaves the record as it was', async () => {
   const { connector } = await create();
   for (const odd of [{ status: 200, wwwAuthenticate: null, mcp: false }, { status: 404, wwwAuthenticate: null, mcp: false }, { status: 403, wwwAuthenticate: 'Bearer', mcp: false }, { status: 302, wwwAuthenticate: null, mcp: false }]) {

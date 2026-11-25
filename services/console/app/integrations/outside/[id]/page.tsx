@@ -38,7 +38,7 @@ export default async function ConnectorPage({ params, searchParams }: { params: 
     <p className="lares-muted">{authWords(c.authKind)} · {tools} tool{tools === 1 ? "" : "s"} · {mine.length} agent{mine.length === 1 ? "" : "s"}</p>
     {uses !== null && <ConnectorAccess known={known} conn={{ slug: c.slug, url: c.url, description: c.description, authKind: c.authKind }} uses={mine}
       allAgents={agents.map(a => ({ name: a.name, displayName: a.displayName }))} canWiden={isConsoleOwner(member)} keyLines={keyLines} />}
-    <ConnectorActions id={c.id} displayName={c.displayName} />
+    <ConnectorActions id={c.id} displayName={c.displayName} authKind={c.authKind} />
     {/* The danger zone (see the decision record for it) goes here, below everything else: a red section, per tool, never a blanket switch. */}
     <section aria-label="Danger zone" data-slot="danger-zone" />
   </Page>;

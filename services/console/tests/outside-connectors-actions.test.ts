@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ cookies: vi.fn(), sessionMember: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn(), requireConsoleMember: vi.fn(),
-  targets: vi.fn(), removeCredential: vi.fn(), removeDeclaration: vi.fn() }));
+  targets: vi.fn(), removeCredential: vi.fn(), removeDeclaration: vi.fn(), uses: vi.fn() }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
 vi.mock("../lib/auth", () => ({ sessionMember: mocks.sessionMember, memberAuditAddress: mocks.memberAuditAddress, requireConsoleMember: mocks.requireConsoleMember }));
 vi.mock("../lib/keeper-client", () => ({
@@ -8,6 +8,7 @@ vi.mock("../lib/keeper-client", () => ({
   KeeperRefusedError: class KeeperRefusedError extends Error { constructor(message: string, readonly findings?: { check: string; message: string }[]) { super(message); this.name = "KeeperRefusedError"; } },
 }));
 vi.mock("../app/actions/outside-discovery", () => ({ listOutsideDiscoveryTargets: mocks.targets, removeOutsideCredential: mocks.removeCredential }));
+vi.mock("../lib/outside-connector-view", () => ({ agentUsesByConnector: mocks.uses }));
 vi.mock("../app/actions/outside-connect", () => ({ connectRemoveDeclaration: mocks.removeDeclaration }));
 import { addConnector, checkConnector, listConnectors, removeConnector, removeFromAgent, renameConnector } from "../app/actions/outside-connectors";
 import { KeeperRefusedError } from "../lib/keeper-client";
@@ -20,6 +21,7 @@ const calls = () => mocks.keeper.mock.calls.map(c => c[0] as string);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.uses.mockResolvedValue({ rates: [{ agent: "ada" }] });
   mocks.cookies.mockResolvedValue({ get: () => ({ value: "A".repeat(43) }) });
   mocks.sessionMember.mockResolvedValue({ id: "m" }); mocks.memberAuditAddress.mockResolvedValue("owner@example.test"); mocks.requireConsoleMember.mockResolvedValue({ id: "m" });
 });
@@ -75,6 +77,28 @@ describe("the connector directory actions", () => {
     mocks.removeDeclaration.mockResolvedValue({ ok: false, message: "The agent could not be updated." });
     expect(await removeConnector(id)).toEqual({ ok: false, message: "ada: The agent could not be updated." });
     expect(calls()).toEqual(["outside.connector-list"]);
+  });
+  it("removes a no-login connector from every agent that declares it, though the credential list does not know it", async () => {
+    mocks.keeper.mockResolvedValueOnce({ connectors: [row()] }).mockResolvedValueOnce({ connector: row({ state: "retired" }) });
+    mocks.uses.mockResolvedValue({ rates: [{ agent: "ada" }, { agent: "ben" }] });
+    mocks.targets.mockResolvedValue([]);
+    mocks.removeDeclaration.mockResolvedValue({ ok: true, value: { removed: true } });
+    expect(await removeConnector(id)).toEqual({ ok: true, value: { agents: ["ada", "ben"] } });
+    expect(mocks.removeDeclaration).toHaveBeenCalledTimes(2);
+    expect(mocks.removeCredential).not.toHaveBeenCalled();
+  });
+  it("does not retire the row when it cannot read which agents use the connector", async () => {
+    mocks.keeper.mockResolvedValueOnce({ connectors: [row()] }); mocks.uses.mockResolvedValue(null);
+    expect(await removeConnector(id)).toMatchObject({ ok: false });
+    expect(calls()).toEqual(["outside.connector-list"]);
+  });
+  it("passes the owner's Token choice to the check, so the unauthenticated answer cannot overrule it", async () => {
+    mocks.keeper.mockResolvedValueOnce({ connectors: [] }).mockResolvedValueOnce({ connector: row() }).mockResolvedValueOnce({ authKind: "token" });
+    await addConnector({ name: "Rates", url: "https://tools.example.org/mcp", auth: "token" });
+    expect(mocks.keeper.mock.calls[2]![1]).toMatchObject({ expectToken: true });
+    mocks.keeper.mockClear(); mocks.keeper.mockResolvedValueOnce({ connectors: [] }).mockResolvedValueOnce({ connector: row() }).mockResolvedValueOnce({ authKind: "none" });
+    await addConnector({ name: "Rates", url: "https://tools.example.org/mcp", auth: "automatic" });
+    expect(mocks.keeper.mock.calls[2]![1]).not.toHaveProperty("expectToken");
   });
   it("takes a connector off one agent and erases that agent's token only", async () => {
     mocks.targets.mockResolvedValue([{ agentName: "ada", connectionName: "rates", credentialStatus: { accountId: id, generation: 2, state: "active" } }]);

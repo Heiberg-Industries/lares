@@ -53,7 +53,7 @@ function WorkNotice({ chain, onStartOver }: { chain: ReturnType<typeof useChain>
 }
 
 /** One agent's tools on this connector: which it may use, what each does, which look-ups run without asking. */
-function AgentTools({ use, universe, slug, canWiden }: { use: AgentUse; universe: { name: string; kind: "read" | "change" }[]; slug: string; canWiden: boolean }) {
+function AgentTools({ use, universe, slug, canWiden, read }: { use: AgentUse; universe: { name: string; kind: "read" | "change" }[]; slug: string; canWiden: boolean; read: Set<string> }) {
   const router = useRouter();
   const [rows, setRows] = useState(() => universe.map(u => { const mine = use.tools.find(t => t.name === u.name); return { name: u.name, allowed: !!mine, kind: mine?.kind ?? u.kind, free: mine?.free ?? false }; }));
   const [busy, setBusy] = useState(false), [note, setNote] = useState<{ tone: "success" | "needs-you" | "error" | "info"; text: string } | null>(null);
@@ -83,7 +83,8 @@ function AgentTools({ use, universe, slug, canWiden }: { use: AgentUse; universe
     <h3 className="lares-section-title">{use.displayName}</h3>
     <p className="lares-muted">{use.tools.length} of {universe.length} tools. {whereToolsWork(use.tools.length, use.tools.filter(t => t.free).length)}</p>
     <ToolList label={`Tools for ${use.displayName}`}>{rows.map((row, i) => <ToolRow key={row.name} name={row.name} kind={row.kind}
-      control={<Switch aria-label={`${use.displayName} may use ${row.name}`} checked={row.allowed} onCheckedChange={on => set(i, { allowed: on, ...(on ? {} : { free: false }) })} />}>
+      control={<Switch aria-label={`${use.displayName} may use ${row.name}`} checked={row.allowed} disabled={!read.has(row.name)} onCheckedChange={on => set(i, { allowed: on, ...(on ? {} : { free: false }) })} />}>
+      {!read.has(row.name) && <span className="lares-muted">{use.displayName} has not read this tool&apos;s description. Give access again to review and add it.</span>}
       {row.allowed && row.kind === "read" && <Choice><Switch aria-label={`Run ${row.name} without asking`} checked={row.free} onCheckedChange={on => set(i, { free: on })} /> Run without asking</Choice>}
       {row.allowed && row.kind === "change" && <span className="lares-muted">Always asks you first.</span>}
     </ToolRow>)}</ToolList>
@@ -327,12 +328,12 @@ function ReplaceToken({ conn, agents }: { conn: Conn; agents: Agent[] }) {
 }
 
 /** Everything on the connector page that changes who can use it. */
-export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines, known = [] }: { conn: Conn; uses: AgentUse[]; allAgents: Agent[]; canWiden: boolean; keyLines: Record<string, string>; known?: string[] }) {
+export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines, known = {} }: { conn: Conn; uses: AgentUse[]; allAgents: Agent[]; canWiden: boolean; keyLines: Record<string, string>; known?: Record<string, string[]> }) {
   const universe = (() => {
     const seenNames = new Map<string, "read" | "change">();
     for (const u of uses) for (const t of u.tools) if (!seenNames.has(t.name) || t.kind === "change") seenNames.set(t.name, t.kind);
     // A tool the agents have read from the server but none may use now stays listed (always asks), so it can be switched on again.
-    for (const name of known) if (!seenNames.has(name)) seenNames.set(name, "change");
+    for (const list of Object.values(known)) for (const name of list) if (!seenNames.has(name)) seenNames.set(name, "change");
     return [...seenNames].map(([name, kind]) => ({ name, kind }));
   })();
   const without = allAgents.filter(a => !uses.some(u => u.agent === a.name));
@@ -341,7 +342,7 @@ export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines, kno
     <h2 className="lares-section-title">Who can use it</h2>
     {uses.length === 0 && <p className="lares-muted">No agent uses this connector yet.</p>}
     {uses.map(u => <div key={u.agent} className="lares-stack">
-      <AgentTools use={u} universe={universe} slug={conn.slug} canWiden={canWiden} />
+      <AgentTools use={u} universe={universe} slug={conn.slug} canWiden={canWiden} read={new Set([...u.tools.map(t => t.name), ...(known[u.agent] ?? [])])} />
       {u.needsKey && keyLines[u.agent] && <p className="lares-muted">{keyLines[u.agent]}</p>}
     </div>)}
     {conn.authKind === "token" && <ReplaceToken conn={conn} agents={allAgents.filter(a => uses.some(u => u.agent === a.name && u.needsKey))} />}

@@ -2,9 +2,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn(), add: vi.fn(), setTools: vi.fn(), declare: vi.fn(), lookUp: vi.fn(), review: vi.fn(), removeDecl: vi.fn() }));
+const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn(), add: vi.fn(), setTools: vi.fn(), declare: vi.fn(), lookUp: vi.fn(), review: vi.fn(), removeDecl: vi.fn(), check: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push, refresh: mocks.refresh }) }));
-vi.mock("../app/actions/outside-connectors", () => ({ addConnector: mocks.add, checkConnector: vi.fn(), renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: vi.fn() }));
+vi.mock("../app/actions/outside-connectors", () => ({ addConnector: mocks.add, checkConnector: mocks.check, renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: vi.fn() }));
 vi.mock("../app/actions/outside-connect", () => ({ connectSetTools: mocks.setTools, connectDeclare: mocks.declare, connectLookUpTools: mocks.lookUp, connectReviewAndStage: mocks.review, connectRemoveDeclaration: mocks.removeDecl,
   connectActivateCredential: vi.fn(), connectApplyAgent: vi.fn(), connectSwitchOnTrust: vi.fn() }));
 import { AddConnectorForm } from "../components/AddConnectorForm";
@@ -98,9 +98,17 @@ const looked = { ok: true, value: { identity: { accountId: "a" }, serverName: "R
 
 describe("tools that no agent may use now", () => {
   it("stay listed, off, so they can be switched on again", () => {
-    render(<ConnectorAccess conn={conn} uses={uses} allAgents={agents} canWiden keyLines={{}} known={["find_rate", "set_rate", "gone_rate"]} />);
+    render(<ConnectorAccess conn={conn} uses={uses} allAgents={agents} canWiden keyLines={{}} known={{ ada: ["find_rate", "set_rate", "gone_rate"] }} />);
     const sw = screen.getByLabelText("Ada may use gone_rate");
     expect(sw.getAttribute("aria-checked")).toBe("false");
+    expect(sw.hasAttribute("disabled")).toBe(false);
+  });
+  it("cannot be switched on for an agent that never read their description", () => {
+    const two = [...uses, { agent: "ben", displayName: "Ben", needsKey: true, tools: [{ name: "other_tool", kind: "read" as const, free: false }] }];
+    render(<ConnectorAccess conn={conn} uses={two} allAgents={agents} canWiden keyLines={{}} />);
+    expect(screen.getByLabelText("Ben may use find_rate").hasAttribute("disabled")).toBe(true);
+    expect(screen.getByLabelText("Ada may use find_rate").hasAttribute("disabled")).toBe(false);
+    expect(screen.getAllByText(/has not read this tool/).length).toBeGreaterThan(0);
   });
 });
 
@@ -164,6 +172,14 @@ describe("the token flows", () => {
 });
 
 describe("rename, check and remove", () => {
+  it("refreshes the page when Check it works changes what the connector needs, and keeps a token connector a token connector", async () => {
+    mocks.check.mockResolvedValue({ ok: true, value: { authKind: "none", sentence: "Found the server. It needs no login." } });
+    render(<ConnectorActions id="abc" displayName="Rates" authKind="token" />);
+    fireEvent.click(screen.getByRole("button", { name: "Check it works" }));
+    await screen.findByText("Found the server. It needs no login.");
+    expect(mocks.check).toHaveBeenCalledWith("abc", true);
+    expect(mocks.refresh).toHaveBeenCalled();
+  });
   it("warns once that running agents restart before it removes anything", () => {
     render(<ConnectorActions id="abc" displayName="Rates" />);
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
