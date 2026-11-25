@@ -740,7 +740,7 @@ export async function provisionEngineDatabasePrivileges(
       await operator.query(`COMMENT ON ROLE ${qid(OUTSIDE_CUSTODY)} IS '${ROLE_MARKERS.outsideCustody}'`);
     }
 
-    if (roleState !== "managed") await ensureDiagnosticRole(operator);
+    await ensureDiagnosticRole(operator);
 
     const database = qid(identity.database);
     await operator.query(`REVOKE CONNECT, TEMP ON DATABASE ${database} FROM PUBLIC`);
