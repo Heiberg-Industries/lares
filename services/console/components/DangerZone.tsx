@@ -37,7 +37,7 @@ function DangerRow({ item, slug, allowed }: { item: Item; slug: string; allowed:
 
 /** The red section at the bottom of a connector's page. Lists only the tools that change something, one by one; there is no blanket switch. */
 export function DangerZone({ slug, uses, isOwner }: { slug: string; uses: AgentUse[]; isOwner: boolean }) {
-  const items: Item[] = uses.flatMap(u => u.tools.filter(t => t.kind === "change" && t.name !== "connect-pending").map(t => ({ agent: u.agent, displayName: u.displayName, tool: t.name, danger: t.danger })));
+  const items: Item[] = uses.flatMap(u => u.tools.filter(t => t.kind === "change" && t.name !== "connect-pending").map(t => ({ agent: u.agent, displayName: u.displayName, tool: t.name, danger: t.danger ?? null })));
   return <section aria-label="Danger zone" data-slot="danger-zone" className="lares-stack">
     <h2 className="lares-section-title">Danger zone</h2>
     <Notice tone="error">A tool that changes something always asks you first. Here you can let one of them run without asking, for one agent at a time. It can then send, create, delete or pay with nobody looking, in your private chats on Slack and Telegram too. Only use this for a tool you fully trust.</Notice>

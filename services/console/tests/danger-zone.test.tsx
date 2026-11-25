@@ -18,15 +18,15 @@ describe("the danger zone section", () => {
     render(<DangerZone slug="rates" isOwner uses={[use([{ name: "find_rate", kind: "read", free: true }, { name: "set_rate", kind: "change" }, { name: "drop_rate", kind: "change" }])]} />);
     expect(screen.getByRole("heading", { name: "Danger zone" })).toBeTruthy();
     expect(screen.queryByLabelText(/find_rate/)).toBeNull();
-    expect(screen.getByLabelText("Type set_rate to confirm")).toBeTruthy();
-    expect(screen.getByLabelText("Type drop_rate to confirm")).toBeTruthy();
+    expect(screen.getByLabelText(/^Type set_rate to confirm/)).toBeTruthy();
+    expect(screen.getByLabelText(/^Type drop_rate to confirm/)).toBeTruthy();
   });
   it("keeps the switch disabled until the exact name is typed, then sends it with the typed name", async () => {
     mocks.setDanger.mockResolvedValue({ ok: true, value: { on: true } });
     render(<DangerZone slug="rates" isOwner uses={[use([{ name: "set_rate", kind: "change" }])]} />);
     const button = screen.getByRole("button", { name: /Let Ada run set_rate without asking/ }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    const field = screen.getByLabelText("Type set_rate to confirm");
+    const field = screen.getByLabelText(/^Type set_rate to confirm/);
     fireEvent.change(field, { target: { value: "set_rat" } }); expect(button.disabled).toBe(true);
     fireEvent.change(field, { target: { value: "Set_rate" } }); expect(button.disabled).toBe(true);
     fireEvent.change(field, { target: { value: "set_rate" } }); expect(button.disabled).toBe(false);
@@ -37,7 +37,7 @@ describe("the danger zone section", () => {
   it("shows the keeper's refusal in its own words", async () => {
     mocks.setDanger.mockResolvedValue({ ok: false, message: "keeper: Only the installation's owner can use the danger zone.", retryable: true });
     render(<DangerZone slug="rates" isOwner uses={[use([{ name: "set_rate", kind: "change" }])]} />);
-    fireEvent.change(screen.getByLabelText("Type set_rate to confirm"), { target: { value: "set_rate" } });
+    fireEvent.change(screen.getByLabelText(/^Type set_rate to confirm/), { target: { value: "set_rate" } });
     fireEvent.click(screen.getByRole("button", { name: /without asking/ }));
     await screen.findByText(/Only the installation's owner/);
     expect(mocks.refresh).not.toHaveBeenCalled();
@@ -46,7 +46,7 @@ describe("the danger zone section", () => {
     mocks.setDanger.mockResolvedValue({ ok: true, value: { on: false } });
     render(<DangerZone slug="rates" isOwner uses={[use([{ name: "set_rate", kind: "change", danger: "on" }])]} />);
     expect(screen.getByText(DANGER_BADGE)).toBeTruthy();
-    expect(screen.queryByLabelText(/Type set_rate/)).toBeNull();
+    expect(screen.queryByLabelText(/^Type set_rate/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Switch off" }));
     await vi.waitFor(() => expect(mocks.setDanger).toHaveBeenCalledWith({ agent: "ada", name: "rates", tool: "set_rate", on: false, typedName: "" }));
   });
@@ -54,17 +54,17 @@ describe("the danger zone section", () => {
     render(<DangerZone slug="rates" isOwner uses={[use([{ name: "set_rate", kind: "change", danger: "changed" }])]} />);
     expect(screen.getByText(DANGER_CHANGED_WORDS)).toBeTruthy();
     expect(screen.queryByText(DANGER_BADGE)).toBeNull();
-    expect(screen.getByLabelText("Type set_rate to confirm")).toBeTruthy();
+    expect(screen.getByLabelText(/^Type set_rate to confirm/)).toBeTruthy();
   });
   it("gives anyone who is not the owner no switch at all", () => {
     render(<DangerZone slug="rates" isOwner={false} uses={[use([{ name: "set_rate", kind: "change" }])]} />);
     expect(screen.getByText(/Only the owner of this installation/)).toBeTruthy();
-    expect(screen.queryByLabelText(/Type set_rate/)).toBeNull();
+    expect(screen.queryByLabelText(/^Type set_rate/)).toBeNull();
     expect(screen.queryByRole("button", { name: /without asking/ })).toBeNull();
   });
   it("is one tool at a time: two agents with the same tool get two separate controls, and there is no blanket switch", () => {
     render(<DangerZone slug="rates" isOwner uses={[use([{ name: "set_rate", kind: "change" }]), use([{ name: "set_rate", kind: "change" }], "ben")]} />);
-    expect(screen.getAllByLabelText("Type set_rate to confirm")).toHaveLength(2);
+    expect(screen.getAllByLabelText(/^Type set_rate to confirm/)).toHaveLength(2);
     expect(screen.queryByRole("button", { name: /all|every/i })).toBeNull();
   });
   it("says there is nothing to switch when no tool changes anything", () => {

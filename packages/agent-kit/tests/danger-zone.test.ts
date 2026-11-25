@@ -59,8 +59,8 @@ describe("the stored list", () => {
     expect(check(conn({ danger: [grant(lookup)] }))[0]!.message).toMatch(/danger zone/);
     expect(check(conn({ danger: [grant({ ...edit, name: "unknown" })] }))[0]!.message).toMatch(/danger zone/);
     expect(check(conn({ danger: [grant(edit), grant(edit)] }))[0]!.message).toMatch(/twice in the danger zone/);
-    expect(check(conn({ read: ["lookup", "edit", "other"], danger: [grant(edit)] }, "read")).some((f) => /grant is read-only/.test(f.message))).toBe(true);
-    expect(check(conn({ danger: [grant(edit)] }, "read")).some((f) => /danger zone but the grant is read-only/.test(f.message))).toBe(true);
+    expect(check(conn({ read: ["lookup", "edit", "other"], danger: [grant(edit)] }), "read").some((f) => /grant is read-only/.test(f.message))).toBe(true);
+    expect(check(conn({ danger: [grant(edit)] }), "read").some((f) => /danger zone but the grant is read-only/.test(f.message))).toBe(true);
   });
 
   it("does not change the identity the stored credential is bound to", () => {

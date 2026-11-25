@@ -1146,8 +1146,8 @@ async function dangerFixture() {
         ON CONFLICT (agent,tool) DO UPDATE SET pin_tools=EXCLUDED.pin_tools, seen_hash=NULL`, ['c'.repeat(64), 'd'.repeat(64), JSON.stringify(stored)]);
     await putPin();
     // A second owner of the same organisation, with edit access, who is not the installation's designated owner.
-    await pool.query(`INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES('connection-owner2','Second owner','connection-owner2@example.test','connection-org','owner');
-        INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('connection-owner2',NULL)`);
+    await pool.query(`INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES('connection-owner2','Second owner','connection-owner2@example.test','connection-org','owner') ON CONFLICT DO NOTHING;
+        INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('connection-owner2',NULL) ON CONFLICT DO NOTHING`);
     const token = Buffer.alloc(32, 91).toString('base64url');
     await pool.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval \'1 hour\')', ['connection-session-owner2', 'connection-owner2', createHash('sha256').update(token).digest('hex')]);
     const saved: any = await connectionCall(fixture.sessions.owner, 'bookkeeper', fixture.loaded.hash, fixture.access.accessRevision, [changing]);
