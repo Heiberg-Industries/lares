@@ -388,12 +388,16 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
         danger?: { connection: string; tool: string; on: boolean }): Promise<NonNullable<AgentDefinition['outsideTools']>> {
         const entries = declared ?? [];
         const previous = await appliedOutsideTools(name);
+        // The danger list is edited against what is SAVED now, not against what is applied. The edits do not change the definition's identity
+        // hash, so nothing else would notice that a switch-off is saved but not yet applied; building from the applied list would bring it back.
+        // Every caller is inside the namespace lock, so two edits can never read the same saved list.
+        const saved = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: active(name) } }).then(l => l.definition.outsideTools ?? [], () => []);
         const now = new Date().toISOString();
         const change = danger ? { ...danger, by: actor, now } : undefined;
         const out: NonNullable<AgentDefinition['outsideTools']> = [];
         const withDanger = async (entry: NonNullable<AgentDefinition['outsideTools']>[number]) => {
             const { danger: _sent, ...tools } = entry.tools;
-            const list = await dangerAfter(name, entry, previous.find(p => p.name === entry.name)?.tools.danger ?? [], change);
+            const list = await dangerAfter(name, entry, saved.find(p => p.name === entry.name)?.tools.danger ?? [], change);
             return list.length > 0 ? { ...entry, tools: { ...tools, danger: list } } : { ...entry, tools };
         };
         for (const entry of entries) {

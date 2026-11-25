@@ -1233,3 +1233,29 @@ it('the danger zone: nothing a definition save, import or the console\'s ordinar
     // An agent has no way to reach the action at all: it needs a signed-in console session token.
     await expect(runAction('outside.danger.set', { name: 'bookkeeper', connection: 'rates', tool: 'set_rate', on: true, typedName: 'set_rate' }, ctx())).rejects.toThrow();
 });
+it('the danger zone: a tool switched off but not yet applied stays off when another tool is switched on', async () => {
+    const f = await dangerFixture();
+    const both = { ...f.changing, tools: { allow: ['find_rate', 'set_rate', 'drop_rate'], read: ['find_rate'] } };
+    f.stored.push({ name: 'drop_rate', description: 'Drops a rate.', inputSchema: { type: 'object' } });
+    await f.putPin();
+    const current = async () => {
+        const loaded = await loadDefinition({ serviceDir: 'unused', env: { LARES_DEFINITION_DIR: join(agentsDir, 'bookkeeper') } });
+        const revision = Number((await pool.query('SELECT revision FROM agent_access WHERE agent_name=$1', ['bookkeeper'])).rows[0].revision);
+        return { loaded, revision };
+    };
+    const call = async (tool: string, on: boolean) => {
+        const { loaded, revision } = await current();
+        return runAction('outside.danger.set', { sessionToken: f.sessions.owner, name: 'bookkeeper', expectedDefinitionHash: loaded.hash, expectedAccessRevision: revision, connection: 'rates', tool, on, typedName: on ? tool : '' }, ctx());
+    };
+    const { loaded: l0, revision: r0 } = await current();
+    await connectionCall(f.sessions.owner, 'bookkeeper', l0.hash, r0, [both]);
+    await call('set_rate', true);
+    // Applied: the runtime now holds A.
+    await f.applied((await current()).loaded.definition.outsideTools!);
+    // A is switched off and saved, but the change is not applied yet ...
+    await call('set_rate', false);
+    expect((await stateOf()).danger).toBeUndefined();
+    // ... and B is switched on before it is: A must not come back from the still-applied list.
+    await call('drop_rate', true);
+    expect(((await stateOf()).danger ?? []).map(g => g.tool)).toEqual(['drop_rate']);
+});
