@@ -147,7 +147,7 @@ export function OutsideToolsSection({
               <p>Address: <span className="mono">{t.host ?? t.url}</span></p>
               <p>
                 {(t.tools.trusted ?? []).length
-                  ? `Run without asking: ${(t.tools.trusted ?? []).map(g => `${g.tool} (switched on ${g.at.slice(0, 10)})`).join(", ")}. These skip the card unless the agent has just read someone else's words. Every other tool asks first, except one marked in red, and a changed description ends this for that tool.`
+                  ? `Run without asking: ${(t.tools.trusted ?? []).map(g => `${g.tool} (switched on ${g.at.slice(0, 10)})`).join(", ")}. These skip the card unless the agent has just read someone else's words. Every other tool asks first, and a changed description ends this for that tool.`
                   : "Every call asks you first."}
                 {(dangerLive?.[t.name] ?? []).length > 0 && ` ${(dangerLive?.[t.name] ?? []).length === 1 ? "One tool that changes something is marked in red and runs without asking" : `${(dangerLive?.[t.name] ?? []).length} tools that change something are marked in red and run without asking`}.`}
               </p>
