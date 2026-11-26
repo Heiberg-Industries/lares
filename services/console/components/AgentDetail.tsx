@@ -216,7 +216,7 @@ export function AgentDetail({
                 );
               })}
               <Button variant="outline" asChild>
-                <Link href="/meetings">Meeting follow-up controls →</Link>
+                <Link href="/meeting-follow-ups">Meeting follow-up controls →</Link>
               </Button>
             </div>
           )}
@@ -275,7 +275,7 @@ export function AgentDetail({
               every action or prove completion.
             </p>
             <PermissionEvents events={events} />
-            <Link href={`/activity?agent=${encodeURIComponent(agent.name)}`}>
+            <Link href={`/permission-checks?agent=${encodeURIComponent(agent.name)}`}>
               View all checks →
             </Link>
           </section>

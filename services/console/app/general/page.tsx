@@ -44,7 +44,7 @@ export default async function SettingsPage() {
                   : "Quiet hours could not be loaded."}
               </p>
             </div>
-            <Link href="/proactivity">Manage</Link>
+            <Link href="/quiet-hours-and-delivery">Manage</Link>
           </div>
           <div className="lares-setting-row">
             <div>
@@ -83,7 +83,7 @@ export default async function SettingsPage() {
           <p className="lares-muted">
             Check whether this installation has a recorded backup and how recovery is configured.
           </p>
-          <Link href="/backup">View backup status →</Link>
+          <Link href="/backups">View backup status →</Link>
           <p className="lares-muted">
             <a href="https://github.com/Heiberg-Industries/lares/blob/main/docs/runbooks/definition-backups.md#optional-setup-for-an-installation-administrator" target="_blank" rel="noopener noreferrer">
               Guide: optional backups of agent definitions ↗
@@ -97,13 +97,13 @@ export default async function SettingsPage() {
               Email writing style
               <p>Shared defaults and mailbox-specific preferences.</p>
             </div>
-            <Link href="/voice">Manage</Link>
+            <Link href="/writing-style">Manage</Link>
           </div>
           <div className="lares-setting-row">
             <div>
               Alert routing<p>Choose channels and escalation rules.</p>
             </div>
-            <Link href="/signals/rules">Manage</Link>
+            <Link href="/alert-routing">Manage</Link>
           </div>
         </section>
       </div>

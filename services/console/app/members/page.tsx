@@ -20,7 +20,7 @@ export default async function MembersPage() {
   return <Page className="lares-stack">
     <PageHeader title="Members" description="Manage sign-in invitations and current membership." />
     <p>Invited members can view their own membership and sign out. Shared console screens remain limited to the designated existing owner while resource access is being integrated. An owner role does not grant access to another person's private data.</p>
-    <Link href="/membership">Your membership →</Link>
+    <Link href="/your-membership">Your membership →</Link>
     <InviteMember />
     <InitialMemberBudgetSetup members={directory.map(({member,displayName})=>({
       id:member.id,displayName,eligible:budgetByMember.get(member.id)?.eligible===true,

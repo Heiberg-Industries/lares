@@ -130,7 +130,7 @@ it("holds the Notion key, sync status and proposals on the Notion page, with a M
   expect(html).toContain("NOTION-CREDENTIAL");
   expect(html).toContain("NOTION-PROPOSALS");
   expect(html).toContain("7 synced");
-  expect(html).toContain('href="/meetings"');
+  expect(html).toContain('href="/meeting-follow-ups"');
   expect(html).not.toContain("<details");
   expect(await show("twenty")).not.toContain("NOTION-CREDENTIAL");
 });

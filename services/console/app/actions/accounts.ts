@@ -22,8 +22,8 @@ export async function removeAccount(input: RemoveAccountInput): Promise<void> {
       await deleteToken(pool, consolePrincipal(), "google", input.email);
     }
   } catch { throw new Error("Account could not be disconnected. Refresh the page and try again."); }
-  revalidatePath("/membership");
-  revalidatePath("/accounts");
+  revalidatePath("/your-membership");
+  revalidatePath("/your-accounts");
   revalidatePath("/integrations");
 }
 

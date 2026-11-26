@@ -5,8 +5,8 @@ export default {
   // The old outside-tool screens are gone; their addresses lead to the new pages.
   async redirects() {
     return [
-      { source: "/integrations/connect-outside-tool", destination: "/integrations/outside/new", permanent: true },
-      { source: "/agents/:name/outside-tools", destination: "/integrations/outside", permanent: true },
+      { source: "/integrations/connect-outside-tool", destination: "/outside-tools/new", permanent: true },
+      { source: "/agents/:name/outside-tools", destination: "/outside-tools", permanent: true },
     ];
   },
   experimental: { cpus: 1, serverActions: { bodySizeLimit: "3mb" } },

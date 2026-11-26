@@ -39,7 +39,7 @@ describe("sign-in page", () => {
   });
   it("rechecks Node admission before redirecting an existing member", async () => {
     mocks.member.mockResolvedValue({ id: "second" });
-    await expect(render({ next: "/agents" })).rejects.toThrow("redirect:/membership");
+    await expect(render({ next: "/agents" })).rejects.toThrow("redirect:/your-membership");
     mocks.member.mockResolvedValue({ id: "private-owner-record-id", role: "owner", status: "active" });
     await expect(render({ next: "/agents" })).rejects.toThrow("redirect:/agents");
     await expect(render({ next: "https://attacker.test" })).rejects.toThrow("redirect:/");

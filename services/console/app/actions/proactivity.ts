@@ -68,7 +68,7 @@ export async function saveDnd(input: { agent: string; dnd: boolean }): Promise<S
      DO UPDATE SET dnd = EXCLUDED.dnd, updated_by = EXCLUDED.updated_by, updated_at = now()`,
     [owner, input.agent, input.dnd, email],
   );
-  revalidatePath("/proactivity");
+  revalidatePath("/quiet-hours-and-delivery");
   return { ok: true };
 }
 
@@ -102,7 +102,7 @@ export async function saveQuietHours(input: { door: string; quietStart: string; 
                    updated_by = EXCLUDED.updated_by, updated_at = now()`,
     [owner, input.door, input.quietStart, input.quietEnd, email],
   );
-  revalidatePath("/proactivity");
+  revalidatePath("/quiet-hours-and-delivery");
   return { ok: true };
 }
 
@@ -132,7 +132,7 @@ export async function saveCeilings(input: { door: string } & Ceilings): Promise<
                    updated_by = EXCLUDED.updated_by, updated_at = now()`,
     [owner, input.door, checked.values.eventPerDoorPerDay, checked.values.escalationPerDoorPerDay, checked.values.perOwnerPerDay, email],
   );
-  revalidatePath("/proactivity");
+  revalidatePath("/quiet-hours-and-delivery");
   return { ok: true };
 }
 
@@ -154,7 +154,7 @@ export async function saveBriefLanguage(input: { language: string }): Promise<Sa
      ON CONFLICT (owner) DO UPDATE SET language = EXCLUDED.language, updated_by = EXCLUDED.updated_by, updated_at = now()`,
     [owner, input.language, email],
   );
-  revalidatePath("/proactivity");
+  revalidatePath("/quiet-hours-and-delivery");
   return { ok: true };
 }
 
@@ -189,6 +189,6 @@ export async function saveScheduleHours(input: { schedule: string; hours: number
      DO UPDATE SET hours = EXCLUDED.hours, updated_by = EXCLUDED.updated_by, updated_at = now()`,
     [owner, input.schedule, input.hours, email],
   );
-  revalidatePath("/proactivity");
+  revalidatePath("/quiet-hours-and-delivery");
   return { ok: true };
 }

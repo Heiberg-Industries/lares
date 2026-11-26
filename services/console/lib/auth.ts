@@ -32,7 +32,7 @@ export async function requireMember(): Promise<Member> {
  * existing owner until its individual data/resource policy is integrated and tested. */
 export async function requireConsolePage(): Promise<Member> {
   const member = await requireMember();
-  if (!isConsoleOwner(member)) redirect("/membership");
+  if (!isConsoleOwner(member)) redirect("/your-membership");
   return member;
 }
 export async function requireConsoleMember(): Promise<Member> {

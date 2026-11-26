@@ -11,7 +11,7 @@ vi.mock("../lib/agent-mailbox", () => ({ listAgentUses: async () => [], accountS
 vi.mock("../app/actions/accounts", () => ({ removeAccount: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("next/link", () => ({ default: ({ href, children }: React.ComponentProps<"a">) => <a href={href}>{children}</a> }));
-import AccountsPage from "../app/accounts/page";
+import AccountsPage from "../app/your-accounts/page";
 
 const show = async () => render(await AccountsPage({ searchParams: Promise.resolve({}) }));
 const old = { email: "old@example.com", org: "example", scopeCount: 3, connectedAt: "2026-09-01" };

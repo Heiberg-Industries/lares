@@ -90,7 +90,7 @@ function view(settings: SettingsRowDTO[]): ProactivityView {
 
 async function render(settings: SettingsRowDTO[], agents?: string[]): Promise<string> {
   getProactivityView.mockResolvedValue({ ...view(settings), ...(agents ? { agents } : {}) });
-  const { default: ProactivityPage } = await import("../app/proactivity/page");
+  const { default: ProactivityPage } = await import("../app/quiet-hours-and-delivery/page");
   return renderToStaticMarkup(await ProactivityPage());
 }
 
@@ -103,7 +103,7 @@ beforeEach(() => {
   vi.resetModules();
 });
 
-describe("/proactivity", () => {
+describe("/quiet-hours-and-delivery", () => {
   it("does not offer controls for agents absent from a fresh installation", async () => {
     const html = await render([], ["console-proof"]);
     expect(html).toContain("console-proof");
@@ -191,7 +191,7 @@ describe("/proactivity", () => {
 });
 
 //  — the brief language control, next to the home-timezone line.
-describe("/proactivity — brief language control", () => {
+describe("/quiet-hours-and-delivery — brief language control", () => {
   it("shows the current value and offers all five languages", async () => {
     briefLanguageState.row = { language: "sv" };
     const html = await render([]);
@@ -225,7 +225,7 @@ describe("/proactivity — brief language control", () => {
 });
 
 //  — "when do the agents speak", after Quiet hours.
-describe("/proactivity — when the agents speak", () => {
+describe("/quiet-hours-and-delivery — when the agents speak", () => {
   it("renders after Quiet hours, states the owner's clock, the five-minute/next-slot rule, and the no-second-send rule", async () => {
     const html = await render([]);
 

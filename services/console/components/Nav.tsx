@@ -27,36 +27,36 @@ import { InboxDot } from "./InboxDot";
 import styles from "./AppShell.module.css";
 const main = [
   { href: "/", label: "Home", Icon: HomeIcon },
-  { href: "/waiting", label: "Waiting on you", Icon: Inbox },
+  { href: "/reviews", label: "Waiting on you", Icon: Inbox },
   { href: "/chat", label: "Chat", Icon: MessageSquareText },
   { href: "/agents", label: "Agents", Icon: UsersRound },
-  { href: "/activity", label: "Activity", Icon: History },
+  { href: "/permission-checks", label: "Activity", Icon: History },
   { href: "/members", label: "Members", Icon: UsersRound },
 ];
 // "Connections" is a group: one page for the member's own accounts, one for the shared services.
 const connections = [
-  { href: "/accounts", label: "Your accounts", Icon: UsersRound },
+  { href: "/your-accounts", label: "Your accounts", Icon: UsersRound },
   { href: "/integrations", label: "Integrations", Icon: Plug },
 ];
 const [beforeConnections, afterConnections] = [main.slice(0, 5), main.slice(5)];
 const tools = [
   { href: "/deadlines", label: "Deadlines", Icon: CalendarDays },
-  { href: "/taste", label: "Preferences", Icon: Bookmark },
+  { href: "/saved-preferences", label: "Preferences", Icon: Bookmark },
 ];
 export function Nav({owner}:{owner:boolean}) {
   const pathname = usePathname();
   const theme = useConsoleTheme();
   const [open, setOpen] = useState(false);
   function active(href: string) {
-    if (href === "/activity" && pathname.startsWith("/signals")) return true;
+    if (href === "/permission-checks" && pathname.startsWith("/alerts")) return true;
     if (
       href === "/integrations" &&
-      (pathname === "/voice" || pathname === "/meetings")
+      (pathname === "/writing-style" || pathname === "/meeting-follow-ups")
     )
       return true;
     if (
-      href === "/settings" &&
-      (pathname === "/backup" || pathname === "/proactivity")
+      href === "/general" &&
+      (pathname === "/backups" || pathname === "/quiet-hours-and-delivery")
     )
       return true;
     return href === "/"
@@ -91,12 +91,12 @@ export function Nav({owner}:{owner:boolean}) {
         </> : [
           {href:'/chat',label:'Chat',Icon:MessageSquareText},
           connections[0],
-          {href:'/membership',label:'Membership',Icon:UsersRound},
+          {href:'/your-membership',label:'Membership',Icon:UsersRound},
         ].map(item)}
         {owner && <><p className={styles.groupLabel}>Tools</p>{tools.map(item)}</>}
       </nav>
       <div className={styles.bottom}>
-        {owner && item({ href: "/settings", label: "Settings", Icon: Settings2 })}
+        {owner && item({ href: "/general", label: "Settings", Icon: Settings2 })}
         <form action="/api/auth/logout" method="post">
           <button type="submit" className={`${styles.navItem} ${styles.signOut}`}>
             <LogOut aria-hidden="true" />

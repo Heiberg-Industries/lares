@@ -14,7 +14,7 @@ const provider = process.argv[2];
 if (provider !== 'google' && provider !== 'microsoft') throw new Error('Choose google or microsoft explicitly.');
 const redirect = new URL(consoleRedirect());
 if (redirect.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(redirect.hostname) || redirect.port !== '39114') throw new Error('Register and configure the loopback callback http://127.0.0.1:39114/api/auth/callback.');
-const started = await startSignIn(provider as SignInProvider, '/membership');
+const started = await startSignIn(provider as SignInProvider, '/your-membership');
 const flow = await openFlow(started.cookie);
 if (!flow) throw new Error('Could not create the local sign-in flow.');
 let completed = false;

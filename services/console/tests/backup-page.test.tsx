@@ -37,7 +37,7 @@ function status(over: Partial<BackupStatusDTO> = {}): BackupStatusDTO {
 
 async function render(v: BackupStatusDTO): Promise<string> {
   getBackupStatus.mockResolvedValue(v);
-  const { default: BackupPage } = await import("../app/backup/page");
+  const { default: BackupPage } = await import("../app/backups/page");
   return renderToStaticMarkup(await BackupPage());
 }
 
@@ -46,7 +46,7 @@ beforeEach(() => {
   vi.resetModules();
 });
 
-describe("/backup", () => {
+describe("/backups", () => {
   it("protected: shows the verdict, target, both dates, and no reasons", async () => {
     const html = await render(status({
       state: "protected",

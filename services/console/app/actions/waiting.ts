@@ -17,6 +17,6 @@ export async function decide(input: { id: string; actionId: string }): Promise<D
     return { ok: false, reason: "gone", message: "That item could not be found." };
   }
   const result = await decideWaiting(member, input.id, input.actionId, waitingDeps);
-  revalidatePath("/waiting");
+  revalidatePath("/reviews");
   return result;
 }

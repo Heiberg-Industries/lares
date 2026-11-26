@@ -1,5 +1,5 @@
 /**
- *  — the read layer behind the "When the agents speak" control on `/proactivity`.
+ *  — the read layer behind the "When the agents speak" control on `/quiet-hours-and-delivery`.
  *
  * `sql/001_baseline.sql` holds one row per `(owner, schedule)`: the whole-hour slot list
  * that schedule fires on. The mirror of the kit's defaults and validation lives in

@@ -43,7 +43,7 @@ export function ModelsSection({ view }: { view: GatewayStatusView }) {
       <p className="lares-muted">Where Lares sends its model requests, and whether the gateway is answering. This page changes nothing.</p>
       {view.kind !== "status" ? <Notice error>{WHOLE[view.kind]}</Notice> : <Body status={view.status} usage={view.usage} />}
       <p className="lares-muted">Provider not tested: testing sends a paid request.</p>
-      <Link href="/settings">Check again</Link>
+      <Link href="/general">Check again</Link>
     </section>
   );
 }

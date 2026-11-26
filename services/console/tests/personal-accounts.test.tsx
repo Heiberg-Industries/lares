@@ -13,8 +13,8 @@ vi.mock("../app/actions/accounts", () => ({ removeAccount: m.remove }));
 vi.mock("../app/actions/members", () => ({ signOutEverywhere: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: m.refresh }) }));
 vi.mock("next/link", () => ({ default: ({ href, children }: React.ComponentProps<"a">) => <a href={href}>{children}</a> }));
-import AccountsPage from "../app/accounts/page";
-import MembershipPage from "../app/membership/page";
+import AccountsPage from "../app/your-accounts/page";
+import MembershipPage from "../app/your-membership/page";
 
 const google = { id: "stable-account", connectorId: "google", providerAccount: { label: "owner@example.com" }, generation: 7, status: "ok" };
 const microsoft = { id: "ms-account", connectorId: "microsoft", providerAccount: { label: "work@example.com" }, generation: 2, status: "ok" };
@@ -182,7 +182,7 @@ it("says so when the accounts cannot be read, instead of an empty list", async (
 it("moves the personal accounts off the membership page, leaving a link", async () => {
   render(await MembershipPage());
   expect(m.list).not.toHaveBeenCalled();
-  expect(screen.getByRole("link", { name: "Your accounts" }).getAttribute("href")).toBe("/accounts");
+  expect(screen.getByRole("link", { name: "Your accounts" }).getAttribute("href")).toBe("/your-accounts");
   expect(document.body.textContent).toContain("Private chat is available");
   expect(document.body.textContent).not.toContain("Your personal accounts");
 });

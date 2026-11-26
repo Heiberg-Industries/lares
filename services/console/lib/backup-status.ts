@@ -1,5 +1,5 @@
 /**
- *  — the read layer behind `/backup`.
+ *  — the read layer behind `/backups`.
  *
  * Design decision: the console owns "protected / not protected" because Lares is for non-technical
  * owners, not the command line. This file reads the one table the box's nightly check and monthly

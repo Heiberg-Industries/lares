@@ -52,7 +52,7 @@ export default async function HomePage() {
         )}
         <p className="lares-muted">
           Approval requests from every conversation are in{" "}
-          <Link href="/waiting">Waiting on you</Link>.
+          <Link href="/reviews">Waiting on you</Link>.
         </p>
       </section>
       <div className="lares-stack">
@@ -69,7 +69,7 @@ export default async function HomePage() {
             Recent decisions about what your agents may do.
           </p>
           <PermissionEvents events={events} />
-          <Link href="/activity">View activity →</Link>
+          <Link href="/permission-checks">View activity →</Link>
         </section>
       </div>
     </Page>

@@ -1,5 +1,5 @@
 /**
- *  — the read layer and the pure validation behind `/proactivity`.
+ *  — the read layer and the pure validation behind `/quiet-hours-and-delivery`.
  *
  * The console is the owner's surface for the one gate every proactive message passes
  * (`packages/agent-kit/src/proactivity.ts`): quiet hours per door on the owner's clock,
@@ -567,7 +567,7 @@ async function attempt<T>(what: string, fallback: T, errors: string[], run: () =
   }
 }
 
-/** Everything `/proactivity` renders, in one round of reads. */
+/** Everything `/quiet-hours-and-delivery` renders, in one round of reads. */
 export async function getProactivityView(now: Date = new Date()): Promise<ProactivityView> {
   const owner = ownerId();
   const home = homeTz();

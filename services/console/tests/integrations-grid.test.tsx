@@ -52,8 +52,8 @@ it("counts an applied Notion key, agent access and outside tools in use as enabl
 
 it("puts the writing-style and meetings buttons in the page header", async () => {
   render(await IntegrationsPage());
-  expect(screen.getByRole("link", { name: "Email writing style" }).getAttribute("href")).toBe("/voice");
-  expect(screen.getByRole("link", { name: "Meetings" }).getAttribute("href")).toBe("/meetings");
+  expect(screen.getByRole("link", { name: "Email writing style" }).getAttribute("href")).toBe("/writing-style");
+  expect(screen.getByRole("link", { name: "Meetings" }).getAttribute("href")).toBe("/meeting-follow-ups");
 });
 
 it("renders the header, Enabled before Available, and each card's own status word", async () => {
@@ -65,7 +65,7 @@ it("renders the header, Enabled before Available, and each card's own status wor
     expect.stringContaining("Telegram (bot)"), expect.stringContaining("Model gateway")]);
   expect([...enabled.querySelectorAll(".lares-card-status")].map(e => e.textContent)).toEqual(["Enabled", "Enabled"]);
   expect(within(available).getAllByText("Connect")).toHaveLength(7);
-  expect(within(available).getByRole("link", { name: /Outside tools/ }).getAttribute("href")).toBe("/integrations/outside");
+  expect(within(available).getByRole("link", { name: /Outside tools/ }).getAttribute("href")).toBe("/outside-tools");
 });
 
 it("filters the cards by name as you type, and says when nothing matches", async () => {

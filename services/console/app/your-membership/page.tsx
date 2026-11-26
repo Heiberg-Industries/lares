@@ -12,7 +12,7 @@ export default async function MembershipPage() {
     <PageHeader title="Your membership" />
     <p>Your membership is active. Your current role is {member.role}. New members begin with draft-and-ask automation.</p>
     <p>Private chat is available with agents you have permission to use. Your membership does not give access to other people's conversations, accounts or private files.</p>
-    <p><Link href="/accounts">Your accounts</Link> is where you connect Google or Microsoft and see which agents use them.</p>
+    <p><Link href="/your-accounts">Your accounts</Link> is where you connect Google or Microsoft and see which agents use them.</p>
     <OutsideDiscoverySection memberId={member.id} />
     <PrivateMetadataDeviceSection />
     <Link href="/chat">Open private chat →</Link>

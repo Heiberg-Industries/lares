@@ -1,5 +1,5 @@
 /**
- *  — the read layer behind the brief language control on `/proactivity`.
+ *  — the read layer behind the brief language control on `/quiet-hours-and-delivery`.
  *
  * `BRIEF_LANGUAGES_MIRROR` MIRRORS, does not import, `services/chief-of-staff/lib/brief-settings.ts`'s
  * own `BRIEF_LANGUAGES` — the same "mirrored, not imported" rule `tests/engine-drift.test.ts` states

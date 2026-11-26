@@ -17,7 +17,7 @@ const ERRORS: Record<string, string> = {
 export default async function SignIn({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const q = await searchParams;
   const member = await signedInMember();
-  if (member) redirect(isConsoleOwner(member) ? safeNext(q.next) : "/membership");
+  if (member) redirect(isConsoleOwner(member) ? safeNext(q.next) : "/your-membership");
   const receipt = await openOwnerDiscoveryReceipt((await cookies()).get(OWNER_DISCOVERY_COOKIE)?.value);
   const ownerId = process.env.AGENT_OWNER_USER_ID?.trim();
   const originMatches = !!receipt && receipt.installationOrigin === new URL(consoleRedirect()).origin;

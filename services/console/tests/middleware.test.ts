@@ -31,7 +31,7 @@ describe("console mutation origin boundary", () => {
   });
   it.each(["PUT", "PATCH", "DELETE"])("protects %s too", async method => {
     const middleware = await guard();
-    expect((await middleware(request("/settings", method, null))).status).toBe(403);
+    expect((await middleware(request("/general", method, null))).status).toBe(403);
   });
   it("does not let forwarded headers choose the trusted origin", async () => {
     const middleware = await guard();

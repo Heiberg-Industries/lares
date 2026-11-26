@@ -103,6 +103,6 @@ describe("Models section", () => {
   });
   it("is read-only: a plain link to reload, no form, no button", () => {
     const h = html(view(status()));
-    expect(h).not.toMatch(/<form|<button|method=/i); expect(h).toContain('href="/settings"');
+    expect(h).not.toMatch(/<form|<button|method=/i); expect(h).toContain('href="/general"');
   });
 });

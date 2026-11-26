@@ -22,7 +22,7 @@ export function AddConnectorForm() {
     const r = await addConnector({ name, url, auth, ...(savedId ? { existingId: savedId } : {}) }).catch(() => ({ ok: false as const, message: "Lares could not confirm that. Press Try again.", id: savedId }));
     setBusy(false);
     if (!r.ok) { setError(r.message); if (r.id) setSavedId(r.id); return; }
-    router.push(`/integrations/outside/${r.id}?found=${r.authKind}`);
+    router.push(`/outside-tools/${r.id}?found=${r.authKind}`);
   }
 
   return <form className="lares-stack" onSubmit={submit}>
@@ -35,7 +35,7 @@ export function AddConnectorForm() {
     {error && <Notice tone="error">{error}</Notice>}
     <div className="lares-actions">
       <Button type="submit" disabled={busy}>{savedId && error ? "Try again" : "Continue"}</Button>
-      <Button variant="outline" asChild><Link href="/integrations/outside">Cancel</Link></Button>
+      <Button variant="outline" asChild><Link href="/outside-tools">Cancel</Link></Button>
     </div>
   </form>;
 }

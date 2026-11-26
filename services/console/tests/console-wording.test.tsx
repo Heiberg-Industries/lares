@@ -85,12 +85,12 @@ it("says why the box has a limit and, for the administrator, where to change it"
     <CeilingNotice capacity={{ ceiling: 1, activeCount: 1, approved: true, creationAvailable: false, canChange: true }} />,
   );
   expect(admin).toContain("Open Settings → Agents");
-  expect(admin).toContain('href="/settings"');
+  expect(admin).toContain('href="/general"');
   const member = renderToStaticMarkup(
     <CeilingNotice capacity={{ ceiling: 1, activeCount: 1, approved: true, creationAvailable: false, canChange: false }} />,
   );
   expect(member).toContain("Ask the installation owner to review Settings → Agents");
-  expect(member).not.toContain('href="/settings"');
+  expect(member).not.toContain('href="/general"');
 });
 
 it("explains that instructions and personality are added to a built-in default, and shows it", () => {

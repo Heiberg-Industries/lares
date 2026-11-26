@@ -25,7 +25,7 @@ class, mirrors never edited in place, a taste layer kept separate from the perso
 an agent that must not see personal notes can still see taste. Its §7 called the taste store
 "planned, not yet built". It has since shipped: `packages/taste/src/index.ts` defines its OKF
 vocabulary, `services/console/lib/taste-store.ts` reads and writes it, and
-`services/console/app/taste/page.tsx` is the owner's view of it.
+`services/console/app/saved-preferences/page.tsx` is the owner's view of it.
 
 Gaps found by reading the code for this decision:
 

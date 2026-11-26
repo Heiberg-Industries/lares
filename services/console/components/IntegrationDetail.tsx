@@ -33,7 +33,7 @@ export function IntegrationDetail({ card, rows, board }: { card: IntegrationCard
   const permissions = board ? boardRowsFor(card.id, board) : [];
   return (
     <>
-      <IntegrationHeader card={card} actions={card.id === "notion" ? <Button variant="outline" asChild><Link href="/meetings">Meetings</Link></Button> : undefined} />
+      <IntegrationHeader card={card} actions={card.id === "notion" ? <Button variant="outline" asChild><Link href="/meeting-follow-ups">Meetings</Link></Button> : undefined} />
       {rows.some((r) => r.usageUnavailable) && <p className="lares-muted" role="status">Usage unavailable. Recorded connection activity could not be read.</p>}
       {rows.map((r) => (
         <section key={r.instanceId} className="lares-surface lares-stack" aria-label={several ? r.label : undefined}>

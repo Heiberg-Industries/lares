@@ -16,7 +16,7 @@ it("shows the owner a Connections group with both pages between Activity and Mem
   const side = screen.getAllByRole("navigation")[0];
   const text = [...side.querySelectorAll("a, p")].map(e => e.textContent);
   expect(text.slice(text.indexOf("Activity"), text.indexOf("Members") + 1)).toEqual(["Activity", "Connections", "Your accounts", "Integrations", "Members"]);
-  expect(side.querySelector('a[href="/accounts"]')).toBeTruthy();
+  expect(side.querySelector('a[href="/your-accounts"]')).toBeTruthy();
   expect(side.querySelector('a[href="/integrations"]')).toBeTruthy();
 });
 
@@ -28,7 +28,7 @@ it("shows a member who is not the owner Your accounts and Membership, and no Int
 });
 
 it("marks the right page current, including an integration page and the pages that sit under Integrations", () => {
-  for (const [pathname, label] of [["/accounts", "Your accounts"], ["/integrations", "Integrations"], ["/integrations/notion", "Integrations"], ["/voice", "Integrations"], ["/meetings", "Integrations"]]) {
+  for (const [pathname, label] of [["/your-accounts", "Your accounts"], ["/integrations", "Integrations"], ["/integrations/notion", "Integrations"], ["/writing-style", "Integrations"], ["/meeting-follow-ups", "Integrations"]]) {
     path.current = pathname; cleanup(); render(<Nav owner={true} />);
     expect([...new Set(current())], pathname).toEqual([label]);
   }
