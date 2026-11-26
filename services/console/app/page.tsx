@@ -31,7 +31,7 @@ export default async function HomePage() {
       <Col span={6}>
         <Card>
           <CardHeader>
-            <CardTitle>Waiting for you</CardTitle>
+            <CardTitle role="heading" aria-level={2}>Waiting for you</CardTitle>
             <CardDescription>What your agents have asked you to decide.</CardDescription>
           </CardHeader>
           <Rows label="Waiting for you">
@@ -50,7 +50,7 @@ export default async function HomePage() {
       <Col span={6}>
         <Card>
           <CardHeader>
-            <CardTitle>Alerts</CardTitle>
+            <CardTitle role="heading" aria-level={2}>Alerts</CardTitle>
             <CardDescription>Work that failed and needs a look.</CardDescription>
             <CardAction>
               <Button variant="ghost" size="sm" asChild>

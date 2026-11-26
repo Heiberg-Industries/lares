@@ -27,7 +27,7 @@ export default async function RulesPage() {
       />
       <Card>
         <CardHeader>
-          <CardTitle>Delivery</CardTitle>
+          <CardTitle role="heading" aria-level={2}>Delivery</CardTitle>
           <CardDescription>Turn a whole destination on or off. A change applies as soon as you flip the switch.</CardDescription>
         </CardHeader>
         {"unavailable" in c ? (

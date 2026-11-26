@@ -83,6 +83,6 @@ for (const door of kinds) {
 
 it("says one true sentence: it names what was not done and where the request can be read whole", () => {
   expect(APPROVAL_NOT_SHOWN_WHOLE_SENTENCE).toMatch(/nothing was done/);
-  expect(APPROVAL_NOT_SHOWN_WHOLE_SENTENCE).toMatch(/Waiting on you page in the console/);
+  expect(APPROVAL_NOT_SHOWN_WHOLE_SENTENCE).toMatch(/Reviews page in the console/);
   expect(APPROVAL_NOT_SHOWN_WHOLE_SENTENCE).not.toMatch(/short|cut/i);
 });
