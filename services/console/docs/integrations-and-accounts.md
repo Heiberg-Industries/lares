@@ -1,9 +1,9 @@
 # Connections and accounts (console)
 
-The **Your membership** page (`/your-membership`) lets every admitted member connect, reconnect
-and disconnect their own personal Google or Microsoft work accounts. The installation-wide **Connections** page
-(`/integrations`) remains owner-only. Its legacy mailbox list includes only the configured owner
-principal's unassociated credentials, never other members' associated personal accounts.
+The **Your accounts** page (`/your-accounts`) lets every admitted member connect, reconnect
+and disconnect their own personal Google or Microsoft work accounts. The installation-wide **Integrations** page
+(`/integrations`) remains owner-only. The owner's older mailbox list on **Your accounts** includes only the
+configured owner principal's unassociated credentials, never other members' associated personal accounts.
 
 ## Personal Google consent
 
@@ -125,9 +125,9 @@ on in the Google Cloud project, then runs the draft, Drive and calendar-event pr
 permission and withdraws it at Google afterwards. It prints only booleans and Google's short refusal
 reasons, and stores nothing.
 
-## Models (Settings page)
+## Models (General page)
 
-The **Models** section on Settings is read-only. It shows the address of the model gateway, whether
+The **Models** section on General is read-only. It shows the address of the model gateway, whether
 Lares runs it or it is managed elsewhere, whether it is answering (with the time it was checked), and
 for each purpose (Brain, Writer, Utility, Gate, Embed) whether the gateway serves it, which provider
 and model are behind it where the gateway says, and which agents use it. It reads this once each time
@@ -144,7 +144,7 @@ any other link; the same link saved twice, or a pass that runs twice, never make
 Edits and trashing in Notion follow the clip only while it still waits in the inbox, never after it is
 filed. The database needs a title column and one URL column. Only links are copied, never the pages.
 
-Set it up on the Connections page, in the Clipping card under the Notion key card:
+Set it up on the Notion page under Integrations, in the Clipping card (below the Notion key card):
 
 1. Add the Notion key in the Notion key card above, and share the database with your Lares connection
    in Notion (the three dots, then Connections).
@@ -186,6 +186,6 @@ run it by hand when the pinned Notion API version or the SDK changes.
 ## Not done yet
 
 - Disconnecting an account does not revoke the token at Google.
-- Adding a capability to an agent from this page is done in Edit agent, not on the Connections
+- Adding a capability to an agent from this page is done in Edit agent, not on the Integrations
   page.
 - Account-aware runtime use and managed-agent consent wiring remain pending integration.

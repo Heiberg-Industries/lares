@@ -260,7 +260,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 refused('agent capacity has not been measured and configured');
             const count = readdirSync(o.agentsDir, { withFileTypes: true }).filter(entry => !entry.name.startsWith('.') && (entry.isDirectory() || entry.isSymbolicLink())).length;
             if (count >= ceiling)
-                refused(`this box's agent limit is ${ceiling}; the installation owner can raise it in Settings → Agents after reviewing the RAM estimate, or retire an agent`);
+                refused(`this box's agent limit is ${ceiling}; the installation owner can raise it in General → Agents after reviewing the RAM estimate, or retire an agent`);
         }
         else {
             if (!hasPath(path) || previous?.status === 'retired')

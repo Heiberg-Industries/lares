@@ -16,11 +16,11 @@ Built by CI only (`.github/workflows/sync-jobs-image.yml`), never on the box.
 builds and scans it. The installer's rendered stack (`/opt/lares/compose.yaml`) has no `notion-sync`
 or `atlas-sync` service. The keeper can run `notion-sync` as its own container, from a separate
 `compose.lares-services.yaml` it renders itself, pinned to the release's digest, but only while the
-owner has switched it on in the console (Settings, Notion, Notion sync) and accepted a preview of
+owner has switched it on in the console (Integrations, Notion, People sync) and accepted a preview of
 exactly the current settings, and the shared Notion key is applied. That managed service runs only
 the passes that need no vault (meeting attendees and People records); it is a consumer of the
 shared Notion key, so applying, replacing or disconnecting the key restarts or stops it. `atlas-sync`
 is never started by the keeper. An operator who wants the vault passes, or `atlas-sync`, runs the image
 themselves, with the vault, the database and the tokens each job needs, pinned by the digest in the
-release file. (The console's "Notion sync" status, under Connections, reads what a running notion-sync
+release file. (The console's document sync status, on the Notion page under Integrations, reads what a running notion-sync
 recorded; on an installation without one it says that no sync run is recorded.)
