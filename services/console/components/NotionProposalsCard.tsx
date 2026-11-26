@@ -1,5 +1,8 @@
 "use client";
+import { Notice, Row, Rows } from "@lares/ui/patterns";
+import { Badge } from "@lares/ui/primitives/badge";
 import { Button } from "@lares/ui/primitives/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { useState, useTransition } from "react";
 import type { NotionProposalDTO, FrozenDocDTO } from "../lib/notion-proposals";
 import { approveConsequence, rejectConsequence } from "@lares/agent-box/lib/notion-proposals.js";
@@ -42,13 +45,12 @@ function ProposalRow(p: { proposal: NotionProposalDTO; onResolved: (id: number) 
   const isCreate = p.proposal.kind === "create";
 
   return (
-    <div className="card lares-control-card">
-      <div className="mono lares-small lares-status-warning">
-        {isCreate && <span className="lares-status-muted">NEW FILE </span>}
-        {p.proposal.vaultPath} <span className="lares-status-muted">· {p.proposal.state} · {p.proposal.createdAt.slice(0, 10)}</span>
-      </div>
-      <pre className="lares-pre lares-small lares-row-actions">{p.proposal.preview}</pre>
-      <p className="lares-muted lares-operational-note">
+    <Row
+      title={<><span className="mono">{p.proposal.vaultPath}</span>{isCreate && <> <Badge variant="info">New file</Badge></>}</>}
+      description={<>{p.proposal.state} · {p.proposal.createdAt.slice(0, 10)}</>}
+    >
+      <pre className="lares-pre lares-small">{p.proposal.preview}</pre>
+      <p className="lares-muted">
         {isCreate && "This file does not exist in the vault yet. "}
         Approve: {approveConsequence(p.proposal)}. Reject: {rejectConsequence(p.proposal)}.
       </p>
@@ -59,9 +61,9 @@ function ProposalRow(p: { proposal: NotionProposalDTO; onResolved: (id: number) 
         <Button type="button" variant="outline" disabled={pending} onClick={() => act("reject")}>
           Reject
         </Button>
-        {err && <span title={err} className="lares-status-error">!</span>}
       </div>
-    </div>
+      {err && <Notice tone="error">{err}</Notice>}
+    </Row>
   );
 }
 
@@ -75,52 +77,53 @@ export function NotionProposalsCard(p: { proposals: NotionProposalDTO[]; frozen:
 
   return (
     <>
-      <h2>
-        Notion proposals {proposals.length > 0 && `(${proposals.length})`}
-      </h2>
-      <p className="lares-muted lares-operational-note">
-        Changes made in Notion, awaiting your approve/reject — edits to files that exist, and
-        files Notion wants to add (marked NEW FILE). What each choice means is stated on the
-        row: rejecting does one of three different things depending on which side owns the
-        document. Either way the write happens on the sync&apos;s next tick, not immediately.
-      </p>
-      {proposals.length === 0 ? (
-        <p className="lares-muted lares-operational-note">No open proposals.</p>
-      ) : (
-        proposals.map((proposal) => (
-          <ProposalRow key={proposal.id} proposal={proposal} onResolved={resolve} />
-        ))
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle role="heading" aria-level={2}>
+            Notion proposals {proposals.length > 0 && `(${proposals.length})`}
+          </CardTitle>
+          <CardDescription>
+            Changes made in Notion that wait for your yes or no: edits to files that exist, and
+            files Notion wants to add (marked New file). What each choice means is stated on each
+            one: rejecting does one of three different things depending on which side owns the
+            document. Either way the change is written the next time the sync runs, not immediately.
+          </CardDescription>
+        </CardHeader>
+        {proposals.length === 0 ? (
+          <CardContent><p className="lares-muted">No open proposals.</p></CardContent>
+        ) : (
+          <Rows label="Notion proposals">
+            {proposals.map((proposal) => (
+              <ProposalRow key={proposal.id} proposal={proposal} onResolved={resolve} />
+            ))}
+          </Rows>
+        )}
+      </Card>
 
-      <h2>
-        Frozen {p.frozen.length > 0 && `(${p.frozen.length})`}
-      </h2>
-      {p.frozen.length === 0 ? (
-        <p className="lares-muted lares-operational-note">Nothing frozen.</p>
-      ) : (
-        <>
-          <p className="lares-muted lares-operational-note">
-            Conflicts nothing here can resolve automatically — a human picks a side, on the box, with
-            the daemon quiesced. <code>--keep md</code> overwrites the Notion page from the vault;{" "}
-            <code>--keep notion</code> queues a proposal you still approve.
-          </p>
-          <p className="lares-muted lares-operational-note">
-            {NOTION_RESOLVE_GUIDANCE}
-          </p>
-          <div className="lares-table-scroll"><table className="card lares-operational-table">
-            <thead><tr><th>Path</th><th>Reason</th><th>Frozen</th></tr></thead>
-            <tbody>
-              {p.frozen.map((row) => (
-                <tr key={row.vaultPath}>
-                  <td className="mono">{row.vaultPath}</td>
-                  <td className="lares-status-muted">{row.reason ?? "—"}</td>
-                  <td className="lares-status-muted">{row.frozenAt.slice(0, 10)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table></div>
-        </>
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle role="heading" aria-level={2}>
+            Frozen {p.frozen.length > 0 && `(${p.frozen.length})`}
+          </CardTitle>
+          {p.frozen.length > 0 && (
+            <CardDescription>
+              Conflicts that cannot be settled from this page. Someone has to pick a side on the
+              server, with the sync stopped. <code>--keep md</code> overwrites the Notion page from the vault;{" "}
+              <code>--keep notion</code> queues a proposal you still approve. {NOTION_RESOLVE_GUIDANCE}
+            </CardDescription>
+          )}
+        </CardHeader>
+        {p.frozen.length === 0 ? (
+          <CardContent><p className="lares-muted">Nothing frozen.</p></CardContent>
+        ) : (
+          <Rows label="Frozen documents">
+            {p.frozen.map((row) => (
+              <Row key={row.vaultPath} title={<span className="mono">{row.vaultPath}</span>}
+                description={<>{row.reason ?? "No reason recorded"} · frozen {row.frozenAt.slice(0, 10)}</>} />
+            ))}
+          </Rows>
+        )}
+      </Card>
     </>
   );
 }

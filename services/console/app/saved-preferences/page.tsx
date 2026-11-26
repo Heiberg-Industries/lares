@@ -1,8 +1,9 @@
 import { Input } from "@lares/ui/primitives/input";
 import { Select } from "@lares/ui/primitives/select";
 import { requireConsolePage } from "../../lib/auth";
-import { EmptyState, PageHeader, StatusBadge, Page } from "@lares/ui/patterns";
+import { EmptyState, Field, Notice, PageHeader, StatusBadge, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { TASTE_DOMAINS, type TasteDomain } from "@lares/taste";
 
 import { listAll, type StoredEntry } from "../../lib/taste-store";
@@ -47,15 +48,8 @@ function Facet({
   value: string;
 }) {
   return (
-    <div className="lares-field-label">
-      <label htmlFor={`taste-${name}`}>
-        {label}
-      </label>
-      <Select
-        id={`taste-${name}`}
-        name={name}
-        defaultValue={value}
-      >
+    <Field label={label}>
+      <Select name={name} defaultValue={value}>
         <option value="">all</option>
         {options.map((o) => (
           <option key={o} value={o}>
@@ -63,7 +57,7 @@ function Facet({
           </option>
         ))}
       </Select>
-    </div>
+    </Field>
   );
 }
 
@@ -77,10 +71,7 @@ function FilterBar({
   everything: StoredEntry[];
 }) {
   return (
-    <form
-      method="get"
-      className="card lares-inline-form lares-preferences-filter"
-    >
+    <form method="get" className="lares-inline-form">
       <Facet
         name="list"
         label="List"
@@ -99,30 +90,15 @@ function FilterBar({
         options={optionsFor(everything, "country")}
         value={filters.country}
       />
-      <div className="lares-field-label">
-        <label htmlFor="taste-q">
-          Name contains
-        </label>
-        <Input
-          id="taste-q"
-          name="q"
-          defaultValue={filters.q}
-          placeholder="Search names"
-        />
-      </div>
-      <div className="lares-field-label">
-        <label htmlFor="taste-sort">
-          Sort
-        </label>
-        <Select
-          id="taste-sort"
-          name="sort"
-          defaultValue={filters.sort}
-        >
+      <Field label="Name contains">
+        <Input name="q" defaultValue={filters.q} placeholder="Search names" />
+      </Field>
+      <Field label="Sort">
+        <Select name="sort" defaultValue={filters.sort}>
           <option value="navn">name</option>
           <option value="nyeste">newest first</option>
         </Select>
-      </div>
+      </Field>
       <Button type="submit" variant="outline">Show</Button>
       {isFiltered(filters) && (
         <Button variant="ghost" asChild><a href="/saved-preferences">Reset</a></Button>
@@ -156,64 +132,69 @@ export default async function TastePage({
   const matching = TASTE_DOMAINS.reduce((n, d) => n + shown[d].length, 0);
 
   return (
-    <Page className="lares-operational">
+    <Page>
       <PageHeader
-        title="Preferences"
+        title="Saved preferences"
         description="Places, music and preferences your agents can draw on."
       />
-      <p className="lares-muted lares-operational-intro">
+      <p className="lares-note">
         Your saved preferences live on this installation. The console writes
         them; agents can read them. Nothing syncs automatically.
       </p>
 
-      <h2>
-        What is saved
-      </h2>
-      <p className="lares-muted lares-operational-intro">
-        {filtered
-          ? `${matching} of ${total} entries`
-          : `${total} entries`}
-        . <StatusBadge>New</StatusBadge> or{" "}
-        <StatusBadge>Changed</StatusBadge> means touched by an import in
-        the last {FRESH_DAYS} days.
-      </p>
-
-      {total > 0 && <FilterBar filters={filters} everything={everything} />}
-
-      {total === 0 && (
+      {total === 0 ? (
         <EmptyState title="Nothing saved yet">
           Add a list or import saved places to give your agents preferences they can read.
         </EmptyState>
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={2}>What is saved</CardTitle>
+            <CardDescription>
+              {filtered
+                ? `${matching} of ${total} entries`
+                : `${total} entries`}
+              . <StatusBadge>New</StatusBadge> or{" "}
+              <StatusBadge>Changed</StatusBadge> means touched by an import in
+              the last {FRESH_DAYS} days.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <FilterBar filters={filters} everything={everything} />
+          </CardContent>
+        </Card>
       )}
 
       {filtered && matching === 0 && (
-        <p className="lares-muted lares-operational-intro">
+        <Notice>
           No entries match these filters. {total} saved in total.
-        </p>
+        </Notice>
       )}
 
       {total > 0 && TASTE_DOMAINS.map((domain) => (
-        <section key={domain} className="lares-preferences-domain">
-          <h3 className="lares-domain-title">
-            {domain}{" "}
-            <span className="lares-muted">
-              ·{" "}
-              {filtered
-                ? `${shown[domain].length} of ${store[domain].length}`
-                : store[domain].length}
-            </span>
-          </h3>
-          <p className="lares-muted lares-operational-intro">
-            {DOMAIN_BLURB[domain]}
-          </p>
+        <Card key={domain}>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={3}>
+              {domain}{" "}
+              <span className="lares-muted">
+                ·{" "}
+                {filtered
+                  ? `${shown[domain].length} of ${store[domain].length}`
+                  : store[domain].length}
+              </span>
+            </CardTitle>
+            <CardDescription>{DOMAIN_BLURB[domain]}</CardDescription>
+          </CardHeader>
           {shown[domain].length === 0 ? (
-            <p className="lares-muted lares-operational-intro">
-              {store[domain].length === 0
-                ? "Nothing saved yet"
-                : "Nothing matches these filters"}
-            </p>
+            <CardContent>
+              <span className="lares-muted">
+                {store[domain].length === 0
+                  ? "Nothing saved yet"
+                  : "Nothing matches these filters"}
+              </span>
+            </CardContent>
           ) : (
-            <div className="lares-table-scroll"><table className="card lares-operational-table">
+            <div className="lares-table-scroll"><table>
               <thead>
                 <tr>
                   <th>Name</th>
@@ -237,50 +218,54 @@ export default async function TastePage({
               </tbody>
             </table></div>
           )}
-        </section>
+        </Card>
       ))}
       <details className="lares-disclosure" open={total === 0}>
-        <summary>Add or import preferences</summary>{" "}
-        <h2>
-          Google Maps lists
-        </h2>
-        <p className="lares-muted lares-operational-intro">
-          Download your saved lists from Google Takeout and import the CSV.
-          Coordinates are read from the links locally. Importing the same list
-          again updates its entries.
-        </p>
-        <TakeoutImport />
-        <h2>
-          Paste a list
-        </h2>
-        <PasteImport />
+        <summary>Add or import preferences</summary>
+        <div className="lares-stack">
+          <section className="lares-stack">
+            <h2 className="lares-section-title">Google Maps lists</h2>
+            <p className="lares-note">
+              Download your saved lists from Google Takeout and import the CSV.
+              Coordinates are read from the links locally. Importing the same list
+              again updates its entries.
+            </p>
+            <TakeoutImport />
+          </section>
+          <section className="lares-stack">
+            <h2 className="lares-section-title">Paste a list</h2>
+            <PasteImport />
+          </section>
+        </div>
       </details>
       <details className="lares-disclosure">
-        <summary>Maintain saved places</summary>{" "}
-        <h2>
-          Fill in city and country
-        </h2>
-        <p className="lares-muted lares-operational-intro">
-          Derive city and country from saved coordinates offline. New imports
-          receive them automatically. Your manual edits are preserved.
-        </p>
-        <DerivePlaceNames />
-        <h2>
-          Set a list's country
-        </h2>
-        <p className="lares-muted lares-operational-intro">
-          Set the country on older lists without importing their CSV again.
-          Other fields stay as they are.
-        </p>
-        <ListCountry lists={optionsFor(everything, "list")} />
-        <h2>
-          Check coordinates
-        </h2>
-        <p className="lares-muted lares-operational-intro">
-          Compare each saved pin with its source link. A distant pin may point
-          to a place with the same name in another city; review it here.
-        </p>
-        <PinAudit />
+        <summary>Maintain saved places</summary>
+        <div className="lares-stack">
+          <section className="lares-stack">
+            <h2 className="lares-section-title">Fill in city and country</h2>
+            <p className="lares-note">
+              Derive city and country from saved coordinates offline. New imports
+              receive them automatically. Your manual edits are preserved.
+            </p>
+            <DerivePlaceNames />
+          </section>
+          <section className="lares-stack">
+            <h2 className="lares-section-title">Set a list&apos;s country</h2>
+            <p className="lares-note">
+              Set the country on older lists without importing their CSV again.
+              Other fields stay as they are.
+            </p>
+            <ListCountry lists={optionsFor(everything, "list")} />
+          </section>
+          <section className="lares-stack">
+            <h2 className="lares-section-title">Check coordinates</h2>
+            <p className="lares-note">
+              Compare each saved pin with its source link. A distant pin may point
+              to a place with the same name in another city; review it here.
+            </p>
+            <PinAudit />
+          </section>
+        </div>
       </details>
     </Page>
   );

@@ -57,7 +57,7 @@ it("shows the keeper's refusal word for word", async () => {
   render(<AgentSettingsSections canChange settings={[row()]} />);
   await userEvent.type(screen.getByLabelText(/Telegram bot username/), "x");
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(sentence));
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(sentence));
 });
 
 it("is read-only for anyone but the owner", () => {

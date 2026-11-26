@@ -55,6 +55,7 @@ html[data-lares="console"] {
   --lares-control-height: 32px;
   --lares-control-height-sm: 28px;
   --lares-control-text: 13px;
+  --lares-short-field-width: 6rem;
   --lares-switch-width: 34px;
   --lares-switch-height: 20px;
   --lares-row-height: 56px;

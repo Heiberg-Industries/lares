@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AgentAvatar, PageHeader } from "@lares/ui/patterns";
+import { AgentAvatar, Notice, PageHeader } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Textarea } from "@lares/ui/primitives/textarea";
 import * as Menu from "@lares/ui/primitives/dropdown-menu";
@@ -119,7 +119,7 @@ export function Chat({ name, memberId, agents = [] }: {
     const storage = tabStorage();
     setBinding({ key: storageKey, session: storage ? readChatSession(storage, storageKey) : null, generation: 0 });
   }, [storageKey]);
-  if (binding?.key !== storageKey) return <p role="status">Opening chat…</p>;
+  if (binding?.key !== storageKey) return <Notice tone="working">Opening chat…</Notice>;
   return <ChatSession
     key={`${storageKey}:${binding.generation}`}
     name={name}
@@ -359,7 +359,7 @@ function ChatSession({
   }
 
   return (
-    <div>
+    <div className="lares-stack lares-chat">
       <PageHeader
         title="Chat"
         description="Talk things through. Your agents are here."
@@ -388,14 +388,14 @@ function ChatSession({
           </Menu.Trigger>
           <Menu.Portal>
             <Menu.Content
-              className="lares-agent-menu"
+              className="lares-menu"
               align="start"
               sideOffset={6}
             >
               {(agents.length ? agents : [identity]).map((a) => (
                 <Menu.Item
                   key={a.name}
-                  className="lares-agent-option"
+                  className="lares-menu-item lares-agent-option"
                   onSelect={() =>
                     router.push(`/chat/${encodeURIComponent(a.name)}`)
                   }
@@ -490,17 +490,9 @@ function ChatSession({
           Jump to latest ↓
         </Button>
       )}
-      {answerError ? (
-        <p role="alert" className="mono lares-chat-note lares-status-error">
-          {answerError}
-        </p>
-      ) : null}
+      {answerError ? <Notice error>{answerError}</Notice> : null}
 
-      {composer.say ? (
-        <p className="mono lares-chat-note lares-status-muted">
-          {composer.say}
-        </p>
-      ) : null}
+      {composer.say ? <p className="lares-chat-note">{composer.say}</p> : null}
       {/* A conversation that is over or broken is not retried: the way on is a new one. An agent
           that is not running is the one case where a new conversation would not help. */}
       {unavailable && notRunningText === null ? (
@@ -509,9 +501,7 @@ function ChatSession({
         </Button>
       ) : null}
       {preparingFirstSession ? (
-        <p role="status" className="mono lares-chat-note lares-status-muted">
-          Preparing your conversation. Your draft is saved.
-        </p>
+        <Notice tone="working">Preparing your conversation. Your draft is saved.</Notice>
       ) : null}
 
       {agent.messages.length === 0 && (

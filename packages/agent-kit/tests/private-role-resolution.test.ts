@@ -19,7 +19,7 @@ vi.mock('../src/catalogue.js',async original=>({...await original<typeof import(
 vi.mock('../../../services/chief-of-staff/lib/outside-tools.js',()=>({acceptedOutsideTools:fake.outside,runOutsideTool:vi.fn(),requestOutsideApproval:vi.fn(),respondOutsideApproval:vi.fn()}));
 vi.mock('../../../services/chief-of-staff/catalogue/index.js',()=>({CATALOGUE:Object.fromEntries(['fixture','gmail_accounts','gmail_read','gmail_search'].map(name=>[name,{capability:'fixture',tool:{description:name==='fixture'?'OWNER_TOOL_CANARY':'Personal mail read',inputSchema:{type:'object'},execute:fake.source}}]))}));
 vi.mock('../../../services/creative/catalogue/index.js',()=>({CATALOGUE:Object.fromEntries(['fixture','gmail_accounts','gmail_read','gmail_search'].map(name=>[name,{capability:'fixture',tool:{description:'OWNER_TOOL_CANARY',inputSchema:{type:'object'},execute:fake.source}}]))}));
-vi.mock('../../../services/chief-of-staff/lib/definition.js',()=>({thisAgent:fake.definition,roleMdPath:()=>fileURLToPath(new URL('../templates/chief-of-staff/role.md',import.meta.url))}));
+vi.mock('../../../services/chief-of-staff/lib/definition.js',()=>({thisAgent:fake.definition,withSwitchesNow:async(loaded:{definition:unknown})=>loaded.definition,roleMdPath:()=>fileURLToPath(new URL('../templates/chief-of-staff/role.md',import.meta.url))}));
 vi.mock('../../../services/creative/lib/definition.js',()=>({thisAgent:fake.definition,roleMdPath:()=>fileURLToPath(new URL('../templates/creative/role.md',import.meta.url))}));
 vi.mock('../../../services/chief-of-staff/lib/connections.js',()=>({readConnections:fake.connections,connectionsMarkdown:()=> 'OWNER_CONNECTION_CANARY'}));
 vi.mock('../../../services/chief-of-staff/lib/owner-clock.js',()=>({ownerTz:fake.clock}));

@@ -107,7 +107,7 @@ describe("/quiet-hours-and-delivery", () => {
   it("does not offer controls for agents absent from a fresh installation", async () => {
     const html = await render([], ["console-proof"]);
     expect(html).toContain("console-proof");
-    expect(html).not.toContain("travel-agent —");
+    expect(html).not.toContain("Do not disturb: travel-agent");
     expect(html).not.toContain("Travel Agent&#x27;s trip store");
   });
 
@@ -123,7 +123,8 @@ describe("/quiet-hours-and-delivery", () => {
     // The knobs, in the brief's order.
     expect(html).toContain("Do not disturb");
     expect(html).toContain("Quiet hours");
-    expect(html).toContain("Ceilings");
+    expect(html).toContain("Limits");
+    expect(html).not.toContain("Ceilings");
     expect(html).toContain("Today");
     expect(html).toContain("Last 50 decisions");
     expect(html).toContain("(1 recorded)");
@@ -133,17 +134,25 @@ describe("/quiet-hours-and-delivery", () => {
     expect(html).toContain("slack-profile");
     expect(html).toContain("OWNER_HOME_TZ");
 
-    // Stored values are the shown values; the engine maxima are printed beside the ceilings.
+    // Stored values are the shown values; the highest allowed number is printed beside each limit.
     expect(html).toContain('value="22:00"');
     expect(html).toContain('value="4"');
-    expect(html).toContain("engine max 20");
-    expect(html).toContain("engine max 3");
-    expect(html).toContain("engine max 30");
+    expect(html).toContain("Highest allowed: 20.");
+    expect(html).toContain("Highest allowed: 3.");
+    expect(html).toContain("Highest allowed: 30.");
     // Nothing disagrees with the engine, so nothing is annotated.
     expect(html).not.toContain("the engine uses");
 
-    // Per-agent DND: the travel agent's row is on.
-    expect(html).toMatch(/travel-agent — ON/);
+    // Per-agent DND: the travel agent's switch is on, and the one for every agent is off.
+    const dndSwitch = (label: string) => html.match(new RegExp(`<button[^>]*aria-label="Do not disturb: ${label}"[^>]*>`))?.[0] ?? "";
+    expect(dndSwitch("travel-agent")).toContain('aria-checked="true"');
+    expect(dndSwitch("Every agent")).toContain('aria-checked="false"');
+
+    // Today's two columns are explained in plain words, with the same meaning as before.
+    expect(html).toContain("Held back means the message was dropped and will not be sent later.");
+    expect(html).toContain("Waiting means it was put off, and is looked at again when quiet hours end or a new day starts.");
+    // The ledger says the decision in the same words as the columns, not the stored word.
+    expect(html).toMatch(/data-variant="warning"[^>]*>(<span[^>]*><\/span>)?Waiting/);
 
     // Doors are offered by their real ids (the gate matches the door id exactly).
     expect(html).toContain("Telegram · 123456");
@@ -231,7 +240,7 @@ describe("/quiet-hours-and-delivery — when the agents speak", () => {
 
     expect(html).toContain("When the agents speak");
     expect(html.indexOf("Quiet hours")).toBeLessThan(html.indexOf("When the agents speak"));
-    expect(html.indexOf("When the agents speak")).toBeLessThan(html.indexOf("Ceilings"));
+    expect(html.indexOf("When the agents speak")).toBeLessThan(html.indexOf("Limits"));
 
     // The owner's clock (this view's is America/New_York).
     expect(html).toMatch(/When the agents speak[\s\S]*America\/New_York/);
@@ -246,7 +255,7 @@ describe("/quiet-hours-and-delivery — when the agents speak", () => {
   // The schedule-hours section only — "· default" also marks a door's quiet-hours row when
   // nothing is stored for it, so counting over the WHOLE page would count someone else's markers.
   const scheduleSection = (html: string): string =>
-    html.slice(html.indexOf("When the agents speak"), html.indexOf("Ceilings"));
+    html.slice(html.indexOf("When the agents speak"), html.indexOf("Limits"));
 
   it("shows the five owner-facing schedules with their default hours, marked as defaults", async () => {
     const html = await render([]);
@@ -265,8 +274,10 @@ describe("/quiet-hours-and-delivery — when the agents speak", () => {
     expect((section.match(/· default/g) ?? []).length).toBe(5);
     expect(section).toContain('value="8"'); // morning-brief
     expect(section).toContain('value="20"'); // evening-brief
-    expect(section).toContain('value="9, 17"'); // digest
-    expect(section).toContain('value="9, 13, 17"'); // track-routing
+    // A schedule with several hours has one box per hour, in order.
+    const boxes = (label: string) => [...section.matchAll(new RegExp(`<input[^>]*aria-label="${label} hour \\d"[^>]*>`, "g"))].map((m) => /value="([^"]*)"/.exec(m[0])?.[1]);
+    expect(boxes("Digest")).toEqual(["9", "17"]);
+    expect(boxes("track routing")).toEqual(["9", "13", "17"]);
   });
 
   it("a stored hour overrides the default and drops the default marker for that row only", async () => {

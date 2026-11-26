@@ -89,3 +89,22 @@ export async function getPromptCacheLine(agent: string): Promise<string | null> 
     return null;
   }
 }
+
+/** What an agent is doing, as far as the page was told. `unknown` when its state could not be read. */
+export type AgentStatus = "retired" | "not-started" | "changes-waiting" | "stopped" | "starting" | "running" | "unknown";
+
+/** The one status shown for an agent on its page, from the state the server reports (the same
+ *  fields the edit page reads). It never says "running" unless the server says the agent is
+ *  started and answering. */
+export function agentStatus(
+  runtime: { pending: boolean; running?: boolean | null; healthy?: boolean | null } | undefined,
+  definitionStatus: string | undefined,
+  everStarted: boolean,
+): AgentStatus {
+  if (definitionStatus === "retired") return "retired";
+  if (runtime?.pending) return "changes-waiting";
+  if (runtime?.running === false) return everStarted ? "stopped" : "not-started";
+  if (runtime?.running && runtime.healthy === false) return "starting";
+  if (runtime?.running && runtime.healthy) return "running";
+  return everStarted ? "unknown" : "not-started";
+}

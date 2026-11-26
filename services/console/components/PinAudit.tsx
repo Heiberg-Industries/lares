@@ -1,5 +1,7 @@
 "use client";
 import { Button } from "@lares/ui/primitives/button";
+import { Card } from "@lares/ui/primitives/card";
+import { Notice } from "@lares/ui/patterns";
 import { useState, useTransition } from "react";
 
 import { repairContradictedPins, type PinRepairResult } from "../app/actions/taste";
@@ -31,7 +33,7 @@ export function PinAudit() {
     });
 
   return (
-    <div className="lares-row-actions">
+    <div className="lares-stack">
       <div className="lares-actions">
         <Button type="button" variant="outline" disabled={pending} onClick={() => run(true)}>
           {pending ? "Checking…" : "Find misplaced pins"}
@@ -43,21 +45,19 @@ export function PinAudit() {
         )}
       </div>
 
-      {error && (
-        <p className="mono lares-small lares-status-warning lares-row-actions">{error}</p>
-      )}
+      {error && <Notice error>{error}</Notice>}
 
       {result !== null && (
-        <div className="lares-row-actions">
-          <p className="mono lares-small">
+        <>
+          <Notice tone={result.found === 0 || repaired ? "success" : "needs-you"}>
             {result.found === 0
               ? "No saved pins conflict with their source links."
               : repaired
                 ? `Corrected ${result.exact} of ${result.found} with confirmed matches. ${result.kept} stayed unchanged because no better location was confirmed (${result.searches} lookups).`
                 : `${result.found} pins are far from their source links. Nothing has changed yet.`}
-          </p>
+          </Notice>
           {result.rows.length > 0 && (
-            <div className="lares-table-scroll"><table className="mono lares-small">
+            <Card><div className="lares-table-scroll"><table className="mono lares-small">
               <tbody>
                 {result.rows.map((row) => (
                   <tr key={`${row.sourceList}/${row.name}`}>
@@ -70,9 +70,9 @@ export function PinAudit() {
                   </tr>
                 ))}
               </tbody>
-            </table></div>
+            </table></div></Card>
           )}
-        </div>
+        </>
       )}
     </div>
   );

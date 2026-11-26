@@ -1,5 +1,6 @@
 "use client";
 import { Button } from "@lares/ui/primitives/button";
+import { Notice } from "@lares/ui/patterns";
 import { useState, useTransition } from "react";
 
 import { deriveMissingPlaceNames, type PlaceNameBackfill } from "../app/actions/taste";
@@ -12,7 +13,7 @@ export function DerivePlaceNames() {
   const [pending, start] = useTransition();
 
   return (
-    <div className="lares-row-actions">
+    <div className="lares-stack">
       <Button
         type="button"
         variant="outline"
@@ -30,13 +31,13 @@ export function DerivePlaceNames() {
       >
         {pending ? "Filling in…" : "Fill in city and country"}
       </Button>
-      {error && <p className="mono lares-small lares-status-error lares-row-actions">{error}</p>}
+      {error && <Notice error>{error}</Notice>}
       {result && (
-        <p className="mono lares-small lares-status-success lares-row-actions">
+        <Notice tone="success">
           {result.named} received a city and country
           {result.alreadyNamed > 0 && `, ${result.alreadyNamed} already had them`}
           {result.noPin > 0 && `, ${result.noPin} have no coordinates`}.
-        </p>
+        </Notice>
       )}
     </div>
   );

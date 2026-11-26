@@ -1,5 +1,7 @@
 import { requireConsolePage } from "../../../../lib/auth";
-import { PageHeader, Page } from "@lares/ui/patterns";
+import Link from "next/link";
+import { Notice, PageHeader, Page } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
 import { builderData, editedOutsideTheConsole } from "../../../../lib/builder";
 import { DefinitionForm } from "../../../../components/DefinitionForm";
 export const dynamic = "force-dynamic";
@@ -18,10 +20,14 @@ export default async function EditAgentPage({
         <PageHeader
           title={`Edit ${name}`}
           description="Identity, instructions, access and schedules."
-          actions={<a href={`/agents/${encodeURIComponent(name)}`}>Agent overview</a>}
+          actions={
+            <Button variant="outline" asChild>
+              <Link href={`/agents/${encodeURIComponent(name)}`}>Agent overview</Link>
+            </Button>
+          }
         />
         {outside && (
-          <p className="lares-muted">
+          <Notice>
             Changed outside the console,{" "}
             {new Date(outside.at).toLocaleDateString("en-GB", {
               day: "numeric",
@@ -29,24 +35,24 @@ export default async function EditAgentPage({
               timeZone: "UTC",
             })}
             .
-          </p>
+          </Notice>
         )}
         <DefinitionForm {...data} />
       </Page>
     );
   } catch (error) {
     return (
-      <Page width="narrow" className="lares-settings">
+      <Page>
         <PageHeader
           title={`Edit ${name}`}
           description="Identity, instructions, access and schedules."
         />
-        <p role="alert">
-          The builder is unavailable:{" "}
+        <Notice error>
+          This agent’s settings could not be loaded:{" "}
           {error instanceof Error
             ? error.message
-            : "Could not load keeper state."}
-        </p>
+            : "The server did not answer."}
+        </Notice>
       </Page>
     );
   }

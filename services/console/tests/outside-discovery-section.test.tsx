@@ -43,7 +43,7 @@ it('lists discovery-only account history as reviewable and retains removal for i
   render(<OutsideDiscoverySection memberId="member-a"/>);
   await screen.findByText('A completed discovery is pending review; no active saved revision is available.');
   expect((screen.getByRole('button',{name:'Review connection'}) as HTMLButtonElement).disabled).toBe(false);
-  expect(screen.getByRole('button',{name:'Stop use and remove held credential'})).toBeTruthy();
+  expect(screen.getByRole('button',{name:'Stop use and remove stored credential'})).toBeTruthy();
 });
 
 it('labels a staged replacement as pending Apply, separately from completed discovery review',async()=>{
@@ -62,10 +62,10 @@ it('removes held credential material only for the selected exact account generat
   actions.targets.mockResolvedValueOnce([held]).mockResolvedValueOnce([removed]);
   actions.remove.mockResolvedValue({removed:true,generation:5});
   render(<OutsideDiscoverySection memberId="member-a"/>);
-  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove held credential'}));
-  await screen.findByText('Keeper confirmed that use is stopped and the held credential material is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.');
+  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove stored credential'}));
+  await screen.findByText('Lares confirmed that use is stopped and the stored credential is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.');
   expect(actions.remove).toHaveBeenCalledWith({accountId,agentName:'worker',connectionName:'connector',expectedGeneration:4});
-  expect(screen.queryByRole('button',{name:'Stop use and remove held credential'})).toBeNull();
+  expect(screen.queryByRole('button',{name:'Stop use and remove stored credential'})).toBeNull();
 });
 
 it.each(['normal response','uncertain response reconciliation'] as const)('clears only matching recovery after %s so reload can reconnect',async resultPath=>{
@@ -83,8 +83,8 @@ it.each(['normal response','uncertain response reconciliation'] as const)('clear
   sessionStorage.setItem(recoveryKey('member-a'),JSON.stringify(tuple));
   const view=render(<OutsideDiscoverySection memberId="member-a"/>);
   await screen.findByText('Exact current tool descriptions are ready for your review. No credential has been staged.');
-  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove held credential'}));
-  await screen.findByText('Keeper confirmed that use is stopped and the held credential material is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.');
+  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove stored credential'}));
+  await screen.findByText('Lares confirmed that use is stopped and the stored credential is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.');
   expect(sessionStorage.getItem(recoveryKey('member-a'))).toBeNull();
   expect(screen.queryByText('Recovery reference saved for worker · connector.')).toBeNull();
 
@@ -114,16 +114,16 @@ it('keeps removal uncertainty bound to account A when only B or a reconnected A 
   actions.targets.mockResolvedValueOnce([heldA]).mockResolvedValueOnce([heldB]).mockResolvedValueOnce([reconnectedA]);
   actions.remove.mockRejectedValue(new Error('lost response'));
   render(<OutsideDiscoverySection memberId="member-a"/>);
-  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove held credential'}));
-  await screen.findByText('Removal could not be confirmed for the exact account version. Refresh custody status before another action; do not repeat an uncertain request.');
+  fireEvent.click(await screen.findByRole('button',{name:'Stop use and remove stored credential'}));
+  await screen.findByText('Removal could not be confirmed for the exact account version. Refresh the credential status before another action; do not repeat an uncertain request.');
   expect(screen.getByText(/Removal is unconfirmed for worker · connector at generation 4/)).toBeTruthy();
-  expect(screen.queryByText(/removal did not commit/i)).toBeNull();
+  expect(screen.queryByText(/the removal did not happen/i)).toBeNull();
   fireEvent.click(screen.getByRole('button',{name:'Refresh uncertain removal status'}));
   await screen.findByText(/Removal remains unconfirmed for worker · connector/);
-  expect(screen.queryByText(/Keeper confirms removal for worker · connector-b/)).toBeNull();
+  expect(screen.queryByText(/Lares confirms removal for worker · connector-b/)).toBeNull();
   fireEvent.click(screen.getByRole('button',{name:'Refresh uncertain removal status'}));
   await screen.findByText(/Removal remains unconfirmed for worker · connector/);
-  expect(screen.queryByText(/Keeper confirms removal for worker · connector/)).toBeNull();
+  expect(screen.queryByText(/Lares confirms removal for worker · connector/)).toBeNull();
   expect(actions.remove).toHaveBeenCalledTimes(1);
 });
 
@@ -194,7 +194,7 @@ it('applies the exact staged custody revision and reports no runtime claim',asyn
   await screen.findByRole('button',{name:'Accept these exact descriptions'});fireEvent.click(screen.getByRole('button',{name:'Accept these exact descriptions'}));
   await screen.findByRole('button',{name:'Stage credential candidate'});fireEvent.click(screen.getByRole('button',{name:'Stage credential candidate'}));
   const apply=await screen.findByRole('button',{name:'Apply credential revision'});fireEvent.click(apply);
-  await screen.findByText(/Credential revision 7 is active in Keeper custody/);
+  await screen.findByText(/Credential revision 7 is active in Lares's protected store/);
   expect(actions.apply).toHaveBeenCalledWith(expect.objectContaining({candidateRevision:7,stageOperationId:'00000000-0000-4000-8000-000000000007',
     expectedPolicyHash:'e'.repeat(64),activationReviewHash:'d'.repeat(64)}));
   expect(screen.getByText(/does not confirm that the outside server is reachable or the agent is running/)).toBeTruthy();
@@ -213,7 +213,7 @@ it('recovers exact pending Apply evidence after reload and applies only the proj
   const button=await screen.findByRole('button',{name:'Apply credential revision'});
   expect(actions.previewApply).toHaveBeenCalledWith({agentName:'worker',connectionName:'connector'});
   fireEvent.click(button);
-  await screen.findByText(/Credential revision 7 is active in Keeper custody/);
+  await screen.findByText(/Credential revision 7 is active in Lares's protected store/);
   expect(actions.apply).toHaveBeenCalledWith(pending);
 });
 

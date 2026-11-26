@@ -15,6 +15,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from 
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger } from "@lares/ui/primitives/sidebar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@lares/ui/primitives/tooltip";
 import { Switch } from "@lares/ui/primitives/switch";
+import { ListEditor } from "@lares/ui/primitives/list-editor";
 import { Checkbox, Radio } from "@lares/ui/primitives/checkbox";
 import { Select } from "@lares/ui/primitives/select";
 import { Textarea } from "@lares/ui/primitives/textarea";
@@ -392,5 +393,46 @@ describe("Switch and ToolList", () => {
     const folded = document.querySelector("details.lares-tool-description") as HTMLDetailsElement;
     expect(folded.open).toBe(false);
     expect(folded.querySelector("p")?.textContent).toBe(long);
+  });
+});
+
+describe("ListEditor", () => {
+  function Fixture({ start, fixed }: { start: string[]; fixed?: boolean }) {
+    const [values, setValues] = React.useState(start);
+    return (
+      <>
+        <ListEditor label="Brand" values={values} onChange={setValues} fixed={fixed} />
+        <output data-testid="values">{JSON.stringify(values)}</output>
+      </>
+    );
+  }
+  const values = () => screen.getByTestId("values").textContent;
+
+  it("is a named group with one named box per value, an Add button and a remove button per value", async () => {
+    render(<Fixture start={["One", "Two"]} />);
+    const group = within(screen.getByRole("group", { name: "Brand" }));
+    expect(group.getByLabelText("Brand 1")).toHaveProperty("value", "One");
+    expect(group.getByLabelText("Brand 2")).toHaveProperty("value", "Two");
+    await userEvent.click(group.getByRole("button", { name: "Add" }));
+    expect(values()).toBe('["One","Two",""]');
+    // The new box takes focus, so the next thing typed lands in it.
+    expect(document.activeElement).toBe(group.getByLabelText("Brand 3"));
+    await userEvent.keyboard("Three");
+    await userEvent.click(group.getByRole("button", { name: "Remove One" }));
+    expect(values()).toBe('["Two","Three"]');
+    // An empty box is removed by its place, and the last removal hands focus to Add.
+    await userEvent.click(group.getByRole("button", { name: "Remove Two" }));
+    await userEvent.clear(group.getByLabelText("Brand 1"));
+    await userEvent.click(group.getByRole("button", { name: "Remove Brand 1" }));
+    expect(values()).toBe("[]");
+    expect(document.activeElement).toBe(group.getByRole("button", { name: "Add" }));
+  });
+
+  it("shows only the boxes when the list is fixed, and takes its sizes from the named values", () => {
+    render(<Fixture start={["8"]} fixed />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(rule(consoleCss, '.lares-list-editor-items [data-slot="input"]')).toContain("var(--lares-field-width)");
+    expect(rule(consoleCss, '.lares-list-editor[data-size="short"] .lares-list-editor-items [data-slot="input"]')).toContain("var(--lares-short-field-width)");
+    expect(rule(themeCss, 'html[data-lares="console"]')).toContain("--lares-short-field-width: 6rem;");
   });
 });

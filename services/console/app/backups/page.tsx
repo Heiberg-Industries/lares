@@ -1,6 +1,8 @@
 import { requireConsolePage } from "../../lib/auth";
 import { getBackupStatus, type BackupCheckRow, type BackupState } from "../../lib/backup-status";
-import { PageHeader, Page } from "@lares/ui/patterns";
+import { Notice, PageHeader, Page, type NoticeTone } from "@lares/ui/patterns";
+import { Badge } from "@lares/ui/primitives/badge";
+import { Card, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 
 export const dynamic = "force-dynamic";
 
@@ -10,15 +12,15 @@ const STATE_LABEL: Record<BackupState, string> = {
   "not-protected": "Not protected",
 };
 
-const STATE_CLASS: Record<BackupState, string> = {
-  protected: "lares-status-success",
-  unproven: "lares-status-warning",
-  "not-protected": "lares-status-error",
+const STATE_TONE: Record<BackupState, NoticeTone> = {
+  protected: "success",
+  unproven: "needs-you",
+  "not-protected": "error",
 };
 
 const STATE_SUMMARY: Record<BackupState, string> = {
   protected: "Last night's backup was verified, and a restore from it has been proven within the last 45 days.",
-  unproven: "Last night's backup was verified, but no restore has ever been rehearsed successfully — so it works right up until the day you'd actually need it.",
+  unproven: "Last night's backup was verified, but no restore from it has ever been tried successfully, so nobody knows yet whether it can be used on the day you need it.",
   "not-protected": "This installation is not currently protected.",
 };
 
@@ -32,13 +34,13 @@ function when(d: Date | null, never: string): string {
 function CheckRow({ label, row, neverPassLabel }: { label: string; row: BackupCheckRow; neverPassLabel: string }) {
   return (
     <tr>
-      <td className="mono">{label}</td>
-      <td className={`mono ${row.ok === true ? "lares-status-success" : row.ok === false ? "lares-status-error" : "lares-status-muted"}`}>
-        {row.ok === true ? "ok" : row.ok === false ? "failed" : "never run"}
+      <td>{label}</td>
+      <td>
+        {row.ok === true ? <Badge variant="success">Passed</Badge> : row.ok === false ? <Badge variant="error">Failed</Badge> : <Badge>Never run</Badge>}
       </td>
       <td className="mono">{when(row.checkedAt, "—")}</td>
       <td className="mono">{when(row.lastPassAt, neverPassLabel)}</td>
-      <td className="lares-status-muted">{row.target ?? "—"}</td>
+      <td className="lares-muted">{row.target ?? "—"}</td>
     </tr>
   );
 }
@@ -48,41 +50,50 @@ export default async function BackupPage() {
   const status = await getBackupStatus();
 
   return (
-    <Page className="lares-operational">
-      <PageHeader title="Backup" description="Recorded backup and restore evidence for this installation." />
-      <p className="lares-muted lares-operational-intro">
-        Whether this installation&apos;s data is protected: when the nightly backup was last
-        verified, when a restore was last actually rehearsed, and where backups go. This page only
-        reads that record — it runs no backup and no restore itself.
+    <Page>
+      <PageHeader
+        title="Backups"
+        description="Whether this installation's data is protected: when the nightly backup was last checked, when restoring from it was last tried, and where backups go."
+      />
+      <p className="lares-muted">
+        This page only shows what has been recorded. It runs no backup and no restore itself. Times are in UTC.
       </p>
 
       {status.unavailable ? (
-        <p className="lares-operational-error" role="alert">
+        <Notice error>
           Backup status couldn&apos;t be read. Check the database and backup-status setup, then reload this page. This does not confirm whether a backup exists.
-        </p>
+        </Notice>
       ) : (
         <>
-          <h2 className={STATE_CLASS[status.state]}>
-            {STATE_LABEL[status.state]}
-          </h2>
-          <p className="lares-muted lares-operational-intro">{STATE_SUMMARY[status.state]}</p>
+          <Notice tone={STATE_TONE[status.state]}>
+            <p><strong>{STATE_LABEL[status.state]}.</strong> {STATE_SUMMARY[status.state]}</p>
+            {status.reasons.length > 0 && (
+              <ul>
+                {status.reasons.map((reason, i) => <li key={i}>{reason}</li>)}
+              </ul>
+            )}
+          </Notice>
 
-          {status.reasons.length > 0 && (
-            <ul className="lares-muted lares-operational-note">
-              {status.reasons.map((reason, i) => <li key={i}>{reason}</li>)}
-            </ul>
-          )}
-
-          <h2>Checks</h2>
-          <div className="lares-table-scroll"><table className="card lares-operational-table">
-            <thead>
-              <tr><th>Check</th><th>Status</th><th>Last checked</th><th>Last pass</th><th>Target</th></tr>
-            </thead>
-            <tbody>
-              <CheckRow label="Nightly backup verify" row={status.verify} neverPassLabel="never" />
-              <CheckRow label="Monthly restore drill" row={status.drill} neverPassLabel="never rehearsed" />
-            </tbody>
-          </table></div>
+          <Card>
+            <CardHeader>
+              <CardTitle role="heading" aria-level={2}>Checks</CardTitle>
+              <CardDescription>The nightly check that the backup can be read, and the monthly test that restores from it.</CardDescription>
+            </CardHeader>
+            <div className="lares-table-scroll"><table>
+              <thead>
+                <tr><th>Check</th><th>Result</th><th>Last checked</th><th>Last passed</th><th>Where backups go</th></tr>
+              </thead>
+              <tbody>
+                <CheckRow label="Nightly backup check" row={status.verify} neverPassLabel="never" />
+                <CheckRow label="Monthly restore test" row={status.drill} neverPassLabel="never rehearsed" />
+              </tbody>
+            </table></div>
+          </Card>
+          <p className="lares-muted">
+            <a href="https://github.com/Heiberg-Industries/lares/blob/main/docs/runbooks/definition-backups.md#optional-setup-for-an-installation-administrator" target="_blank" rel="noopener noreferrer">
+              Guide: optional backups of agent definitions ↗
+            </a>
+          </p>
         </>
       )}
     </Page>

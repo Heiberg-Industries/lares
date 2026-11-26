@@ -1,5 +1,7 @@
 import Link from "next/link";
-import { Notice, StatusBadge } from "@lares/ui/patterns";
+import { Notice, Row, Rows, StatusBadge } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
+import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import type { GatewayStatus } from "@lares/agent-kit/gateway-status";
 import type { GatewayStatusView } from "../lib/gateway-status";
 
@@ -38,13 +40,27 @@ const WHOLE = {
  * calls a model or changes anything. */
 export function ModelsSection({ view }: { view: GatewayStatusView }) {
   return (
-    <section className="lares-surface">
-      <h2 className="lares-section-title">Models</h2>
-      <p className="lares-muted">Where Lares sends its model requests, and whether the gateway is answering. This page changes nothing.</p>
-      {view.kind !== "status" ? <Notice error>{WHOLE[view.kind]}</Notice> : <Body status={view.status} usage={view.usage} />}
-      <p className="lares-muted">Provider not tested: testing sends a paid request.</p>
-      <Link href="/general">Check again</Link>
-    </section>
+    <Card>
+      <CardHeader>
+        <CardTitle role="heading" aria-level={2}>Models</CardTitle>
+        <CardDescription>Where Lares sends its model requests, and whether the gateway is answering. Nothing here can be changed.</CardDescription>
+        <CardAction>
+          <Button variant="outline" size="sm" asChild>
+            <Link href="/general">Check again</Link>
+          </Button>
+        </CardAction>
+      </CardHeader>
+      {view.kind !== "status" ? (
+        <CardContent className="lares-stack">
+          <Notice error>{WHOLE[view.kind]}</Notice>
+        </CardContent>
+      ) : (
+        <Body status={view.status} usage={view.usage} />
+      )}
+      <CardFooter>
+        <p className="lares-muted">Provider not tested: testing sends a paid request.</p>
+      </CardFooter>
+    </Card>
   );
 }
 
@@ -52,33 +68,39 @@ function Body({ status, usage }: { status: GatewayStatus; usage: Record<string, 
   const r = reachability(status);
   return (
     <>
-      <div className="lares-setting-row">
-        <div>
-          Gateway address
-          <p>{status.mode === "managed" ? "Run by Lares on this server." : status.mode === "external" ? "Run elsewhere; managed outside Lares." : "Not set."}</p>
-        </div>
-        <span className="mono">{status.endpoint ?? "None"}</span>
-      </div>
-      <div className="lares-setting-row">
-        <div>Is it answering?<p>{r.text}</p></div>
-        <StatusBadge tone={status.reachability === "readiness-unreadable" ? "quiet" : r.tone}>{status.reachability === "reachable" ? "Reachable" : status.reachability === "unreachable" ? "Not reachable" : status.reachability === "not-configured" ? "Not configured" : status.reachability === "readiness-unreadable" ? "Readiness unclear" : "Not ready"}</StatusBadge>
-      </div>
-      {status.details.state !== "ok" && <Notice error={status.details.state === "refused" || status.details.state === "invalid"}>{DETAILS[status.details.state]}</Notice>}
-      {status.purposes.map(p => (
-        <div className="lares-setting-row" key={p.purpose}>
-          <div>
-            {PURPOSE[p.purpose]} <span className="mono">{p.alias}</span>
-            <p>
-              {PURPOSE_STATE[p.state]}{p.target ? `: ${p.target.provider} · ${p.target.model}` : ""}
-              {" "}
-              {usage === null ? "Agents using it: unavailable."
-                : usage[p.alias]?.length ? `Agents using it: ${usage[p.alias]!.join(", ")}.` : "No agent uses it."}
-            </p>
-          </div>
-        </div>
-      ))}
-      {status.details.state === "ok" && status.details.others.length > 0 && (
-        <p className="lares-muted">Other models on this gateway: <span className="mono">{status.details.others.join(", ")}</span>{status.details.othersTotal > status.details.others.length ? ` and ${status.details.othersTotal - status.details.others.length} more` : ""}</p>
+      <Rows label="Model gateway">
+        <Row
+          title="Gateway address"
+          description={status.mode === "managed" ? "Run by Lares on this server." : status.mode === "external" ? "Run elsewhere; managed outside Lares." : "Not set."}
+          control={<span className="mono">{status.endpoint ?? "None"}</span>}
+        />
+        <Row
+          title="Is it answering?"
+          description={r.text}
+          control={<StatusBadge tone={status.reachability === "readiness-unreadable" ? "quiet" : r.tone}>{status.reachability === "reachable" ? "Reachable" : status.reachability === "unreachable" ? "Not reachable" : status.reachability === "not-configured" ? "Not configured" : status.reachability === "readiness-unreadable" ? "Readiness unclear" : "Not ready"}</StatusBadge>}
+        />
+        {status.purposes.map(p => (
+          <Row
+            key={p.purpose}
+            title={<>{PURPOSE[p.purpose]} <span className="mono">{p.alias}</span></>}
+            description={
+              <>
+                {PURPOSE_STATE[p.state]}{p.target ? `: ${p.target.provider} · ${p.target.model}` : ""}
+                {" "}
+                {usage === null ? "Agents using it: unavailable."
+                  : usage[p.alias]?.length ? `Agents using it: ${usage[p.alias]!.join(", ")}.` : "No agent uses it."}
+              </>
+            }
+          />
+        ))}
+      </Rows>
+      {(status.details.state !== "ok" || status.details.others.length > 0) && (
+        <CardContent className="lares-stack">
+          {status.details.state !== "ok" && <Notice error={status.details.state === "refused" || status.details.state === "invalid"}>{DETAILS[status.details.state]}</Notice>}
+          {status.details.state === "ok" && status.details.others.length > 0 && (
+            <p className="lares-muted">Other models on this gateway: <span className="mono">{status.details.others.join(", ")}</span>{status.details.othersTotal > status.details.others.length ? ` and ${status.details.othersTotal - status.details.others.length} more` : ""}</p>
+          )}
+        </CardContent>
       )}
     </>
   );

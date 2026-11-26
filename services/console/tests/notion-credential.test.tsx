@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { NOTION_CREDENTIAL_CHANGED, NotionCredential } from '../components/NotionCredential';
+import { NOTION_CREDENTIAL_CHANGED, NOTION_KEY_UPDATED, NotionCredential } from '../components/NotionCredential';
 import type { CredentialStatus } from '@lares/agent-kit/credential-lifecycle';
 const active = '11111111-1111-4111-8111-111111111111', candidate = '22222222-2222-4222-8222-222222222222';
 function status(change: Partial<CredentialStatus> = {}): CredentialStatus {
@@ -21,6 +21,7 @@ it('render performs no fetch/provider call and separates stored key, test and ac
 it('submits the password value once, immediately clears it and never persists it in HTML or URL', async () => {
   let resolve!: (value: Response) => void;
   const request = vi.fn((_url: string, _options: RequestInit) => new Promise<Response>(r => { resolve = r; })); vi.stubGlobal('fetch', request);
+  const told = vi.fn(); window.addEventListener(NOTION_KEY_UPDATED, told);
   render(<NotionCredential initial={{ kind: 'status', status: status() }} />);
   const input = screen.getByLabelText('New Notion internal connection key') as HTMLInputElement;
   expect(input.type).toBe('password'); fireEvent.change(input, { target: { value: 'synthetic-secret-only' } });
@@ -30,6 +31,10 @@ it('submits the password value once, immediately clears it and never persists it
   resolve(Response.json({ ok: true, status: status({ state: 'test-failed', phase: 'test-failed', candidateRevision: candidate, test: { revision: candidate, outcome: 'refused', at: '2026-10-08T12:00:00.000Z' } }) }));
   await waitFor(() => expect(screen.getByText(/Last identity test/).textContent).toContain('refused'));
   expect(screen.getByText('Current key: stored.')).toBeTruthy(); expect(request).toHaveBeenCalledOnce();
+  // The Clipping card on the same page is told the new status, and never the key itself.
+  expect(told).toHaveBeenCalledOnce(); window.removeEventListener(NOTION_KEY_UPDATED, told);
+  const detail = (told.mock.calls[0]![0] as CustomEvent).detail;
+  expect(detail.candidateRevision).toBe(candidate); expect(JSON.stringify(detail)).not.toContain('synthetic-secret-only');
 });
 it('requires the complete affected list/restart checkbox before sending Apply', async () => {
   const request = vi.fn(async (_url: string, _options: RequestInit) => Response.json({ ok: true, status: status() })); vi.stubGlobal('fetch', request);

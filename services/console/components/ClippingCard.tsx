@@ -12,9 +12,11 @@ import type { CredentialView } from '../lib/credentials';
 import type {
   ClippingOutcome, ClippingRequestKind, ClippingRequestView, ClippingSourceView, ClippingView,
 } from '../lib/clipping';
+import { Notice } from '@lares/ui/patterns';
 import { Button } from '@lares/ui/primitives/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@lares/ui/primitives/card';
 import { Input } from '@lares/ui/primitives/input';
-import { NOTION_CREDENTIAL_CHANGED } from './NotionCredential';
+import { NOTION_CREDENTIAL_CHANGED, NOTION_KEY_UPDATED } from './NotionCredential';
 
 const when = (iso: string | null) => (iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : 'never');
 
@@ -57,8 +59,8 @@ const messages: Record<string, string> = {
   'mapping-mismatch': 'Those columns do not match what the chief of staff last read. Read the database again.',
   'more-than-one-source': 'More than one Notion source is set up on this installation. Only one is supported for now; ask the host operator.',
   'chief-of-staff-not-found': 'There is not exactly one chief of staff to switch on.',
-  'request-refused': 'The keeper refused this request. Check the Notion key above, then try again.',
-  'unavailable-before-send': 'The keeper could not be reached. Nothing was changed.',
+  'request-refused': 'The Lares server helper refused this request. Check the Notion key above, then try again.',
+  'unavailable-before-send': 'The Lares server helper could not be reached. Nothing was changed.',
   'outcome-unknown': 'The result is unknown: the request may have run. Check the Notion key card above before trying again.',
   administrator: "Only the installation's credential administrator can switch this.",
   unavailable: 'Clipping status unavailable.',
@@ -123,6 +125,16 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
 
   const live = view.unavailable ? null : view;
   const status: CredentialStatus | null = cred.kind === 'status' ? cred.status : null;
+
+  // The Notion key card on the same page changed the key: take the status it got back, so the switch below is not stale.
+  useEffect(() => {
+    const onKey = (event: Event) => {
+      const parsed = credentialStatusSchema.safeParse((event as CustomEvent).detail);
+      if (parsed.success) { setCred({ kind: 'status', status: parsed.data }); setFlow(null); setConfirmed(false); }
+    };
+    window.addEventListener(NOTION_KEY_UPDATED, onKey);
+    return () => window.removeEventListener(NOTION_KEY_UPDATED, onKey);
+  }, []);
 
   // ---- polling: every 5 s while a request is waiting, then stop --------------------------------
   const polling = !!live?.busy;
@@ -232,49 +244,53 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
     : status.test?.revision === status.activeRevision && status.test.outcome === 'passed' ? 'Notion key: working.'
     : 'Notion key: saved.';
 
-  return <section className="lares-surface lares-surface-compact lares-stack" aria-labelledby="clipping-heading">
-    <h2 id="clipping-heading" className="lares-section-title">Clipping</h2>
-    <p className="lares-muted">Links you save in a Notion database are brought into the inbox, and the digest files them. Only links are copied, never the pages.</p>
-    {!live ? <p role="status">{messages.unavailable}</p> : <>
+  return <Card role="region" aria-labelledby="clipping-heading">
+    <CardHeader>
+      <CardTitle id="clipping-heading" role="heading" aria-level={2}>Clipping</CardTitle>
+      <CardDescription>Links you save in a Notion database are brought into the inbox, and the digest files them. Only links are copied, never the pages.</CardDescription>
+    </CardHeader>
+    <CardContent className="lares-stack">
+    {!live ? <Notice>{messages.unavailable}</Notice> : <>
       <SourceChoice live={live} busy={busy} onChoose={(mode) => void act({ action: 'set-choice', mode })} />
       <p>{keyLine}</p>
 
-      <h3>Database</h3>
+      <h3 className="lares-section-title">Database</h3>
       <MappingPicker key={`${schemaReq?.id ?? 'none'}:${source?.dataSourceId ?? ''}`} schema={schema} source={source} busy={busy}
         link={link} setLink={setLink} wait={requestWait(schemaReq, 'Reading the database…')}
         onRead={() => void act({ action: 'read-database', link })}
         onSave={(m) => void act({ action: 'save-mapping', ...m }, 'Columns saved.')} />
 
-      <h3>Optional columns</h3>
+      <h3 className="lares-section-title">Optional columns</h3>
       <p className="lares-muted">Adds Status, For and Origin to your Notion database, only where they are missing. Existing columns are never changed.</p>
       <div className="lares-inline-form"><Button variant="outline" disabled={busy || !source} onClick={() => void act({ action: 'add-properties' })}>Add Status, For and Origin columns</Button></div>
       <RequestResult req={req('add-properties')} wait="Adding the columns…"
         done={(r) => isAdd(r) ? addSentence(r) : null} />
 
-      <h3>Test</h3>
+      <h3 className="lares-section-title">Test</h3>
       <p className="lares-muted">Reads one page of rows and shows what would be imported. Writes nothing.</p>
       <div className="lares-inline-form"><Button variant="outline" disabled={busy || !source} onClick={() => void act({ action: 'test' })}>Test</Button></div>
       <RequestResult req={req('test')} wait="Testing…"
         done={(r) => isTest(r) ? testSentence(r) : null} />
 
-      <h3>Switch</h3>
+      <h3 className="lares-section-title">Switch</h3>
       <SwitchBlock status={status} credKind={cred.kind} live={live} agent={agent} granted={granted} byConfig={byConfig}
         busy={busy} flow={flow} confirmed={confirmed} setConfirmed={setConfirmed}
         onOn={() => void startOn()} onOff={() => { setFlow({ kind: 'off' }); setConfirmed(false); }}
         onCancel={() => { setFlow(null); setConfirmed(false); }} onConfirm={confirmSwitch}
         stale={staleGrants} onRemove={removeStale} onRecheck={() => void recheckCredential()} />
-      {credMessage && <p role="status">{credMessage}</p>}
+      {credMessage && <Notice>{credMessage}</Notice>}
 
-      <h3>Import</h3>
+      <h3 className="lares-section-title">Import</h3>
       <div className="lares-inline-form"><Button disabled={busy || !source} onClick={() => void act({ action: 'import' })}>Import now</Button></div>
       <RequestResult req={req('import')} wait="Importing…"
         done={(r, q) => isImport(r) ? `Imported ${r.imported} at ${when(q.finishedAt)}.` : null} />
 
-      <h3>Last fetch</h3>
+      <h3 className="lares-section-title">Last fetch</h3>
       <p>{sourceSentence(source, live.sourceCount)}</p>
     </>}
-    {message && <p role="status">{message}</p>}
-  </section>;
+    {message && <Notice>{message}</Notice>}
+    </CardContent>
+  </Card>;
 }
 
 function addSentence(r: ClippingAddPropertiesResult): string {
@@ -293,7 +309,7 @@ function RequestResult({ req, wait, done }: {
   if (!req) return null;
   const line = requestWait(req, wait) ?? (req.status === 'done'
     ? (req.result ? done(req.result, req) : null) ?? 'The answer could not be read.' : null);
-  return line ? <p role="status">{line}</p> : null;
+  return line ? <Notice>{line}</Notice> : null;
 }
 
 function SourceChoice({ live, busy, onChoose }: {
@@ -341,7 +357,7 @@ function MappingPicker({ schema, source, busy, link, setLink, wait, onRead, onSa
       <Input id="clipping-link" value={link} maxLength={2048} disabled={busy} onChange={(e) => setLink(e.target.value)} autoComplete="off" />
       <Button variant="outline" disabled={busy || link.trim() === ''} onClick={onRead}>Read database</Button>
     </div>
-    {wait && <p role="status">{wait}</p>}
+    {wait && <Notice>{wait}</Notice>}
     {schema && <div className="lares-stack">
       {schema.dataSources.length > 1 && <label className="lares-field-label">Data source
         <Select value={dsId} disabled={busy} onChange={(e) => { setDsId(e.target.value); setUrl(''); setNote(''); setTags(''); setSaved(''); }}>
@@ -372,16 +388,16 @@ function SwitchBlock(p: {
 }) {
   const { status } = p;
   if (!status) {
-    return <p role="status">{p.credKind === 'administrator-required' ? messages.administrator
-      : p.credKind === 'sign-in-required' ? 'Sign in again before changing clipping.' : 'Credential status unavailable.'}</p>;
+    return <Notice>{p.credKind === 'administrator-required' ? messages.administrator
+      : p.credKind === 'sign-in-required' ? 'Sign in again before changing clipping.' : 'Credential status unavailable.'}</Notice>;
   }
-  if (status.state === 'unavailable') return <p role="status">Credential status unavailable.</p>;
-  if (!status.activeRevision) return <p role="status">No Notion key is saved yet. Add it under Notion key above.</p>;
+  if (status.state === 'unavailable') return <Notice>Credential status unavailable.</Notice>;
+  if (!status.activeRevision) return <Notice>No Notion key is saved yet. Add it under Notion key above.</Notice>;
   const chief = p.live.chiefOfStaff;
   const consumers = p.flow?.kind === 'on' ? p.flow.preview.consumers : status.consumers;
   return <div className="lares-stack">
-    {chief.kind === 'none' && <p role="status">No chief of staff is set up, so there is nothing to switch on.</p>}
-    {chief.kind === 'several' && <p role="status">More than one chief of staff is set up, so Lares cannot tell which one should read Notion. Ask the host operator.</p>}
+    {chief.kind === 'none' && <Notice>No chief of staff is set up, so there is nothing to switch on.</Notice>}
+    {chief.kind === 'several' && <Notice>More than one chief of staff is set up, so Lares cannot tell which one should read Notion. Ask the host operator.</Notice>}
     {p.agent && (p.granted
       ? <p>Clipping is switched on: the chief of staff receives the Notion key.</p>
       : p.byConfig

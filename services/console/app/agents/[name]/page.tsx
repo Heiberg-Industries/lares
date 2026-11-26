@@ -18,7 +18,7 @@ import { AgentDetail } from "../../../components/AgentDetail";
 import { getOutsideToolEvidence } from "../../../lib/outside-tools";
 import { liveDangerTools } from "../../../lib/outside-connector-view";
 import { fallbackNotes } from "../../../lib/delivery-notes";
-import { getPromptCacheLine } from "../../../lib/agent-detail";
+import { agentStatus, getPromptCacheLine } from "../../../lib/agent-detail";
 export const dynamic = "force-dynamic";
 export default async function AgentPage({
   params,
@@ -35,7 +35,7 @@ export default async function AgentPage({
       <Page>
         <PageHeader title="Agent unavailable" />
         <Notice error>
-          The agent registry could not be read. Reload to try again.
+          The list of agents could not be read. Reload to try again.
         </Notice>
       </Page>
     );
@@ -91,6 +91,11 @@ export default async function AgentPage({
       outsideTools={outsideTools}
       agent={agent}
       waiting={definition.status === "fulfilled" && definition.value.initial?.runtime?.pending === true}
+      status={agentStatus(
+        definition.status === "fulfilled" ? definition.value.initial?.runtime : undefined,
+        definition.status === "fulfilled" ? definition.value.initial?.status : undefined,
+        Boolean(agent.startedAt),
+      )}
       promptCache={promptCache.status === "fulfilled" ? promptCache.value : null}
       board={
         board.status === "fulfilled"

@@ -83,6 +83,7 @@ use the `--lares-*` names.
 | `--lares-control-height` | 32px (44px on a phone) | Buttons and fields |
 | `--lares-control-height-sm` | 28px (44px on a phone) | Small buttons |
 | `--lares-control-text` | 13px (16px on a phone) | Text typed into a field |
+| `--lares-short-field-width` | 6rem | A box for a number or another value of a few characters |
 | `--lares-switch-width`, `--lares-switch-height` | 34px, 20px | The switch |
 | `--lares-row-height` | 56px | The least height of a row |
 | `--lares-menu-item-height` | 30px | The least height of a menu item |
@@ -186,6 +187,7 @@ inside a sentence or a table cell they are the status colour only. New code uses
 | `Input`, `Textarea`, `Select` | `primitives/input`, `textarea`, `select` | Fields. Focus is the accent border and a soft ring. |
 | `Checkbox`, `Radio` | `primitives/checkbox` | Choices inside a form that is submitted later. |
 | `Switch` | `primitives/switch` | A setting that applies as it is flipped. The accent when on. |
+| `ListEditor` | `primitives/list-editor` | A list typed as one box per value, with a remove button beside each box and an Add button under them. It only holds what is typed: the page decides how the list is stored, and drops boxes left empty. `size="short"` for numbers; `fixed` for a list that always has the same number of values. |
 | `Field`, `Choice`, `FieldGroup` | `patterns` | The label, hint and grouping around a control. |
 | `ToolList`, `ToolRow` | `patterns` | A list of an agent's or a server's tools. |
 | Dropdown menu | `primitives/dropdown-menu` | A short list of actions behind one button. |

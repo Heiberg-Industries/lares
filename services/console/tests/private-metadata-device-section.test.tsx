@@ -35,7 +35,7 @@ it('shows the one-time upload token only after issuing a replacement and hides i
   fireEvent.change(screen.getByLabelText('Agent name'),{target:{value:'helper'}});
   fireEvent.click(screen.getByText('Review current connection'));
   await screen.findByText(/Device .* is active/);
-  fireEvent.click(screen.getByLabelText(/I authorize this exact descriptor/));
+  fireEvent.click(screen.getByLabelText(/I authorize this exact connection/));
   fireEvent.click(screen.getByText('Replace device and issue upload credential'));
   expect(await screen.findByText('U'.repeat(43))).toBeTruthy();
   expect(actions.issue).toHaveBeenCalledWith(expect.objectContaining({consent:true,accountId:status.accountId}));

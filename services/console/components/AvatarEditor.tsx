@@ -1,5 +1,6 @@
 "use client";
-import { Field } from "@lares/ui/patterns";
+import { Field, Notice } from "@lares/ui/patterns";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { Input } from "@lares/ui/primitives/input";
 import React, { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -11,6 +12,7 @@ export function AvatarEditor({ name, role, initialVersion }: { name: string; rol
   const running = useRef(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [failed, setFailed] = useState(false);
   const [previewVersion, setPreviewVersion] = useState(initialVersion);
   async function save(data: FormData) {
     if (running.current) return;
@@ -21,11 +23,13 @@ export function AvatarEditor({ name, role, initialVersion }: { name: string; rol
     try {
       const result = await saveAvatar(data);
       setMessage(result.message);
+      setFailed(!result.ok);
       if (result.ok) {
         setPreviewVersion(data.get("reset") === "true" ? undefined : String(Date.now()));
         router.refresh();
       }
     } catch {
+      setFailed(true);
       setMessage(
         "The image could not be saved. Reload to check its current state.",
       );
@@ -35,12 +39,15 @@ export function AvatarEditor({ name, role, initialVersion }: { name: string; rol
     }
   }
   return (
-    <section className="lares-surface">
-      <h2 className="lares-section-title">Agent image</h2>
-      <p className="lares-muted">
-        PNG, JPEG or WebP, up to 2 MB. Images save immediately and are included
-        in the database backup.
-      </p>
+    <Card>
+      <CardHeader>
+        <CardTitle role="heading" aria-level={2}>Agent image</CardTitle>
+        <CardDescription>
+          PNG, JPEG or WebP, up to 2 MB. Images save immediately and are included
+          in the database backup.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="lares-stack">
       <figure className="lares-avatar-preview">
         <AgentAvatar
           role={role}
@@ -48,7 +55,7 @@ export function AvatarEditor({ name, role, initialVersion }: { name: string; rol
         />
         <figcaption>{previewVersion ? "Current image" : "Default symbol"}</figcaption>
       </figure>
-      <form action={save}>
+      <form action={save} className="lares-stack">
         <Field label="Choose an image">
           <Input
             type="file"
@@ -76,7 +83,8 @@ export function AvatarEditor({ name, role, initialVersion }: { name: string; rol
           </Button>
         </div>
       </form>
-      {message && <p role="status">{message}</p>}
-    </section>
+      {message && <Notice tone={failed ? "error" : "success"}>{message}</Notice>}
+      </CardContent>
+    </Card>
   );
 }

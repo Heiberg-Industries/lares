@@ -1,7 +1,5 @@
-import Link from "next/link";
 import { requireConsolePage } from "../../lib/auth";
 import { Page, PageHeader } from "@lares/ui/patterns";
-import { Button } from "@lares/ui/primitives/button";
 import { getConnectionRows } from "../../lib/connections";
 import { getCredentialView } from "../../lib/credentials";
 import { anyOutsideToolsInUse } from "../../lib/outside-tools";
@@ -16,14 +14,9 @@ export default async function IntegrationsPage() {
   const [rows, credential, outsideToolsInUse, gateway] = await Promise.all([getConnectionRows(), getCredentialView(), anyOutsideToolsInUse(), getGatewayStatusView()]);
   return (
     <Page className="lares-stack">
-      <PageHeader title="Integrations" description="Services shared by the whole installation. Only the owner turns them on or changes them."
-        actions={<>
-          <Button asChild><Link href="/outside-tools">Outside tools</Link></Button>
-          <Button variant="outline" asChild><Link href="/writing-style">Email writing style</Link></Button>
-          <Button variant="outline" asChild><Link href="/meeting-follow-ups">Meetings</Link></Button>
-        </>} />
+      <PageHeader title="Integrations" description="Services shared by the whole installation. Only the owner turns them on or changes them." />
       <IntegrationsGrid cards={buildIntegrationCards({ rows, credential, outsideToolsInUse, gateway })} />
-      <p className="lares-muted">Each card opens its page with the details: which agents use it, when it was last used, where its key is kept, and test buttons.</p>
+      <p className="lares-muted">Each row opens that service's page with the details: which agents use it, when it was last used, where its key is kept, and test buttons.</p>
     </Page>
   );
 }

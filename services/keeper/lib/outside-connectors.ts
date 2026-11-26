@@ -287,11 +287,13 @@ export function registerOutsideConnectorActions(o: ConnectorOptions): void {
       if (expectToken) kind = 'token';
       // A token connector stays one when a later check sees a sign-in page: the owner chose Token for a server that offers both,
       // and a check must not undo that and stop every agent that uses it. A check can still see a server that needs no login.
-      if (row.auth_kind === 'token' && kind === 'signin') kind = 'token';
-      // Recorded, never acted on: a sign-in server is saved as one and stays unusable until sign-in is built.
-      const saved = (await pool.query<Row>(`UPDATE outside_connectors SET auth_kind=$2,probed_at=clock_timestamp() WHERE id=$1 AND retired_at IS NULL RETURNING ${COLUMNS}`, [id, kind])).rows[0];
+      // The save itself decides, on the row as it is NOW, not as it was read before the question went out: two checks can run at
+      // the same moment, and the slower one must not write its sign-in answer over the Token the other just recorded.
+      const saved = (await pool.query<Row>(`UPDATE outside_connectors SET auth_kind=CASE WHEN auth_kind='token' AND $2='signin' THEN auth_kind ELSE $2 END,
+        probed_at=clock_timestamp() WHERE id=$1 AND retired_at IS NULL RETURNING ${COLUMNS}`, [id, kind])).rows[0];
       if (!saved) throw new KeeperRefusedError('There is no such connector (it may have been removed).');
-      return { connector: view(saved), authKind: kind, usable: kind !== 'signin' };
+      // Recorded, never acted on: a sign-in server is saved as one and stays unusable until sign-in is built.
+      return { connector: view(saved), authKind: saved.auth_kind, usable: saved.auth_kind !== 'signin' };
     },
     successDetail: r => `connector ${r.connector.slug} checked: ${r.authKind}`,
   });
