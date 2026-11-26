@@ -7,6 +7,8 @@ import { acceptNotionSyncPreview, runNotionSyncPreview, setNotionSync } from "..
 import { NotionSyncControl } from "../components/NotionSyncControl";
 import type { NotionSyncView } from "../lib/notion-sync";
 vi.mock("../app/actions/definition", () => ({ setNotionSync: vi.fn(), runNotionSyncPreview: vi.fn(), acceptNotionSyncPreview: vi.fn() }));
+const nav = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => nav }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 const HASH = "a".repeat(64);
@@ -74,4 +76,16 @@ it("shows the keeper's refusal word for word, and is read-only for anyone but th
   render(<NotionSyncControl initial={on({ canChange: false })} />);
   expect(screen.queryByRole("button")).toBeNull();
   expect(screen.queryByLabelText(/People database id/)).toBeNull();
+});
+
+it("asks the server for the page again when the Notion key card says the key changed, and shows what comes back", () => {
+  const needsKey = on({ phase: "needs-key", keyApplied: false });
+  const page = render(<NotionSyncControl initial={needsKey} />);
+  expect(screen.getByTestId("sync-status").textContent).toContain("Connect the Notion key first");
+  expect(nav.refresh).not.toHaveBeenCalled();
+  window.dispatchEvent(new CustomEvent("lares:notion-key-updated", { detail: {} }));
+  expect(nav.refresh).toHaveBeenCalledOnce();
+  page.rerender(<NotionSyncControl initial={on()} />);
+  expect(screen.getByTestId("sync-status").textContent).toContain("waiting for a preview");
+  expect(screen.getByRole("button", { name: "Run preview" })).toBeTruthy();
 });

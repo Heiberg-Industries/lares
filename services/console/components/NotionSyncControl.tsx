@@ -4,9 +4,11 @@ import { Badge } from "@lares/ui/primitives/badge";
 import { Button } from "@lares/ui/primitives/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { Input } from "@lares/ui/primitives/input";
-import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState, useTransition } from "react";
 import { acceptNotionSyncPreview, runNotionSyncPreview, setNotionSync, type DefinitionActionResult } from "../app/actions/definition";
 import type { NotionSyncCounts, NotionSyncView } from "../lib/notion-sync";
+import { NOTION_KEY_UPDATED } from "./NotionCredential";
 
 const PASS_NAMES: Record<string, string> = { attendees: "Meeting attendees", people: "People records" };
 
@@ -20,6 +22,15 @@ export function NotionSyncControl({ initial }: { initial: NotionSyncView }) {
   const [people, setPeople] = useState(initial.peopleDataSource ?? "");
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
+  const router = useRouter();
+  // The Notion key card on the same page changed the key, which decides whether this sync can run: ask the
+  // server for the page again, and show what it sends back.
+  useEffect(() => {
+    const onKey = () => router.refresh();
+    window.addEventListener(NOTION_KEY_UPDATED, onKey);
+    return () => window.removeEventListener(NOTION_KEY_UPDATED, onKey);
+  }, [router]);
+  useEffect(() => { setView(initial); setPeople(initial.peopleDataSource ?? ""); }, [initial]);
   const run = (work: () => Promise<DefinitionActionResult<NotionSyncView>>) => {
     setError(null);
     start(async () => {
