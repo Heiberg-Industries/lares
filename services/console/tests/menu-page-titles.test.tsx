@@ -28,9 +28,6 @@ function pageTitle(href: string): string | null {
     restyle these pages rename them and delete their line. Nothing may be added here. */
 const NOT_YET: Record<string, string> = {
   "/saved-preferences": "Preferences",
-  "/general": "Settings",
-  "/quiet-hours-and-delivery": "Proactivity",
-  "/backups": "Backup",
 };
 
 const pages = [...OWNER_MENU.flatMap((group) => group.pages), MEMBERSHIP];

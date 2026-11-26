@@ -1,7 +1,8 @@
 import { requireConsolePage } from "../../lib/auth";
 import { listAutoSendSeries } from "../../lib/meeting-series";
 import { MeetingSeriesRow } from "../../components/MeetingSeriesRow";
-import { PageHeader, Page } from "@lares/ui/patterns";
+import { EmptyState, PageHeader, Page, Rows } from "@lares/ui/patterns";
+import { Card } from "@lares/ui/primitives/card";
 
 export const dynamic = "force-dynamic";
 
@@ -10,22 +11,23 @@ export default async function MeetingsPage() {
   const series = await listAutoSendSeries();
 
   return (
-    <Page className="lares-operational">
-      <PageHeader title="Meeting follow-ups" description="Recurring series with approved automatic follow-ups." />
+    <Page>
+      <PageHeader
+        title="Meeting follow-ups"
+        description="Recurring meetings where an agent may send the follow-up email without asking you first."
+      />
       <p className="lares-muted">
-        Recurring meeting series an agent is allowed to send the follow-up email for without asking
-        first. Revoking a series doesn&apos;t delete its history — it goes back to needing your
+        Revoking a series doesn&apos;t delete its history. The follow-up goes back to needing your
         approval, the same as before it was switched on.
       </p>
 
       {series.length === 0 ? (
-        <p className="lares-operational-empty">
-          No meeting series are on auto-send. Ask your agent to switch one on.
-        </p>
+        <EmptyState title="No meeting series sends follow-ups on its own">
+          Ask your agent to switch one on.
+        </EmptyState>
       ) : (
-        <div className="lares-table-scroll"><table className="card lares-operational-table">
-          <thead><tr><th>Series</th><th>Turned on by</th><th>When</th><th></th></tr></thead>
-          <tbody>
+        <Card>
+          <Rows label="Meeting series that send follow-ups on their own">
             {series.map((s) => (
               <MeetingSeriesRow
                 key={`${s.agent}/${s.seriesKey}`}
@@ -36,8 +38,8 @@ export default async function MeetingsPage() {
                 updatedAt={s.updatedAt.toISOString().slice(0, 10)}
               />
             ))}
-          </tbody>
-        </table></div>
+          </Rows>
+        </Card>
       )}
     </Page>
   );

@@ -48,14 +48,8 @@ export const CSS_COLUMN_LAYOUTS: string[] = [
 /** How many times each file still writes a lares-operational* class. These pages predate the shared parts; each
     slice that rebuilds one lowers its number, and a file leaves the list at zero. No number may rise. */
 export const OPERATIONAL_LEFT: Record<string, number> = {
-  "app/backups/page.tsx": 6,
   "app/deadlines/page.tsx": 10,
-  "app/meeting-follow-ups/page.tsx": 3,
-  "app/quiet-hours-and-delivery/page.tsx": 13,
   "app/saved-preferences/page.tsx": 11,
-  "components/BriefLanguageControl.tsx": 2,
-  "components/ProactivityControls.tsx": 1,
-  "components/ScheduleHoursControl.tsx": 2,
   "components/ServicePermissions.tsx": 2,
   "components/TasteImport.tsx": 2,
 };
