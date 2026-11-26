@@ -1038,6 +1038,7 @@
       "act": "admin",
       "guards": ["requireAction"],
       "source": "derived",
+      "ownerExtras": true,
       "usedBy": ["/outside-tools/[id]"],
       "see": "admin"
     },
@@ -1045,7 +1046,7 @@
       "id": "outside-connect.connectSwitchOnTrust",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],

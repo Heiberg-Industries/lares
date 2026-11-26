@@ -86,6 +86,7 @@ const OWNER_ACTIONS: Record<string, string> = {
   "members.setMemberRole": "members and roles: only the owner changes a role",
   "members.signOutMember": "members and roles",
   "outside-connect.connectSetDanger": "the danger zone",
+  "outside-connect.connectSwitchOnTrust": "whether an agent asks before it acts: a new run-without-asking switch is the owner's alone",
   "outside-connectors.removeConnector": "takes a connector from every agent and erases its held tokens",
 };
 
@@ -261,7 +262,8 @@ describe("console action inventory", () => {
   it("marks where a page or action an admin or member passes holds something stricter inside", () => {
     // Not a gate by itself: it says where to look. The owner-only parts on admin pages are hidden by the page and refused by the action.
     const withOwnerParts = rows.filter(r => r.ownerExtras).map(r => r.id).sort();
-    expect(withOwnerParts).toEqual(["/agents/[name]", "/integrations/[id]", "/outside-tools/[id]", "/reviews", "/sign-in", "/your-accounts", "GET /api/auth/[...route]", "accounts.removeAccount"].sort());
+    expect(withOwnerParts).toEqual(["/agents/[name]", "/integrations/[id]", "/outside-tools/[id]", "/reviews", "/sign-in", "/your-accounts", "GET /api/auth/[...route]", "accounts.removeAccount",
+      "outside-connect.connectSetTools"].sort()); // an admin sets tools; a new run-without-asking switch inside the same save is refused
     expect(rows.filter(r => r.adminExtras).map(r => r.id)).toEqual([]);
   });
 

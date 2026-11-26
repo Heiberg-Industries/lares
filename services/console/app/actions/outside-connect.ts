@@ -11,7 +11,7 @@
 import { cookies } from "next/headers";
 import { z } from "zod";
 import { outsideToolSchema, type OutsideToolDeclaration } from "@lares/agent-kit/definition";
-import { memberAuditAddress, requireAction } from "../../lib/auth";
+import { mayUse, memberAuditAddress, requireAction } from "../../lib/auth";
 import { listAgents } from "../../lib/agents";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
 import { keeperReason } from "../../lib/keeper-reason";
@@ -265,7 +265,9 @@ export async function connectRemoveDeclaration(input: { agent: string; name: str
  * who could not approve the agent's outside calls. A refusal is shown in the keeper's own words.
  */
 export async function connectSwitchOnTrust(input: { agent: string; name: string; tools: string[] }): Promise<ConnectStep<{ switchedOn: string[]; switchedOff: string[] }>> {
-  await requireAction("admin");
+  // Whether an agent asks before it acts is the owner's decision alone. An admin may connect a tool to an agent they can edit, and
+  // could name any server: letting them also switch its lookups to run without asking would send what the agent reads to that server.
+  await requireAction("owner");
   const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, tools: z.array(z.string().min(1)).max(200) }).safeParse(input);
   if (!parsed.success) return fail("The tool list is not valid.");
   const { agent, name, tools } = parsed.data;
@@ -293,7 +295,7 @@ export async function connectSwitchOnTrust(input: { agent: string; name: string;
  * returned in `conflicts` with everything else saved; the owner's explicit answer comes back as `widen`.
  */
 export async function connectSetTools(input: unknown): Promise<ConnectStep<{ conflicts: string[]; droppedTrust: string[] }>> {
-  await requireAction("admin");
+  const member = await requireAction("admin");
   const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, widen: z.boolean().optional(),
     tools: z.array(z.strictObject({ name: z.string().min(1), allowed: z.boolean(), kind: z.enum(["read", "change"]), free: z.boolean() })).max(200) }).safeParse(input);
   if (!parsed.success) return fail("The tool list is not valid.");
@@ -308,6 +310,9 @@ export async function connectSetTools(input: unknown): Promise<ConnectStep<{ con
     const wanted = tools.filter(t => t.allowed && t.kind === "read" && t.free).map(t => t.name);
     const kept = (current.tools.trusted ?? []).filter(k => wanted.includes(k.tool));
     const added = wanted.filter(t => !kept.some(k => k.tool === t)).map(tool => ({ tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() }));
+    // A NEW "run without asking" switch is the owner's alone (see connectSwitchOnTrust). An admin's save keeps the switches that are on
+    // and may take one off; nothing is saved when it asks for a new one.
+    if (added.length > 0 && !mayUse(member, "owner")) throw new StepFailure("Only the owner can let a tool run without asking. Switch that off and save again, or ask the owner.", false);
     const next = { ...current, tools: { ...current.tools, allow, read: read_, trusted: [...kept, ...added] } };
     const connections = [...state.connections.filter(c => c.name !== name), next];
     const saved = stateSchema.parse(await keeper<unknown>("outside.connections.save",
