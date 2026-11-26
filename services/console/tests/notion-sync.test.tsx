@@ -7,6 +7,8 @@ import { acceptNotionSyncPreview, runNotionSyncPreview, setNotionSync } from "..
 import { NotionSyncControl } from "../components/NotionSyncControl";
 import type { NotionSyncView } from "../lib/notion-sync";
 vi.mock("../app/actions/definition", () => ({ setNotionSync: vi.fn(), runNotionSyncPreview: vi.fn(), acceptNotionSyncPreview: vi.fn() }));
+const nav = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => nav }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 const HASH = "a".repeat(64);
@@ -69,9 +71,34 @@ it("shows the keeper's refusal word for word, and is read-only for anyone but th
   vi.mocked(runNotionSyncPreview).mockResolvedValue({ ok: false, error: { message: refusal, outcomeMayBeUnknown: false } } as any);
   render(<NotionSyncControl initial={on()} />);
   await userEvent.click(screen.getByRole("button", { name: "Run preview" }));
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(refusal));
+  await waitFor(() => expect(screen.getByRole("alert").querySelector(".lares-notice-body")!.textContent).toBe(refusal));
   cleanup();
   render(<NotionSyncControl initial={on({ canChange: false })} />);
   expect(screen.queryByRole("button")).toBeNull();
   expect(screen.queryByLabelText(/People database id/)).toBeNull();
+});
+
+it("asks the server for the page again when the Notion key card says the key changed, and shows what comes back", () => {
+  const needsKey = on({ phase: "needs-key", keyApplied: false });
+  const page = render(<NotionSyncControl initial={needsKey} />);
+  expect(screen.getByTestId("sync-status").textContent).toContain("Connect the Notion key first");
+  expect(nav.refresh).not.toHaveBeenCalled();
+  window.dispatchEvent(new CustomEvent("lares:notion-key-updated", { detail: {} }));
+  expect(nav.refresh).toHaveBeenCalledOnce();
+  page.rerender(<NotionSyncControl initial={on()} />);
+  expect(screen.getByTestId("sync-status").textContent).toContain("waiting for a preview");
+  expect(screen.getByRole("button", { name: "Run preview" })).toBeTruthy();
+});
+
+it("keeps a people database id that is typed but not saved when the page is read again, and follows the server when it is untouched", async () => {
+  const page = render(<NotionSyncControl initial={on({ peopleDataSource: "saved-1" })} />);
+  const field = () => screen.getByLabelText(/People database id/) as HTMLInputElement;
+  // Untouched: a new saved value from the server is shown.
+  page.rerender(<NotionSyncControl initial={on({ peopleDataSource: "saved-2" })} />);
+  expect(field().value).toBe("saved-2");
+  // Typed and not saved: a key test makes the page read again, and the typed id stays.
+  await userEvent.clear(field()); await userEvent.type(field(), "typed-3");
+  page.rerender(<NotionSyncControl initial={on({ peopleDataSource: "saved-2", phase: "needs-key" })} />);
+  expect(field().value).toBe("typed-3");
+  expect(screen.getByTestId("sync-status").textContent).toContain("Connect the Notion key first");
 });

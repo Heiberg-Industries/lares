@@ -47,7 +47,7 @@ it("shows the keeper's refusal word for word", async () => {
   render(<MeetingsSourceControl view={view()} />);
   await userEvent.type(screen.getByLabelText(/Notion data source id/), "nonsense");
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(sentence));
+  await waitFor(() => expect(screen.getByRole("alert").querySelector(".lares-notice-body")!.textContent).toBe(sentence));
 });
 
 it("is read-only for anyone but the owner, and says when the value still comes from the installation file", () => {

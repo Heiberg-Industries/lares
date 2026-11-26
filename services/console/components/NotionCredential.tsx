@@ -3,7 +3,9 @@ import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { CREDENTIAL_SLOT, credentialStatusSchema, type CredentialStatus, type CredentialMutation } from '@lares/agent-kit/credential-lifecycle';
 import type { CredentialView } from '../lib/credentials';
+import { Notice } from '@lares/ui/patterns';
 import { Button } from '@lares/ui/primitives/button';
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '@lares/ui/primitives/card';
 import { Input } from '@lares/ui/primitives/input';
 import { StatePill } from './StatePill';
 
@@ -11,7 +13,7 @@ const guidance = {
   'configure-administrator': 'Ask the host operator to configure one credential administrator.',
   'prepare-managed-slot': 'This installation is not ready to store a Notion key yet. On the server, run `lares update`, then reload this page and the key field will appear. If it still does not, Notion is already in use outside Lares here: see "Meeting follow-ups and Notion" in the install guide.',
   'prepare-writable-storage': 'Ask the host operator to prepare protected writable credential storage.',
-  'review-consumers': 'Ask the host operator to review every consumer. Unmanaged services and external bindings cannot be changed here.',
+  'review-consumers': 'Ask the host operator to review everything that uses this key. Services Lares does not manage, and uses set up outside Lares, cannot be changed here.',
   'inspect-journal': 'Recovery required. Ask the host operator to inspect the recorded operation and explicitly recover it before another change.',
   'status-unavailable': 'Status unavailable. Refresh status before making a change.',
 } as const;
@@ -21,15 +23,17 @@ const messages: Record<string, string> = {
   'origin-refused': 'This request was refused. Open the console at its configured address.',
   'invalid-request': 'The request was invalid. Refresh status before trying again.',
   'unavailable': 'Credential status unavailable. Other connection evidence remains shown separately.',
-  'unavailable-before-send': 'Keeper could not be reached. No credential change was sent. Refresh status before trying again.',
+  'unavailable-before-send': 'The Lares server helper could not be reached. No credential change was sent. Refresh status before trying again.',
   'outcome-unknown': 'The result is unknown: the request may have run. Refresh status to inspect the existing operation. Do not submit the change again.',
-  'request-refused': 'Keeper refused this request. Refresh status and review the current key, pending change and affected consumers.',
+  'request-refused': 'The Lares server helper refused this request. Refresh status and review the current key, the pending change and what uses the key.',
 };
 const progress = (items: CredentialStatus['activation']) => items.length
   ? <ul>{items.map(p => <li key={p.name}>{p.name}: {p.state}</li>)}</ul> : <p className="lares-muted">No runtime progress recorded.</p>;
 
 /** Fired by another card (Clipping) after it changed this credential, so this card reads it again. */
 export const NOTION_CREDENTIAL_CHANGED = 'lares:notion-credential-changed';
+/** Fired by this card after it changed the credential, carrying the new status, so the Clipping card on the same page shows the same key. */
+export const NOTION_KEY_UPDATED = 'lares:notion-key-updated';
 
 export function NotionCredential({ initial }: { initial: CredentialView }) {
   const [view, setView] = useState(initial), [busy, setBusy] = useState(false), [message, setMessage] = useState('');
@@ -64,6 +68,7 @@ export function NotionCredential({ initial }: { initial: CredentialView }) {
         setMessage(messages[code]); setStale(true); if (code === 'outcome-unknown') setUncertain(true); return;
       }
       setView({ kind: 'status', status: parsed.data }); setMessage('Operation recorded. Review the result below.');
+      window.dispatchEvent(new CustomEvent<CredentialStatus>(NOTION_KEY_UPDATED, { detail: parsed.data }));
     } catch { setMessage(messages['outcome-unknown']); setUncertain(true); setStale(true); }
     finally { inFlight.current = false; setBusy(false); }
   }
@@ -82,20 +87,23 @@ export function NotionCredential({ initial }: { initial: CredentialView }) {
       expectedActiveRevision: status.activeRevision, inventoryRevision: status.inventoryRevision, confirmRestart: true });
   };
   const canActivate = editable && !!status?.inventoryRevision && status.consumers.every(c => (c.category === 'owned-agent' && c.incarnation) || c.category === 'managed-service');
-  return <section className="lares-surface lares-surface-compact lares-stack" aria-labelledby="notion-credential-heading">
-    <h2 id="notion-credential-heading" className="lares-section-title">Notion key</h2>
-    <p className="lares-muted">One installation key for a Notion internal connection. Testing reads its identity; it does not prove access to pages or content.</p>
-    {stale && <p role="status">Current status unavailable. The last observed credential evidence is retained below.</p>}
+  return <Card role="region" aria-labelledby="notion-credential-heading">
+    <CardHeader>
+      <CardTitle id="notion-credential-heading" role="heading" aria-level={2}>Notion key</CardTitle>
+      <CardDescription>One installation key for a Notion internal connection. Testing reads its identity; it does not prove access to pages or content.</CardDescription>
+      {status && <CardAction><StatePill state={status.state} /></CardAction>}
+    </CardHeader>
+    <CardContent className="lares-stack">
+    {stale && <Notice tone="needs-you">Current status unavailable. What was last seen about the key is kept below.</Notice>}
     {status ? <>
-      <StatePill state={status.state} />
       <p>Current key: {status.activeRevision ? 'stored' : status.state === 'unavailable' ? 'unavailable' : 'none stored'}.</p>
       <p>Replacement: {status.candidateRevision ? 'saved pending change' : status.state === 'unavailable' ? 'unavailable' : 'none pending'}.</p>
       <p>Last identity test: {status.test ? <>{status.test.outcome} for the {status.test.revision === status.candidateRevision ? 'replacement' : 'current key'} · <time dateTime={status.test.at}>{status.test.at}</time></> : status.state === 'unavailable' ? 'unavailable' : 'no test recorded'}.</p>
-      <h3>Activation</h3>{progress(status.activation)}
-      <h3>Rollback</h3>{progress(status.rollback)}
-      {status.guidance && <p role="status">{guidance[status.guidance]}</p>}
-      <details><summary>Affected consumers ({status.consumers.length})</summary>
-        <p className="lares-muted">Keeper evidence of configured consumers, separate from the connection catalogue and agent permissions.</p>
+      <h3 className="lares-section-title">Activation</h3>{progress(status.activation)}
+      <h3 className="lares-section-title">Rollback</h3>{progress(status.rollback)}
+      {status.guidance && <Notice tone="needs-you">{guidance[status.guidance]}</Notice>}
+      <details><summary>What uses this key ({status.consumers.length})</summary>
+        <p className="lares-muted">What the Lares server helper has recorded as set up to use this key. It is a separate record from the list of integrations and from agent permissions.</p>
         <ul>{status.consumers.map(c => <li key={`${c.name}:${c.category}`}>{c.name} · {c.category === 'managed-service' ? 'Notion sync, restarted with the key' : c.category.replaceAll('-', ' ')}</li>)}</ul>
       </details>
       {editable && <>
@@ -111,18 +119,19 @@ export function NotionCredential({ initial }: { initial: CredentialView }) {
           {status.state === 'pending-apply' && <Button disabled={busy || !canActivate} onClick={() => { setConfirm('apply'); setConfirmed(false); }}>Apply replacement</Button>}
           {status.activeRevision && <Button variant="outline" disabled={busy || !canActivate} onClick={() => { setConfirm('disconnect'); setConfirmed(false); }}>Disconnect locally</Button>}
         </div>
-        {!status.inventoryRevision && <p className="lares-muted">Refresh credential status to confirm the affected consumers before Apply or Disconnect.</p>}
+        {!status.inventoryRevision && <p className="lares-muted">Refresh credential status to confirm what uses the key before Apply or Disconnect.</p>}
       </>}
       {confirm && <div className="lares-stack" role="group" aria-label="Confirm runtime restart">
         <p>{confirm === 'apply' ? 'Apply the tested replacement' : 'Remove the Notion binding locally'} and restart every affected agent:</p>
         {status.consumers.length ? <ul>{status.consumers.map(c => <li key={c.name}>{c.name}</li>)}</ul> : <p>No affected agents are recorded.</p>}
         <p className="lares-muted">Agents will stop and restart. This does not guarantee that current work has finished.</p>
-        <label className="lares-choice"><Checkbox checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> I confirm the complete consumer list and these restarts.</label>
+        <label className="lares-choice"><Checkbox checked={confirmed} onChange={e => setConfirmed(e.target.checked)} /> I confirm the complete list above and these restarts.</label>
         <div className="lares-inline-form"><Button disabled={busy || !confirmed || !editable} onClick={activate}>Confirm {confirm === 'apply' ? 'Apply' : 'local Disconnect'}</Button><Button variant="outline" disabled={busy} onClick={() => setConfirm(null)}>Cancel</Button></div>
       </div>}
-    </> : <p role="status">{messages[view.kind]}</p>}
+    </> : <Notice tone="needs-you">{messages[view.kind]}</Notice>}
     <p className="lares-muted">Provider revocation is not implemented for this token type. Local Disconnect removes its use and stored values in Lares; revoke it separately in Notion.</p>
-    {message && <p role="status">{message}</p>}
-    <Button variant="outline" disabled={busy} onClick={() => void refresh()}>Refresh credential status</Button>
-  </section>;
+    {message && <Notice>{message}</Notice>}
+    <div className="lares-actions"><Button variant="outline" disabled={busy} onClick={() => void refresh()}>Refresh credential status</Button></div>
+    </CardContent>
+  </Card>;
 }

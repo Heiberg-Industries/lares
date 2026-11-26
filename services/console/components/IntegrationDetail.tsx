@@ -1,27 +1,26 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { PageHeader } from "@lares/ui/patterns";
-import { Button } from "@lares/ui/primitives/button";
+import { Notice, PageHeader, Row, Rows } from "@lares/ui/patterns";
+import { Badge } from "@lares/ui/primitives/badge";
+import { Card, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import type { BoardRowDTO, ConnectionRowDTO } from "../lib/contracts";
-import { STATUS_TEXT, type IntegrationCard } from "../lib/integrations-grid";
+import { STATUS_BADGE, STATUS_TEXT, type IntegrationCard } from "../lib/integrations-grid";
 import { boardRowsFor, keptText, lastUseText } from "../lib/connection-words";
-import { LogoTile } from "./LogoTile";
 import { ServicePermissions } from "./ServicePermissions";
 
 /** Plain names for the built-in services a connection can be declared for; an unknown id is shown as is. */
 const BUILT_IN_NAMES: Record<string, string> = { "notion-sync": "Notion sync" };
 const builtInName = (id: string) => BUILT_IN_NAMES[id] ?? id;
 
-/** The top of every integration's page: its logo, name, one line and the status the grid shows. */
+/** The top of every integration's page: its name, one line and the status the list shows. */
 export function IntegrationHeader({ card, actions }: { card: IntegrationCard; actions?: ReactNode }) {
   return (
     <>
       <Link href="/integrations">← Integrations</Link>
-      <div className="lares-actions">
-        <LogoTile logo={card.logo} label={`${card.name} logo`} />
-        <span className="lares-card-status" data-enabled={card.status === "enabled"}>{STATUS_TEXT[card.status]}</span>
-      </div>
-      <PageHeader title={card.name} description={card.line} actions={actions} />
+      <PageHeader title={card.name} description={card.line} actions={<>
+        <Badge variant={STATUS_BADGE[card.status]}>{STATUS_TEXT[card.status]}</Badge>
+        {actions}
+      </>} />
     </>
   );
 }
@@ -33,34 +32,23 @@ export function IntegrationDetail({ card, rows, board }: { card: IntegrationCard
   const permissions = board ? boardRowsFor(card.id, board) : [];
   return (
     <>
-      <IntegrationHeader card={card} actions={card.id === "notion" ? <Button variant="outline" asChild><Link href="/meeting-follow-ups">Meetings</Link></Button> : undefined} />
-      {rows.some((r) => r.usageUnavailable) && <p className="lares-muted" role="status">Usage unavailable. Recorded connection activity could not be read.</p>}
+      <IntegrationHeader card={card} />
+      {rows.some((r) => r.usageUnavailable) && <Notice tone="needs-you">Usage unavailable. Recorded connection activity could not be read.</Notice>}
       {rows.map((r) => (
-        <section key={r.instanceId} className="lares-surface lares-stack" aria-label={several ? r.label : undefined}>
-          {several && <h2 className="lares-section-title">{r.label}</h2>}
-          <div>
-            <h3 className="lares-section-title">Which agents use it</h3>
-            <p>{r.usedBy.length ? r.usedBy.join(", ") : "No agent has access yet."}</p>
-          </div>
-          <div>
-            <h3 className="lares-section-title">Last use</h3>
-            <p>{lastUseText(r)}</p>
-          </div>
-          <div>
-            <h3 className="lares-section-title">Where its key is kept</h3>
-            <p>{keptText(r.custody)}</p>
-          </div>
-          {r.declaredFor.length > 0 && (
-            <div>
-              <h3 className="lares-section-title">Built in for</h3>
-              <p>{r.declaredFor.map(builtInName).join(", ")}</p>
-              <p className="lares-muted">This lists what Lares can use it for, not what runs here.</p>
-            </div>
-          )}
-        </section>
+        <Card key={r.instanceId} role={several ? "group" : undefined} aria-label={several ? r.label : undefined}>
+          {several && <CardHeader><CardTitle role="heading" aria-level={2}>{r.label}</CardTitle></CardHeader>}
+          <Rows>
+            <Row title="Which agents use it" description={r.usedBy.length ? r.usedBy.join(", ") : "No agent has access yet."} />
+            <Row title="Last use" description={lastUseText(r)} />
+            <Row title="Where its key is kept" description={keptText(r.custody)} />
+            {r.declaredFor.length > 0 && (
+              <Row title="Built in for" description={<>{r.declaredFor.map(builtInName).join(", ")}. This lists what Lares can use it for, not what runs here.</>} />
+            )}
+          </Rows>
+        </Card>
       ))}
       {board === null ? (
-        <p className="lares-muted" role="status">What agents may do with it could not be read. Reload the page to try again.</p>
+        <Notice tone="needs-you">What agents may do with it could not be read. Reload the page to try again.</Notice>
       ) : permissions.length > 0 && (
         <section className="lares-stack">
           <h2 className="lares-section-title">What agents may do with it</h2>

@@ -1,4 +1,4 @@
-// The Integrations grid: one card per shared service the installation can use. The words on a card
+// The Integrations list: one row per shared service the installation can use. The words on a row
 // are fixed here; whether it is "Enabled" always comes from the same data the detail pages read.
 import type { ConnectionRowDTO } from "./contracts";
 import type { CredentialView } from "./credentials";
@@ -9,7 +9,9 @@ export type CardStatus = "enabled" | "available" | "unavailable";
 export interface IntegrationCard { id: string; name: string; line: string; logo: Logo; status: CardStatus; href: string }
 
 interface Entry { id: string; name: string; line: string; logo: Logo }
-export const STATUS_TEXT: Record<CardStatus, string> = { enabled: "Enabled", available: "Connect", unavailable: "Status unavailable" };
+export const STATUS_TEXT: Record<CardStatus, string> = { enabled: "Enabled", available: "Not in use", unavailable: "Status unavailable" };
+/** The badge colour that goes with each status word. */
+export const STATUS_BADGE: Record<CardStatus, "success" | "neutral" | "warning"> = { enabled: "success", available: "neutral", unavailable: "warning" };
 /** Catalogue entries that are personal accounts live on "Your accounts", not here. */
 const PERSONAL = new Set(["google", "microsoft"]);
 const ENTRIES: Entry[] = [
@@ -20,7 +22,7 @@ const ENTRIES: Entry[] = [
   { id: "karakeep", name: "Karakeep", line: "Bookmarks your agents can read.", logo: { kind: "letter", text: "K" } },
   { id: "readability", name: "Readability worker", line: "Turns saved links into clean text.", logo: { kind: "icon", name: "readability" } },
   { id: "gateway", name: "Model gateway", line: "Where your agents' AI model calls go.", logo: { kind: "icon", name: "gateway" } },
-  { id: "signals", name: "Signal spine", line: "Brings signals from your sources into one feed.", logo: { kind: "icon", name: "signals" } },
+  { id: "signals", name: "Alerts", line: "Brings alerts from your sources into one feed.", logo: { kind: "icon", name: "signals" } },
   { id: "outside", name: "Outside tools (MCP)", line: "Add tools from servers outside Lares.", logo: { kind: "icon", name: "outside" } },
 ];
 

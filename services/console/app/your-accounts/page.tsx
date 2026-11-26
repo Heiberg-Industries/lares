@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { PgAccountStore } from "@lares/agent-kit/account-store";
 import type { ConnectedAccountView } from "@lares/agent-kit/authority-contract";
-import { Notice, Page, PageHeader } from "@lares/ui/patterns";
+import { Notice, Page, PageHeader, Row, Rows } from "@lares/ui/patterns";
+import { Card } from "@lares/ui/primitives/card";
 import { pool } from "../../lib/db";
 import { requireMember, isConsoleOwner } from "../../lib/auth";
 import { listAgentUses } from "../../lib/agent-mailbox";
@@ -26,17 +27,17 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
   const older = isConsoleOwner(member) ? await listGoogleAccounts().then(v => v.unavailable ? [] : v.accounts, () => []) : [];
   return <Page width="narrow" className="lares-stack">
     <PageHeader title="Your accounts" description="Accounts you connect stay yours. An agent works on one only when you choose it on that agent's page." actions={unavailable ? undefined : <AddAccount orgs={googleOrgs()} />} />
-    {params.added && <p role="status">Account connected.</p>}
+    {params.added && <Notice tone="success">Account connected.</Notice>}
     {params.error === GOOGLE_CLIENT_MISSING ? <Notice error>
       <p><strong>Google could not be connected yet.</strong></p>
-      <p>To use a Google mailbox and calendar, this server needs a second Google client, set up by whoever runs the server. It is separate from the one used to sign in to the console. Nothing was connected.</p>
-      <p>The install guide shows how, in section 8 ("Doors, outside tools and integrations"), under "E-mail": <a href="https://github.com/Heiberg-Industries/lares/blob/main/docs/install.md#8-doors-outside-tools-and-integrations" target="_blank" rel="noopener noreferrer">open the install guide</a>.</p>
-    </Notice> : params.error && <p role="alert">The account could not be connected. Try again.</p>}
-    {unavailable ? <p role="status">Your accounts are unavailable. Try again later.</p> : <AccountList accounts={list} />}
+      <p>Nothing was connected. Before anyone can connect a Google mailbox and calendar here, the person who looks after this installation has to add a second Google client. It is separate from the one used for signing in.</p>
+      <p>The install guide shows them how, in section 8 ("Doors, outside tools and integrations"), under "E-mail": <a href="https://github.com/Heiberg-Industries/lares/blob/main/docs/install.md#8-doors-outside-tools-and-integrations" target="_blank" rel="noopener noreferrer">open the install guide</a>.</p>
+    </Notice> : params.error && <Notice tone="error">The account could not be connected. Try again.</Notice>}
+    {unavailable ? <Notice tone="error">Your accounts are unavailable. Try again later.</Notice> : <AccountList accounts={list} />}
     {older.length > 0 && <section className="lares-stack" aria-label="Older mailbox connections">
       <h2 className="lares-section-title">Older mailbox connections</h2>
       <p className="lares-muted">These came from an older way of connecting mail. Nothing uses them any more. You can remove them.</p>
-      {older.map(a => <div key={a.email} className="lares-actions"><span>{a.email}</span><RemoveAccountButton email={a.email} /></div>)}
+      <Card><Rows label="Older mailbox connections">{older.map(a => <Row key={a.email} title={a.email} control={<RemoveAccountButton email={a.email} />} />)}</Rows></Card>
     </section>}
     <p className="lares-muted">More services come later. Shared tools for the whole installation are under {isConsoleOwner(member) ? <Link href="/integrations">Integrations</Link> : "Integrations"}.</p>
   </Page>;

@@ -2,7 +2,8 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown } from "@lares/ui/icons";
-import { Field } from "@lares/ui/patterns";
+import { EmptyState, Field, Notice } from "@lares/ui/patterns";
+import { Badge } from "@lares/ui/primitives/badge";
 import { Button } from "@lares/ui/primitives/button";
 import { Select } from "@lares/ui/primitives/select";
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "@lares/ui/primitives/dialog";
@@ -78,29 +79,31 @@ export function AccountList({ accounts }: { accounts: AccountEntry[] }) {
     try { await removeAccount({ accountId: account.id, generation: account.generation }); router.refresh(); }
     catch { setError("Account could not be disconnected. Refresh and try again."); }
   });
-  if (accounts.length === 0) return <p className="lares-muted">No accounts yet. Use Add account to connect one.</p>;
+  if (accounts.length === 0) return <EmptyState title="No accounts yet">Use Add account to connect one.</EmptyState>;
   return (
+    <>
+    {error && <Notice tone="error">{error}</Notice>}
     <section className="lares-service-list" aria-label="Accounts">
-      {error && <p role="alert" className="lares-form-error">{error}</p>}
       {accounts.map(a => (
         <div key={a.id} className="lares-service-row" data-account={a.id}>
           <LogoTile logo={logo(a.service)} label={`${a.serviceName} logo`} />
-          <div className="lares-service-text">
-            <div className="lares-service-name">{a.label}</div>
-            <p className="lares-service-line">{a.serviceName} · <strong data-status={a.ok ? "working" : "problem"}>{a.status}</strong>{a.lastRead ? ` · Last read ${day(a.lastRead)}` : ""}</p>
-            {a.problem && <p className="lares-service-line">{a.problem}</p>}
-            {a.usedBy.length > 0 && <p className="lares-service-line">Used by: {a.usedBy.join(", ")}</p>}
+          <div className="lares-row-main">
+            <span className="lares-row-title">{a.label}</span>
+            <p className="lares-row-description">{a.serviceName} · <Badge variant={a.ok ? "success" : "warning"}>{a.status}</Badge>{a.lastRead ? ` · Last read ${day(a.lastRead)}` : ""}</p>
+            {a.problem && <p className="lares-row-description">{a.problem}</p>}
+            {a.usedBy.length > 0 && <p className="lares-row-description">Used by: {a.usedBy.join(", ")}</p>}
           </div>
-          <Menu.Root>
+          <div className="lares-row-control"><Menu.Root>
             <Menu.Trigger asChild><Button variant="outline" disabled={pending} aria-label={`Actions for ${a.label}`}>Manage <ChevronDown aria-hidden="true" /></Button></Menu.Trigger>
             <Menu.Content aria-label={`${a.label} actions`}>
               <Menu.Item onSelect={() => setReconnecting(a)}>Reconnect</Menu.Item>
               {!a.revoked && <Menu.Item onSelect={() => disconnect(a)}>Disconnect</Menu.Item>}
             </Menu.Content>
-          </Menu.Root>
+          </Menu.Root></div>
         </div>
       ))}
       {reconnecting && <Reconnect account={reconnecting} onClose={() => setReconnecting(null)} />}
     </section>
+    </>
   );
 }

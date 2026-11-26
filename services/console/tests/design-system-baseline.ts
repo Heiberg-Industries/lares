@@ -41,11 +41,9 @@ export const CSS_COLUMN_LAYOUTS: string[] = [
     slice that rebuilds one lowers its number, and a file leaves the list at zero. No number may rise. */
 export const OPERATIONAL_LEFT: Record<string, number> = {
   "app/backups/page.tsx": 6,
-  "app/integrations/[id]/page.tsx": 4,
   "app/meeting-follow-ups/page.tsx": 3,
   "app/quiet-hours-and-delivery/page.tsx": 13,
   "components/BriefLanguageControl.tsx": 2,
-  "components/NotionProposalsCard.tsx": 7,
   "components/ProactivityControls.tsx": 1,
   "components/ScheduleHoursControl.tsx": 2,
   "components/ServicePermissions.tsx": 2,
