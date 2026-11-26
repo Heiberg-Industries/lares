@@ -57,7 +57,8 @@ function statusOf(id: string, input: CardInput): CardStatus {
 export function integrationCard(id: string, input: CardInput): IntegrationCard | null {
   const e = ENTRIES.find(x => x.id === id);
   if (!e || (e.id !== "outside" && (PERSONAL.has(e.id) || !input.rows.some(r => r.connectionId === e.id)))) return null;
-  return { ...e, status: statusOf(e.id, input), href: `/integrations/${e.id}` };
+  // Outside tools is a page of its own in the menu; every other card opens its page under Integrations.
+  return { ...e, status: statusOf(e.id, input), href: e.id === "outside" ? "/outside-tools" : `/integrations/${e.id}` };
 }
 
 export function buildIntegrationCards(input: CardInput): IntegrationCard[] {

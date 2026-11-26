@@ -4,8 +4,13 @@ The console is the web page at your installation's domain. Sign in with your exp
 Google or configured Microsoft 365 work identity. This is a tour of the existing owner screens.
 Installing is in [`install.md`](../install.md).
 
-Pages under Settings and Connections are not all in the sidebar. They are reached from the page
-named in brackets.
+Every page is in the sidebar, and a page's address is its sidebar words: **Reviews** is `/reviews`.
+Some pages still show an older title, which this tour uses. In the sidebar, Home is **Overview**,
+Waiting on you is **Reviews**, Activity is **Permission checks**, Signals is **Alerts**, Signal
+routes is **Alert routing**, Preferences is **Saved preferences**, Proactivity is **Quiet hours and
+delivery**, Meetings is **Meeting follow-ups**, Email writing style is **Writing style**, Backup is
+**Backups** and Settings is **General**. Sign out, the colour theme and **Your membership** are at
+the foot of the sidebar. The brackets under a heading name another way to reach that page.
 
 ## Sign-in, members and sign-out
 

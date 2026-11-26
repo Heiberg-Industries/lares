@@ -98,7 +98,7 @@ describe("real changes against this repository", () => {
       changed: ["services/console/app/your-accounts/page.tsx"],
       rebuild: ["console", "keeper"],
       because: {
-        console: /services\/console\/app\/accounts\/page\.tsx is in @lares\/console, which services\/console\/Dockerfile installs or builds/,
+        console: /services\/console\/app\/your-accounts\/page\.tsx is in @lares\/console, which services\/console\/Dockerfile installs or builds/,
         keeper: /copied into the image by services\/keeper\/Dockerfile \("COPY services\/ \.\/services\/"\)/,
       },
     },

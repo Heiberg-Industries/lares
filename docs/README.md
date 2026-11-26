@@ -39,6 +39,11 @@ Numbering has gaps; see [`decisions/README.md`](decisions/README.md).
 - [`outside-tool-tokens.md`](runbooks/outside-tool-tokens.md) — Placing the token file for an outside tool
 - [`vault-import.md`](runbooks/vault-import.md) — Bringing an existing folder of notes into the Vault
 
+## reference
+
+- [`console-design-system.md`](reference/console-design-system.md) — The console's look: its values, grid and shared parts, and the tests that hold pages to them
+- [`connected-account-store.md`](reference/connected-account-store.md) — How member-owned connected accounts are stored
+
 ## releases
 
 Maintainers publish a test release with one command: [`publishing-a-test-release.md`](publishing-a-test-release.md).

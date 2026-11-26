@@ -30,11 +30,12 @@ describe("sidebar sign out", () => {
   });
 });
 
-it('shows only private chat, your accounts and membership to another member and never mounts owner inbox polling',()=>{
+it('shows only private chat, your accounts and your membership to another member and never mounts owner inbox polling',()=>{
   inbox.mounted.mockClear();render(<Nav owner={false} />);
   expect(screen.getAllByRole('link',{name:'Chat'}).length).toBeGreaterThan(0);
-  expect(screen.getAllByRole('link',{name:'Membership'}).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole('link',{name:'Your membership'}).length).toBeGreaterThan(0);
   expect(screen.getAllByRole('link',{name:'Your accounts'}).length).toBeGreaterThan(0);
-  for(const name of ['Home','Waiting on you','Agents','Activity','Connections','Integrations','Members','Deadlines','Preferences','Settings'])expect(screen.queryByRole('link',{name})).toBeNull();
+  expect(screen.getAllByRole('link').map(a=>a.getAttribute('href')).sort()).toEqual(['/chat','/chat','/chat','/your-accounts','/your-membership']);
+  for(const name of ['Overview','Reviews','Agents','Writing style','Integrations','Outside tools','Deadlines','Meeting follow-ups','Saved preferences','Permission checks','Alerts','Members','General','Quiet hours and delivery','Alert routing','Backups'])expect(screen.queryByRole('link',{name})).toBeNull();
   expect(inbox.mounted).not.toHaveBeenCalled();
 });

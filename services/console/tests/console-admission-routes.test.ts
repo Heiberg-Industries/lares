@@ -40,7 +40,7 @@ describe("trusted console admission callback", () => {
   it("sends a second owner or ordinary member only to their own membership page", async () => {
     mocks.create.mockResolvedValue({ member: { ...owner, id: "second" }, token: "x".repeat(43) });
     const res = await GET(req(), ctx("callback"));
-    expect(res.headers.get("location")).toBe("https://console.example.test/membership");
+    expect(res.headers.get("location")).toBe("https://console.example.test/your-membership");
   });
   it("never links an unknown identity by email", async () => {
     mocks.lookup.mockResolvedValue(undefined);

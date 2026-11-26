@@ -59,7 +59,8 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
   const { id } = await params;
   const [rows, credential, outsideToolsInUse, gateway] = await Promise.all([getConnectionRows(), getCredentialView(), anyOutsideToolsInUse(), getGatewayStatusView()]);
   const card = integrationCard(id, { rows, credential, outsideToolsInUse, gateway });
-  if (!card) notFound();
+  // Outside tools is listed here as a card but lives at /outside-tools; it has no page under Integrations.
+  if (!card || id === "outside") notFound();
 
   const [board, notion, clipping, agents] = await Promise.all([
     getBoardRows({ strict: true }).catch(() => null),
