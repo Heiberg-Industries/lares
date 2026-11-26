@@ -4,6 +4,8 @@ import { Select } from "@lares/ui/primitives/select";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { Button } from "@lares/ui/primitives/button";
 import { Input } from "@lares/ui/primitives/input";
+import { Card } from "@lares/ui/primitives/card";
+import { Field, Notice } from "@lares/ui/patterns";
 
 import {
   commitPaste,
@@ -64,53 +66,50 @@ export function TakeoutImport() {
   const removedNames = preview?.flatMap((p) => p.removedNames) ?? [];
 
   return (
-    <div className="card lares-control-card">
-      <div>
-        <label className="lares-field-label" htmlFor="taste-csv">Google Takeout CSV files</label>
+    <div className="lares-stack">
+      <Field label="Google Takeout CSV files">
         <Input
-          id="taste-csv"
           type="file"
           accept=".csv,text/csv"
           multiple
-          className="lares-field"
           onChange={(e) => void onFiles(e.target.files)}
         />
-      </div>
+      </Field>
 
       {lists.length > 0 && (
-        <div className="lares-table-scroll"><table className="card lares-operational-table">
+        <Card><div className="lares-table-scroll"><table>
           <thead><tr><th>List name</th><th>City (optional)</th><th>Country (optional)</th><th></th></tr></thead>
           <tbody>
             {lists.map((l, i) => (
               <tr key={i}>
-                <td><Input className="lares-field" value={l.listName} onChange={(e) => edit(i, { listName: e.target.value })} /></td>
+                <td><Input value={l.listName} aria-label="List name" onChange={(e) => edit(i, { listName: e.target.value })} /></td>
                 <td>
-                  <Input className="lares-field" value={l.city ?? ""} placeholder="Example City"
+                  <Input value={l.city ?? ""} placeholder="Example City" aria-label={`City for ${l.listName}`}
                     onChange={(e) => edit(i, { city: e.target.value })} />
                 </td>
                 <td>
-                  <Input className="lares-field" value={l.country ?? ""} placeholder="USA"
+                  <Input value={l.country ?? ""} placeholder="USA" aria-label={`Country for ${l.listName}`}
                     onChange={(e) => edit(i, { country: e.target.value })} />
                 </td>
                 <td className="lares-small lares-status-muted">{l.csvText.split("\n").length - 1} rows</td>
               </tr>
             ))}
           </tbody>
-        </table></div>
+        </table></div></Card>
       )}
 
       {lists.length > 0 && (
-        <Button  disabled={pending}
+        <Button disabled={pending}
           onClick={() => run(async () => setPreview(await previewTakeout({ lists })))}>
           Preview changes
         </Button>
       )}
 
-      {error && <p className="mono lares-small lares-status-error lares-row-actions">✕ {error}</p>}
+      {error && <Notice error>{error}</Notice>}
 
       {preview && (
-        <div className="lares-row-actions">
-          <div className="lares-table-scroll"><table className="card lares-operational-table">
+        <div className="lares-stack">
+          <Card><div className="lares-table-scroll"><table>
             <thead><tr><th>List</th><th>+ added</th><th>~ updated</th><th>− removed</th><th>Coordinates</th></tr></thead>
             <tbody>
               {preview.map((p) => (
@@ -127,14 +126,14 @@ export function TakeoutImport() {
                 </tr>
               ))}
             </tbody>
-          </table></div>
+          </table></div></Card>
           {removedNames.length > 0 && (
-            <p className="lares-small lares-status-error lares-row-actions">
+            <Notice tone="needs-you">
               Removed from these lists: {removedNames.slice(0, 12).join(", ")}
               {removedNames.length > 12 && ` … (+${removedNames.length - 12})`}
-            </p>
+            </Notice>
           )}
-          <Button  disabled={pending}
+          <Button disabled={pending}
             onClick={() => run(async () => { setResults(await commitTakeout({ lists })); setPreview(null); })}>
             Save changes
           </Button>
@@ -166,21 +165,19 @@ export function ListCountry({ lists }: { lists: string[] }) {
   if (lists.length === 0) return null;
 
   return (
-    <div className="card lares-control-card">
+    <div className="lares-stack">
       <div className="lares-inline-form">
-        <div className="lares-inline-field">
-          <label className="lares-field-label" htmlFor="country-list">List</label>
-          <Select id="country-list" value={listName}
+        <Field label="List">
+          <Select value={listName}
             onChange={(e) => { setListName(e.target.value); setResult(null); }}>
             <option value="">Choose a list</option>
             {lists.map((l) => <option key={l} value={l}>{l}</option>)}
           </Select>
-        </div>
-        <div className="lares-inline-field">
-          <label className="lares-field-label" htmlFor="country-value">Country</label>
-          <Input id="country-value" className="lares-field" value={country} placeholder="Denmark"
+        </Field>
+        <Field label="Country">
+          <Input value={country} placeholder="Denmark"
             onChange={(e) => { setCountry(e.target.value); setResult(null); }} />
-        </div>
+        </Field>
         <Button
           disabled={pending || listName === "" || country.trim() === ""}
           onClick={() => {
@@ -197,15 +194,15 @@ export function ListCountry({ lists }: { lists: string[] }) {
         >
           Set country
         </Button>
-        {error && <span className="mono lares-small lares-status-error">✕ {error}</span>}
-        {result && (
-          <span className="mono lares-small lares-status-success">
-            ✓ {result.listName}: {result.changed} updated
-            {result.alreadySet > 0 && `, ${result.alreadySet} already set`}
-            {result.changed === 0 && result.alreadySet === 0 && " — this list has no entries"}
-          </span>
-        )}
       </div>
+      {error && <Notice error>{error}</Notice>}
+      {result && (
+        <Notice tone="success">
+          {result.listName}: {result.changed} updated
+          {result.alreadySet > 0 && `, ${result.alreadySet} already set`}
+          {result.changed === 0 && result.alreadySet === 0 && " — this list has no entries"}
+        </Notice>
+      )}
     </div>
   );
 }
@@ -237,55 +234,51 @@ export function PasteImport() {
   }
 
   return (
-    <div className="card lares-control-card">
+    <div className="lares-stack">
       <div className="lares-inline-form">
-        <div>
-          <label className="lares-field-label" htmlFor="paste-domain">Category</label>
-          <Select id="paste-domain" value={domain} onChange={(e) => setDomain(e.target.value)}>
+        <Field label="Category">
+          <Select value={domain} onChange={(e) => setDomain(e.target.value)}>
             <option value="music">music — playlists and tracks</option>
             <option value="food">food — dishes and notes</option>
             <option value="notes">notes — everything else</option>
             <option value="places">places — one place per line</option>
           </Select>
-        </div>
-        <div className="lares-inline-field">
-          <label className="lares-field-label" htmlFor="paste-name">List name</label>
-          <Input id="paste-name" className="lares-field" value={name} placeholder="Summer 2026"
+        </Field>
+        <Field label="List name">
+          <Input value={name} placeholder="Summer 2026"
             onChange={(e) => setName(e.target.value)} />
-        </div>
+        </Field>
         {domain === "places" && (
-          <div className="lares-inline-field">
-            <label className="lares-field-label" htmlFor="paste-city">City (optional)</label>
-            <Input id="paste-city" className="lares-field" value={city} placeholder="Example City"
+          <Field label="City (optional)">
+            <Input value={city} placeholder="Example City"
               onChange={(e) => setCity(e.target.value)} />
-          </div>
+          </Field>
         )}
         {domain === "places" && (
-          <div className="lares-inline-field">
-            <label className="lares-field-label" htmlFor="paste-country">Country (optional)</label>
-            <Input id="paste-country" className="lares-field" value={country} placeholder="USA"
+          <Field label="Country (optional)">
+            <Input value={country} placeholder="USA"
               onChange={(e) => setCountry(e.target.value)} />
-          </div>
+          </Field>
         )}
       </div>
       {domain === "places" && (
-        <p className="lares-small lares-status-muted lares-row-actions">
+        <p className="lares-note">
           Each pasted place becomes one entry without coordinates. Add a city to help your agents find it later.
         </p>
       )}
       <Textarea
-        className="lares-preferences-paste"
         value={text}
+        aria-label="The list, one entry per line"
         placeholder={"- Artist One — Album One\n- Artist Two — Album Two"}
         onChange={(e) => setText(e.target.value)}
       />
-      <div className="lares-actions lares-row-actions">
-        <Button  disabled={pending || text.trim() === "" || name.trim() === ""} onClick={onSave}>
+      <div className="lares-actions">
+        <Button disabled={pending || text.trim() === "" || name.trim() === ""} onClick={onSave}>
           Save
         </Button>
-        {error && <span className="mono lares-small lares-status-error">✕ {error}</span>}
-        {message && <span className="mono lares-small lares-status-success">✓ {message}</span>}
       </div>
+      {error && <Notice error>{error}</Notice>}
+      {message && <Notice tone="success">{message}</Notice>}
     </div>
   );
 }
@@ -311,17 +304,17 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
   const [showApprox, setShowApprox] = useState(false);
 
   return (
-    <div ref={ref} className="lares-result-card">
-      <p className="mono lares-small lares-status-success">
-        ✓ Saved {results.length} {results.length === 1 ? "list" : "lists"}: +{sum((r) => r.added)} added,{" "}
+    <div ref={ref} className="lares-stack">
+      <Notice tone="success">
+        Saved {results.length} {results.length === 1 ? "list" : "lists"}: +{sum((r) => r.added)} added,{" "}
         ~{sum((r) => r.changed)} changed, −{sum((r) => r.removed)} removed
         {sum((r) => r.geocoded) > 0 && `, ${sum((r) => r.geocoded)} located`}
         {approximate.length > 0 && `, ${approximate.length} approximate`}
         {unresolved.length > 0 && `, ${unresolved.length} without coordinates`}
-      </p>
+      </Notice>
 
       {results.map((r) => (
-        <p key={r.listName} className="mono lares-small lares-status-muted lares-row-actions">
+        <p key={r.listName} className="mono lares-note">
           {r.listName}: +{r.added} ~{r.updated} −{r.removed}
           {r.updated > 0 && (r.changed > 0
             ? ` · ${r.changed} of ${r.updated} actually changed`
@@ -332,7 +325,7 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
       ))}
 
       {approximate.length > 0 && (
-        <div className="lares-row-actions">
+        <>
           <Button
             type="button"
             onClick={() => setShowApprox((v) => !v)}
@@ -341,16 +334,16 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
             {showApprox ? "Hide" : "Show"} {approximate.length} approximate locations
           </Button>
           {showApprox && (
-            <p className="lares-small lares-status-muted lares-row-actions">
+            <p className="lares-note">
               Placed from the link location without a confirmed match:{" "}
               {approximate.map((u) => `${u.name} (${u.reason})`).join(", ")}
             </p>
           )}
-        </div>
+        </>
       )}
 
       {unresolved.length > 0 && (
-        <p className="lares-small lares-status-muted lares-row-actions">
+        <p className="lares-note">
           No coordinates available (never guessed):{" "}
           {unresolved.slice(0, 12).map((u) => `${u.name} (${u.reason})`).join(", ")}
           {unresolved.length > 12 && ` … (+${unresolved.length - 12})`}

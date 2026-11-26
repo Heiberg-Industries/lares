@@ -1,6 +1,6 @@
 "use client";
 /**
- *  — the owner's controls on `/deadlines`: the ladder switch, per-row Done/Dismiss/Bring
+ *  — the owner's controls on `/deadlines`: the reminders switch, per-row Done/Dismiss/Bring
  * back, the Add form, the statutory-year mint form, and a candidate's Add/Ignore.
  *
  * Shaped like `ProactivityControls.tsx`: every write reports `{ ok }|{ ok: false, message }` and a
@@ -18,7 +18,9 @@ import { Button } from "@lares/ui/primitives/button";
 import { Input } from "@lares/ui/primitives/input";
 import { Select } from "@lares/ui/primitives/select";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
-import { Field } from "@lares/ui/patterns";
+import { Switch } from "@lares/ui/primitives/switch";
+import { Card } from "@lares/ui/primitives/card";
+import { Field, Notice, Row, Rows } from "@lares/ui/patterns";
 import {
   addDeadline, addFromCandidate, dismiss, ignoreCandidate, markDone, mintStatutoryYear, resetRung,
   saveLadderEnabled,
@@ -27,10 +29,10 @@ import { ruleDueDate } from "../lib/deadline-date";
 
 function Msg({ msg }: { msg: { ok: boolean; text: string } | null }) {
   if (!msg) return null;
-  return <span role="status" className={msg.ok ? "lares-form-success" : "lares-form-error"}>{msg.text}</span>;
+  return <Notice tone={msg.ok ? "success" : "error"}>{msg.text}</Notice>;
 }
 
-// ── Ladder ─────────────────────────────────────────────────────────────────────────────────────
+// ── Reminders ─────────────────────────────────────────────────────────────────────────────────────
 
 export function LadderSwitch({ enabled }: { enabled: boolean }) {
   const [on, setOn] = useState(enabled);
@@ -43,21 +45,27 @@ export function LadderSwitch({ enabled }: { enabled: boolean }) {
     setMsg(null);
     start(async () => {
       const r = await saveLadderEnabled({ enabled: next }).catch((e) => ({ ok: false as const, message: String(e instanceof Error ? e.message : e) }));
-      if (r.ok) setMsg({ ok: true, text: next ? "on" : "off" });
+      if (r.ok) setMsg({ ok: true, text: next ? "Reminders are on." : "Reminders are off." });
       else { setOn(prev); setMsg({ ok: false, text: r.message }); }
     });
   }
 
   return (
-    <div className="card lares-control-card">
-      <label className="lares-checkbox-row">
-        <Checkbox checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
-        {/* Both states are STATED: a bare "Escalation ladder" beside an unchecked box
-            reads as a label whose value failed to render, not as a switch that is off. */}
-        <span>Escalation ladder — {on ? "ON" : "OFF"}</span>
-        <Msg msg={msg} />
-      </label>
-    </div>
+    <Card>
+      <Rows>
+        {/* Both states are STATED: a bare label beside a switch that is off reads as a value that
+            failed to render, not as a setting that is off. */}
+        <Row
+          title={`Reminders — ${on ? "ON" : "OFF"}`}
+          description={on
+            ? "Reminders are on: a nudge the day before, a nudge on the due day for statutory deadlines, and a last one the day after."
+            : "Reminders are off: the brief still lists deadlines; nothing is sent on its own."}
+          control={<Switch checked={on} disabled={pending} onCheckedChange={toggle} aria-label="Send deadline reminders" />}
+        >
+          <Msg msg={msg} />
+        </Row>
+      </Rows>
+    </Card>
   );
 }
 
@@ -130,7 +138,7 @@ export function OpenRow({ row }: { row: OpenDeadlineRow }) {
     setMsg(null);
     start(async () => {
       const r = await resetRung({ id: row.id }).catch((e) => ({ ok: false as const, message: String(e instanceof Error ? e.message : e) }));
-      setMsg(r.ok ? { ok: true, text: "rung reset" } : { ok: false, text: r.message });
+      setMsg(r.ok ? { ok: true, text: "Reminders start again for this deadline." } : { ok: false, text: r.message });
     });
   }
 
@@ -154,13 +162,13 @@ export function OpenRow({ row }: { row: OpenDeadlineRow }) {
           {showDone && (
             <div className="lares-actions">
               <Input placeholder="Evidence (required)" value={evidence} onChange={(e) => setEvidence(e.target.value)} aria-label={`Evidence for ${row.title}`} />
-              <Button  disabled={pending} onClick={submitDone}>Confirm done</Button>
+              <Button disabled={pending} onClick={submitDone}>Confirm done</Button>
             </div>
           )}
           {showDismiss && (
             <div className="lares-actions">
               <Input placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} aria-label={`Dismiss reason for ${row.title}`} />
-              <Button  disabled={pending} onClick={submitDismiss}>Confirm dismiss</Button>
+              <Button disabled={pending} onClick={submitDismiss}>Confirm dismiss</Button>
             </div>
           )}
           <Msg msg={msg} />
@@ -204,37 +212,39 @@ export function AddForm() {
       if (r.ok) {
         setEntity(""); setTitle(""); setDueDate(""); setConsequence("");
         setVendor(""); setAmount(""); setCurrency("");
-        setMsg({ ok: true, text: "added" });
+        setMsg({ ok: true, text: "Added." });
       } else setMsg({ ok: false, text: r.message });
     });
   }
 
   return (
-    <div className="card lares-deadline-form">
-      <label className="lares-field-label">Entity<Input placeholder="Company or person" value={entity} onChange={(e) => setEntity(e.target.value)} /></label>
-      <label className="lares-field-label">Title<Input placeholder="What is due" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-      <label className="lares-field-label">Due date<Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>
-      <Field label="Source"><Select value={source} onChange={(e) => setSource(e.target.value as (typeof SOURCES)[number])}>
-        {SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
-      </Select></Field>
-      <Field label="Repeats"><Select value={recurrence} onChange={(e) => setRecurrence(e.target.value as (typeof RECURRENCES)[number])}>
-        {RECURRENCES.map((r) => <option key={r} value={r}>{r}</option>)}
-      </Select></Field>
-      <label className="lares-field-label">Consequence (optional)<Input placeholder="What happens if missed" value={consequence} onChange={(e) => setConsequence(e.target.value)} /></label>
-      {isRenewal && (
-        <>
-          <label className="lares-field-label">Vendor<Input placeholder="Vendor" value={vendor} onChange={(e) => setVendor(e.target.value)} /></label>
-          <label className="lares-field-label">Amount<Input type="number" step="0.01" min="0" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
-          <label className="lares-field-label">Currency<Input placeholder="NOK" value={currency} onChange={(e) => setCurrency(e.target.value)} maxLength={3} /></label>
-        </>
-      )}
-      <div className="lares-actions lares-deadline-submit"><Button disabled={pending} onClick={submit}>{pending ? "Adding…" : "Add deadline"}</Button></div>
+    <div className="lares-stack">
+      <div className="lares-inline-form">
+        <Field label="Entity"><Input placeholder="Company or person" value={entity} onChange={(e) => setEntity(e.target.value)} /></Field>
+        <Field label="Title"><Input placeholder="What is due" value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+        <Field label="Due date"><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
+        <Field label="Source"><Select value={source} onChange={(e) => setSource(e.target.value as (typeof SOURCES)[number])}>
+          {SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </Select></Field>
+        <Field label="Repeats"><Select value={recurrence} onChange={(e) => setRecurrence(e.target.value as (typeof RECURRENCES)[number])}>
+          {RECURRENCES.map((r) => <option key={r} value={r}>{r}</option>)}
+        </Select></Field>
+        <Field label="Consequence (optional)"><Input placeholder="What happens if missed" value={consequence} onChange={(e) => setConsequence(e.target.value)} /></Field>
+        {isRenewal && (
+          <>
+            <Field label="Vendor"><Input placeholder="Vendor" value={vendor} onChange={(e) => setVendor(e.target.value)} /></Field>
+            <Field label="Amount"><Input type="number" step="0.01" min="0" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} /></Field>
+            <Field label="Currency"><Input placeholder="NOK" value={currency} onChange={(e) => setCurrency(e.target.value)} maxLength={3} /></Field>
+          </>
+        )}
+      </div>
+      <div className="lares-actions"><Button disabled={pending} onClick={submit}>{pending ? "Adding…" : "Add deadline"}</Button></div>
       <Msg msg={msg} />
     </div>
   );
 }
 
-// ── Mint a statutory year ─────────────────────────────────────────────────────────────────────
+// ── Add the year's legal deadlines ─────────────────────────────────────────────────────────────────────
 
 export interface MintRule {
   key: string;
@@ -280,28 +290,28 @@ export function MintForm({
         .catch((e) => ({ ok: false as const, message: String(e instanceof Error ? e.message : e) }));
       if (r.ok) {
         const past = r.skippedPast.length > 0 ? `, ${r.skippedPast.length} already past (${r.skippedPast.join(", ")})` : "";
-        setMsg({ ok: true, text: `minted ${r.inserted}, skipped ${r.skipped} already present${past}` });
+        setMsg({ ok: true, text: `Added ${r.inserted}. Skipped ${r.skipped} already there${past}.` });
       } else setMsg({ ok: false, text: r.message });
     });
   }
 
   return (
-    <div className="card lares-control-card lares-stack">
-      <p className="lares-small lares-status-warning">
-        Confirm each date against the authority before minting — these are the standing dates, not a feed.
-      </p>
-      <div className="lares-actions">
-        <Input className="lares-entity-input" placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label="Entity" />
-        <Input className="lares-short-input" type="number" value={fiscalYear} onChange={(e) => setFiscalYear(Number(e.target.value))} aria-label="Fiscal year" />
-        <span className="lares-small lares-status-muted">Jurisdiction: {jurisdiction}</span>
+    <div className="lares-stack">
+      <Notice tone="needs-you">
+        Check each date with the authority before adding — these are the usual dates, not a live feed.
+      </Notice>
+      <div className="lares-inline-form">
+        <Field label="Entity"><Input placeholder="Company or person" value={entity} onChange={(e) => setEntity(e.target.value)} /></Field>
+        <Field label="Fiscal year"><Input className="lares-short-input" type="number" value={fiscalYear} onChange={(e) => setFiscalYear(Number(e.target.value))} /></Field>
       </div>
-      <div className="lares-table-scroll"><table>
+      <p className="lares-note">Jurisdiction: {jurisdiction}</p>
+      <Card><div className="lares-table-scroll"><table>
         <thead><tr><th></th><th>Rule</th><th>Date</th><th>Recurrence</th><th>Consequence</th></tr></thead>
         <tbody>
           {rules.map((r) => {
             // Greyed, not hidden and not unchecked: the rule still belongs to the year, and an
             // owner who genuinely still owes a past term needs to see it named before adding it by
-            // hand. The mint skips it either way — the checkbox has no say in that.
+            // hand. The action skips it either way — the checkbox has no say in that.
             const past = ruleDueDate(r, fiscalYear) < today;
             return (
               <tr key={r.key} className={past ? "lares-dim-row" : undefined}>
@@ -317,11 +327,11 @@ export function MintForm({
             );
           })}
         </tbody>
-      </table></div>
+      </table></div></Card>
       <div className="lares-actions">
-        <Button  disabled={pending} onClick={submit}>{pending ? "Minting…" : "Mint this year"}</Button>
-        <Msg msg={msg} />
+        <Button disabled={pending} onClick={submit}>{pending ? "Adding…" : "Add this year's deadlines"}</Button>
       </div>
+      <Msg msg={msg} />
     </div>
   );
 }
@@ -386,7 +396,7 @@ export function CandidateRow({ candidate }: { candidate: CandidateDTO }) {
               <Input placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label={`Entity for ${candidate.subject}`} />
               <Input placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} aria-label={`Title for ${candidate.subject}`} />
               <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} aria-label={`Due date for ${candidate.subject}`} />
-              <Button  disabled={pending} onClick={submitAdd}>Confirm add</Button>
+              <Button disabled={pending} onClick={submitAdd}>Confirm add</Button>
             </div>
           )}
           <Msg msg={msg} />

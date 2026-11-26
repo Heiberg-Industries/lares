@@ -8,9 +8,11 @@ export default function NotFound() {
         title="Page not found"
         description="This agent or page is not available at this address."
       />
-      <Button variant="outline" asChild>
-        <Link href="/agents">Back to agents</Link>
-      </Button>
+      <div className="lares-actions">
+        <Button variant="outline" asChild>
+          <Link href="/agents">Back to agents</Link>
+        </Button>
+      </div>
     </Page>
   );
 }

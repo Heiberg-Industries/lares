@@ -64,27 +64,40 @@ beforeEach(() => {
 });
 
 describe("/deadlines", () => {
-  it("shows the ladder-off note when the ladder is off", async () => {
+  it("shows the reminders-off note when reminders are off", async () => {
     const html = await render(view({ ladderEnabled: false }));
-    expect(html).toMatch(/OFF: the brief still lists deadlines; nothing is sent on its own/);
+    expect(html).toMatch(/Reminders are off: the brief still lists deadlines; nothing is sent on its own/);
   });
 
-  it("shows the ladder-on description when the ladder is on", async () => {
+  it("shows the reminders-on description when reminders are on", async () => {
     const html = await render(view({ ladderEnabled: true }));
-    expect(html).not.toMatch(/OFF: the brief still lists/);
-    expect(html).toMatch(/escalation ladder is on/i);
+    expect(html).not.toMatch(/Reminders are off: the brief still lists/);
+    expect(html).toMatch(/Reminders are on: a nudge the day before/);
   });
 
-  // The switch LABEL states both states: a bare "Escalation ladder" beside an
-  // unchecked box reads as a value that failed to render, not as a switch that is off.
-  it("the ladder switch says OFF as plainly as it says ON", async () => {
-    expect(await render(view({ ladderEnabled: false }))).toContain("Escalation ladder — OFF");
-    expect(await render(view({ ladderEnabled: true }))).toContain("Escalation ladder — ON");
+  // The switch LABEL states both states: a bare "Reminders" beside a switch that is off reads as
+  // a value that failed to render, not as a setting that is off.
+  it("the reminders switch says OFF as plainly as it says ON", async () => {
+    const off = await render(view({ ladderEnabled: false }));
+    expect(off).toContain("Reminders — OFF");
+    expect(off).toMatch(/role="switch"[^>]*aria-checked="false"|aria-checked="false"[^>]*role="switch"/u);
+    const on = await render(view({ ladderEnabled: true }));
+    expect(on).toContain("Reminders — ON");
+    expect(on).toMatch(/role="switch"[^>]*aria-checked="true"|aria-checked="true"[^>]*role="switch"/u);
   });
 
-  // The mint form greys the terms already behind today: the mint skips them, and a
+  // Plain words: the page says "Reminders" and names what the year button creates.
+  it("uses plain words for the reminders and for the year's legal deadlines", async () => {
+    const html = await render(view());
+    expect(html).not.toMatch(/ladder|\bmint/i);
+    expect(html).toContain("Add the year&#x27;s legal deadlines");
+    expect(html).toContain("Creates the fixed legal deadlines for one year");
+    expect(html).toContain("Add this year&#x27;s deadlines");
+  });
+
+  // The year form greys the terms already behind today: the action skips them, and a
   // form that offered them as ordinary checkboxes would promise rows it will not create.
-  it("the mint form greys the statutory rules already past for the default year and says why", async () => {
+  it("the year form greys the statutory rules already past for the default year and says why", async () => {
     // The clock is PINNED: the default fiscal year is the current one, so which rules are behind
     // today depends on the day the suite runs — on 1 January none of them are.
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -92,7 +105,7 @@ describe("/deadlines", () => {
     try {
       const html = await render(view());
       expect(html).toContain("already past — add by hand if you still want it");
-      expect(html).toMatch(/A mint adds only the terms still ahead of today/);
+      expect(html).toMatch(/It adds\s+only the dates still ahead of today/);
       // Term 3 falls 31 August 2026 — behind 8 September, so its row is greyed and its
       // checkbox disabled. term 4 falls 10 October, still ahead, so its checkbox is live.
       expect(html).toMatch(/VAT return, term 3<span[^>]*> — already past/u);
@@ -103,7 +116,7 @@ describe("/deadlines", () => {
     }
   });
 
-  it("a fiscal year wholly ahead greys nothing — the note is about past dates, not about minting", async () => {
+  it("a fiscal year wholly ahead greys nothing — the note is about past dates, not about adding", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-01-01T10:00:00Z"));
     try {
@@ -136,9 +149,9 @@ describe("/deadlines", () => {
     expect(html.slice(laterIdx, laterIdx + 400)).not.toMatch(/lares-status-error|lares-status-warning/);
   });
 
-  it("shows the mint form's confirm line and every statutory rule with a standing date", async () => {
+  it("shows the year form's confirm line and every statutory rule with a standing date", async () => {
     const html = await render(view());
-    expect(html).toMatch(/Confirm each date against the authority before minting — these are the standing dates, not a feed\./);
+    expect(html).toMatch(/Check each date with the authority before adding — these are the usual dates, not a live feed\./);
     expect(html).toContain("Register return");
     expect(html).toContain("31 January");
     expect(html).toContain(TEST_CALENDAR.jurisdiction);

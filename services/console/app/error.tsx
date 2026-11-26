@@ -8,9 +8,11 @@ export default function ConsoleError({ reset }: { reset: () => void }) {
       <Notice error>
         We could not read the current state. Try again before making another change.
       </Notice>
-      <Button variant="outline" onClick={reset}>
-        Try again
-      </Button>
+      <div className="lares-actions">
+        <Button variant="outline" onClick={reset}>
+          Try again
+        </Button>
+      </div>
     </Page>
   );
 }
