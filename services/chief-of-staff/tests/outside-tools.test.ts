@@ -4,7 +4,7 @@ const fake=vi.hoisted(()=>({broker:vi.fn(),execute:vi.fn(),privateSession:vi.fn(
 vi.mock('@lares/agent-kit/vault-broker-client',()=>({vaultBrokerRequest:fake.broker,executeApprovedOutsideCall:fake.execute}));
 vi.mock('@lares/agent-kit/private-console-surface',()=>({verifyPrivateConsoleSession:fake.privateSession}));
 vi.mock('@lares/agent-kit/approval-execution',async orig=>({...(await orig<typeof import('@lares/agent-kit/approval-execution')>()),reserveExactApproval:fake.reserve,reserveExactApprovalOrDeny:fake.reserveOrDeny,approveExactResponse:fake.response,requireApprovedExecution:fake.approved,requireApprovedRecheck:fake.recheck}));
-vi.mock('../lib/definition.js',()=>({thisAgent:fake.definition}));
+vi.mock('../lib/definition.js',()=>({thisAgent:fake.definition,withSwitchesNow:async(loaded:{definition:unknown})=>loaded.definition}));
 // eve keeps Lares's per-session marks (which turn applied an answer to a card) in its durable session
 // state, which only a running eve session can read; here those `lares.` states are held in memory.
 const eveState=vi.hoisted(()=>({values:new Map<string,unknown>(),readable:true}));

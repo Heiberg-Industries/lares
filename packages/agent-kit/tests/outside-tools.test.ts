@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { hashOf, parseDefinition } from "../src/definition.js";
 import { validateDefinition } from "../src/definition-validate.js";
-import { checkOutsideUrl, outsideHttpsHosts, outsideSecretName, outsideToolOfferedOn, outsideToolsInEffect } from "../src/outside-tools.js";
+import { checkOutsideUrl, isDangerRun, outsideHttpsHosts, outsideSecretName, outsideToolOfferedOn, outsideToolsInEffect, runsWithoutAsking, switchesHold, withSwitchesFrom } from "../src/outside-tools.js";
 import { assemblePersona } from "../src/persona/index.js";
 
 const ROLE = "I keep the books.\n";
@@ -187,5 +187,41 @@ describe('where an outside tool is offered', () => {
     expect(outsideToolOfferedOn('private-door-chat', entry, 'lookup', 'q'.repeat(64))).toBe(false);
     expect(outsideToolOfferedOn('private-door-chat', entry, 'lookup', undefined)).toBe(false);
     expect(outsideToolOfferedOn('private-door-chat', entry, 'change', 'p'.repeat(64))).toBe(false);
+  });
+});
+
+describe("the owner's run-without-asking switches in an open conversation", () => {
+  const pin = "a".repeat(64);
+  const grant = (tool: string) => ({ tool, pin, by: "m", at: "2026-11-20T10:00:00.000Z" });
+  it("takes both switch lists from the definition as it is now, and nothing else", () => {
+    const pinned = base({ outsideTools: [entry({ tools: { allow: ["lookup", "create_note"], read: ["lookup"], danger: [grant("create_note")] } })] });
+    const now = base({ outsideTools: [entry({ description: "Edited.", tools: { allow: ["lookup", "create_note"], read: ["lookup"], trusted: [grant("lookup")] } })] });
+    const [seen] = withSwitchesFrom(pinned, now).outsideTools!;
+    // Switched off since the conversation started: it asks again. Switched on since: it runs without a card.
+    expect(isDangerRun(seen!, "create_note", pin)).toBe(false);
+    expect(runsWithoutAsking(seen!, "lookup", pin)).toBe(true);
+    expect(seen!.description).toBe("Looks up companies by name.");
+    expect(hashOf({ definition: withSwitchesFrom(pinned, now), dutiesMd: "", voiceMd: "" })).toBe(hashOf({ definition: pinned, dutiesMd: "", voiceMd: "" }));
+  });
+  it("switches a tool that changes something on, and drops every switch of a connection that is gone", () => {
+    const pinned = base();
+    const on = base({ outsideTools: [entry({ tools: { allow: ["lookup", "create_note"], read: ["lookup"], danger: [grant("create_note")] } })] });
+    expect(isDangerRun(withSwitchesFrom(pinned, on).outsideTools![0]!, "create_note", pin)).toBe(true);
+    expect(withSwitchesFrom(on, base({ outsideTools: [] })).outsideTools![0]!.tools).toEqual({ allow: ["lookup", "create_note"], read: ["lookup"] });
+    expect(withSwitchesFrom(base({ outsideTools: undefined }), on).outsideTools).toBeUndefined();
+  });
+  it("agrees with the definition check on which switches are valid", () => {
+    const tools = (extra: Record<string, unknown>) => ({ allow: ["lookup", "create_note"], read: ["lookup"], ...extra });
+    const cases: Record<string, unknown>[] = [
+      { outsideTools: [entry({ tools: tools({ trusted: [grant("lookup")], danger: [grant("create_note")] }) })] },
+      { outsideTools: [entry({ tools: tools({ trusted: [grant("create_note")] }) })] },
+      { outsideTools: [entry({ tools: tools({ trusted: [grant("lookup"), grant("lookup")] }) })] },
+      { outsideTools: [entry({ tools: tools({ danger: [grant("lookup")] }) })] },
+      { outsideTools: [entry({ tools: tools({ danger: [grant("unlisted")] }) })] },
+      { outsideTools: [entry({ tools: tools({ danger: [grant("create_note"), grant("create_note")] }) })] },
+      { grants: [{ capability: "outside", scope: "read" }], autonomy: { outside: "gated" }, outsideTools: [entry({ tools: { allow: ["lookup"], read: ["lookup"], danger: [] } })] },
+    ];
+    expect(cases.map((c) => switchesHold(base(c)))).toEqual(cases.map((c) => messages(check(c)) === ""));
+    expect(cases.map((c) => switchesHold(base(c)))).toEqual([true, false, false, false, false, false, true]);
   });
 });
