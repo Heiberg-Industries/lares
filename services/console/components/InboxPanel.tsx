@@ -8,6 +8,8 @@
  * and straight away when the tab becomes visible again.
  */
 import { Button } from "@lares/ui/primitives/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@lares/ui/primitives/card";
+import { Row, Rows } from "@lares/ui/patterns";
 import Link from "next/link";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { markRead } from "../app/actions/inbox";
@@ -44,44 +46,56 @@ export function InboxPanel({ agent, initial, earlier = [] }: { agent: string; in
     await refresh();
   });
 
+  const when = (m: InboxMessage) => <time dateTime={m.createdAt}>{m.createdAt.replace("T", " ").slice(0, 16)} UTC</time>;
+  const reply = (m: InboxMessage) => (
+    <Button variant="ghost" size="sm" asChild><Link href={`/chat/${encodeURIComponent(agent)}?reply=${m.id}`}>Reply</Link></Button>
+  );
+
   return (
-    <section aria-label="Messages waiting in web chat" className="lares-surface">
+    <Card role="region" aria-label="Messages waiting in web chat">
       {messages.length > 0 && (
         <>
-          <h2 className="lares-section-title">
-            {messages.length === 1 ? "1 message for you" : `${messages.length} messages for you`}
-          </h2>
-          <ul className="lares-data-list">
+          <CardHeader>
+            <CardTitle role="heading" aria-level={2}>
+              {messages.length === 1 ? "1 message for you" : `${messages.length} messages for you`}
+            </CardTitle>
+            {messages.length > 1 && (
+              <CardAction>
+                <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => read()}>Mark all as read</Button>
+              </CardAction>
+            )}
+          </CardHeader>
+          <Rows>
             {messages.map((m) => (
-              <li key={m.id}>
-                <strong>{m.title}</strong>{" "}
-                <time className="lares-muted" dateTime={m.createdAt}>{m.createdAt.replace("T", " ").slice(0, 16)} UTC</time>
-                <p className="lares-pre lares-row-actions">{m.body}</p>
-                <Link href={`/chat/${encodeURIComponent(agent)}?reply=${m.id}`}>Reply</Link>{" · "}
-                <Button type="button" variant="outline" disabled={pending} onClick={() => read(m.id)}>Mark as read</Button>
-              </li>
+              <Row
+                key={m.id}
+                title={m.title}
+                description={when(m)}
+                control={<>
+                  {reply(m)}
+                  <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => read(m.id)}>Mark as read</Button>
+                </>}
+              >
+                <p className="lares-pre">{m.body}</p>
+              </Row>
             ))}
-          </ul>
-          {messages.length > 1 && (
-            <Button type="button" variant="outline" disabled={pending} onClick={() => read()}>Mark all as read</Button>
-          )}
+          </Rows>
         </>
       )}
       {earlier.length > 0 && (
-        <details className="lares-inset-disclosure">
-          <summary>Earlier messages ({earlier.length})</summary>
-          <ul className="lares-data-list">
-            {earlier.map((m) => (
-              <li key={m.id}>
-                <strong>{m.title}</strong>{" "}
-                <time className="lares-muted" dateTime={m.createdAt}>{m.createdAt.replace("T", " ").slice(0, 16)} UTC</time>
-                <p className="lares-pre lares-row-actions">{m.body}</p>
-                <Link href={`/chat/${encodeURIComponent(agent)}?reply=${m.id}`}>Reply</Link>
-              </li>
-            ))}
-          </ul>
-        </details>
+        <CardContent>
+          <details>
+            <summary>Earlier messages ({earlier.length})</summary>
+            <Rows>
+              {earlier.map((m) => (
+                <Row key={m.id} title={m.title} description={when(m)} control={reply(m)}>
+                  <p className="lares-pre">{m.body}</p>
+                </Row>
+              ))}
+            </Rows>
+          </details>
+        </CardContent>
       )}
-    </section>
+    </Card>
   );
 }

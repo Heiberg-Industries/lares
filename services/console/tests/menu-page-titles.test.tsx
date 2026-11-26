@@ -30,7 +30,6 @@ const NOT_YET: Record<string, string> = {
   "/": "Your house",
   "/reviews": "Waiting on you",
   "/writing-style": "Email writing style",
-  "/saved-preferences": "Preferences",
   "/permission-checks": "Permission activity",
   "/alerts": "Signals",
   "/general": "Settings",

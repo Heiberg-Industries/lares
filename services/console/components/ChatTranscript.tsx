@@ -1,5 +1,7 @@
 import type { EveInteractionPart, EveMessage, EveMessagePart, EveToolPart, Interaction, UseEveAgentStatus } from "eve/react";
 import { Button } from "@lares/ui/primitives/button";
+import { Badge } from "@lares/ui/primitives/badge";
+import { Notice } from "@lares/ui/patterns";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { approvalArguments,personalSendCardFields,type PersonalSendCard, type ApprovalField } from "../lib/approval-text";
 
@@ -292,7 +294,7 @@ function ApprovalCard({
   const options = (approval.request.options ?? []).filter((option): option is typeof option & { id: AnswerOption } => option.id === APPROVE || option.id === DENY);
   return (
     <div className="lares-approval">
-      <p className="mono lares-approval-eyebrow">Needs your approval</p>
+      <p className="lares-approval-eyebrow"><Badge variant="warning">Needs your approval</Badge></p>
       <p className="lares-approval-prompt">{approval.request.prompt}</p>
       {body.fields.map((field, i) => (
         <div key={i} className="lares-approval-field">
@@ -488,11 +490,7 @@ export function ChatTranscript({ messages, status, error = null, ended = false, 
       ) : (
         messages.map((message) => <TranscriptMessage key={message.id} message={message} cards={cards} {...(agentName === undefined ? {} : { agentName })} />)
       )}
-      {failed && !(messages.length === 0 && notRunning) ? (
-        <p role="alert" className="lares-status-error">
-          {error}
-        </p>
-      ) : null}
+      {failed && !(messages.length === 0 && notRunning) ? <Notice error>{error}</Notice> : null}
     </div>
   );
 }

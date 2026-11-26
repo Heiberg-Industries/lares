@@ -51,6 +51,8 @@ vi.mock("eve/react", () => ({
     respond: mock.respond,
   });},
 }));
+/** The words of a message box, without its round icon. */
+const said = (notice: HTMLElement) => notice.querySelector(".lares-notice-body")?.textContent;
 const agents = [
   { name: "agent-one", displayName: "Agent One", role: "Chief of Staff" },
   { name: "agent-two", displayName: "Agent Two", role: "Research" },
@@ -282,7 +284,7 @@ function failWith(message: string) {
 it("shows the member limit sentence, keeps the session and the draft, and leaves the composer open", async () => {
   failWith(MEMBER);
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(MEMBER);
+  expect(said(await screen.findByRole("alert"))).toBe(MEMBER);
   expect(screen.queryByText(/unavailable/i)).toBeNull();
   expect(sessionStorage.getItem(KEY)).not.toBeNull();
   expect(sessionStorage.getItem(`${KEY}:draft`)).toBe("typed later");
@@ -291,7 +293,7 @@ it("shows the member limit sentence, keeps the session and the draft, and leaves
 it("shows the installation limit sentence, which carries no amount", async () => {
   failWith(INSTALLATION);
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(INSTALLATION);
+  expect(said(await screen.findByRole("alert"))).toBe(INSTALLATION);
   expect(sessionStorage.getItem(KEY)).not.toBeNull();
 });
 it.each([
@@ -353,7 +355,7 @@ const TOO_LONG = "This conversation has grown too long for me to continue. Start
 it("says why when a conversation has grown too long, and keeps the way to a new one", async () => {
   failWith(MODEL_COMPACTION_REFUSED);
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(TOO_LONG);
+  expect(said(await screen.findByRole("alert"))).toBe(TOO_LONG);
   expect(screen.queryByText(/unavailable/i)).toBeNull();
   expect(screen.queryByText(MODEL_COMPACTION_REFUSED)).toBeNull();
   // Still a broken conversation: nothing more can be sent into it, and a new one is offered.
@@ -389,7 +391,7 @@ it("after a turn that already completed a call, says that part may already be do
   withConversation(lines);
   mock.error = Object.assign(new Error(MODEL_COMPACTION_REFUSED), { name: "MODEL_CALL_FAILED" });
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(`${TOO_LONG} Part of what you asked may already have been done, so check before asking again.`);
+  expect(said(await screen.findByRole("alert"))).toBe(`${TOO_LONG} Part of what you asked may already have been done, so check before asking again.`);
   // The same failure with no completed call in its turn keeps the sentence alone.
   expect(conversationTooLongOf(mock.events, emptySessionView())).toBe(TOO_LONG);
 });
@@ -537,7 +539,7 @@ it.each([
   await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
   view.rerender(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
   const alerts = await screen.findAllByRole("alert");
-  expect(alerts.map((alert) => alert.textContent)).toEqual([sentence]);
+  expect(alerts.map(said)).toEqual([sentence]);
   expect(screen.queryByText(/conversation is unavailable|did not reach the agent|Start a new conversation|Nothing was sent/)).toBeNull();
   expect(screen.queryByRole("button", { name: "Start a new conversation" })).toBeNull();
   // Still a conversation: the member's next ordinary message goes to the agent.
@@ -585,7 +587,7 @@ it("a message into a conversation an update ended: the plain sentence, a way to 
   await userEvent.type(await screen.findByRole("textbox", { name: "Message Agent One" }), "Are you there?");
   await userEvent.click(screen.getByRole("button", { name: "Send message" }));
   view.rerender(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(UPDATE);
+  expect(said(await screen.findByRole("alert"))).toBe(UPDATE);
   expect(screen.queryByText(/RAW FRAMEWORK WORDS|session_stranded|409|0\.60\.1/)).toBeNull();
   // Sent once. Never again, however long the page stays open.
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -606,7 +608,7 @@ it("an answer into a conversation an update ended: the same plain sentence, and 
   mock.respond.mockRejectedValueOnce(stranded());
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
   await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
-  expect((await screen.findByRole("alert")).textContent).toBe(UPDATE);
+  expect(said(await screen.findByRole("alert"))).toBe(UPDATE);
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
   expect(screen.getByText("This card is no longer active. Nothing was approved.")).toBeDefined();
@@ -620,7 +622,7 @@ it("an answer into a conversation a save to the agent ended: the ended sentence,
   mock.respond.mockRejectedValueOnce(new ClientError(410, "This conversation is no longer available. Start a new one.", { "content-type": "text/plain", "x-lares-console-refusal": "1" }));
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
   await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
-  expect((await screen.findByRole("alert")).textContent).toBe(OVER);
+  expect(said(await screen.findByRole("alert"))).toBe(OVER);
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
   expect(screen.queryByText(/did not reach the agent/)).toBeNull();
@@ -633,14 +635,14 @@ it("an answer into a conversation a save to the agent ended: the ended sentence,
   await userEvent.type(await screen.findByRole("textbox", { name: "Message Agent One" }), "Still there?");
   await userEvent.click(screen.getByRole("button", { name: "Send message" }));
   view.rerender(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(OVER);
+  expect(said(await screen.findByRole("alert"))).toBe(OVER);
 });
 
 it("a saved conversation that an update ended says so when the page is opened again", async () => {
   sessionStorage.setItem(KEY, JSON.stringify({ sessionId: "old-session", streamIndex: 12, inbox: "opaque-inbox" }));
   mock.error = stranded();
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(UPDATE);
+  expect(said(await screen.findByRole("alert"))).toBe(UPDATE);
   // The whole saved state went to the framework unchanged, the opaque inbox included.
   expect(mock.options.at(-1).initialSession).toEqual({ sessionId: "old-session", streamIndex: 12, inbox: "opaque-inbox" });
   expect(screen.queryByText(/could not be reopened|unavailable/)).toBeNull();
@@ -655,7 +657,7 @@ it("a conversation that ended for another reason has its own sentence, which doe
   await userEvent.type(await screen.findByRole("textbox", { name: "Message Agent One" }), "Still there?");
   await userEvent.click(screen.getByRole("button", { name: "Send message" }));
   view.rerender(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(OVER);
+  expect(said(await screen.findByRole("alert"))).toBe(OVER);
   expect(screen.queryByText(/update/i)).toBeNull();
   expect(screen.queryByText(/no longer active\. Start a new session/)).toBeNull(); // the framework's own sentence
   expect(mock.send).toHaveBeenCalledOnce();
@@ -667,21 +669,21 @@ it("an answer refused because the conversation has ended says that sentence too"
   mock.respond.mockRejectedValueOnce(new SessionNotActiveError());
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
   await userEvent.click(await screen.findByRole("button", { name: "Deny" }));
-  expect((await screen.findByRole("alert")).textContent).toBe(OVER);
+  expect(said(await screen.findByRole("alert"))).toBe(OVER);
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
 });
 
 it("a conversation whose own record shows it ended is closed before anyone types into it", async () => {
   withConversation([...waitingCard(), [{ type: "session.ended", data: { outcome: "completed" } }]]);
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(OVER);
+  expect(said(await screen.findByRole("alert"))).toBe(OVER);
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
   expect((screen.getByRole("textbox", { name: "Message Agent One" }) as HTMLTextAreaElement).disabled).toBe(true);
   cleanup();
   mock.events.length = 0;
   withConversation([...waitingCard(), [{ type: "session.ended", data: { outcome: "failed", error: { code: "session_stranded", message: "RAW FRAMEWORK WORDS" } } }]]);
   render(<Chat name="agent-one" memberId="Member-ID" agents={agents} />);
-  expect((await screen.findByRole("alert")).textContent).toBe(UPDATE);
+  expect(said(await screen.findByRole("alert"))).toBe(UPDATE);
   expect(screen.queryByText(/RAW FRAMEWORK WORDS/)).toBeNull();
 });
 
