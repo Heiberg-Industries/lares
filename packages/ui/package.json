@@ -8,7 +8,8 @@
     "./primitives/*": "./src/primitives/*.tsx",
     "./patterns": "./src/patterns.tsx",
     "./icons": "./src/icons.ts",
-    "./console.css": "./src/console.css"
+    "./console.css": "./src/console.css",
+    "./console-theme.css": "./src/console-theme.css"
   },
   "license": "AGPL-3.0-only",
   "dependencies": {

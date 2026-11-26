@@ -1,6 +1,8 @@
+/* The shell: the menu column and the page area. Every value comes from the console's design values. */
 .shell {
   display: flex;
   min-height: 100dvh;
+  background: var(--lares-bg);
 }
 .skip {
   position: fixed;
@@ -8,107 +10,73 @@
   top: -100px;
   left: var(--space-3);
   padding: var(--space-2) var(--space-3);
-  background: var(--card);
-  color: var(--foreground);
-  border: 1px solid var(--border);
+  background: var(--lares-surface);
+  color: var(--lares-text);
+  border: 1px solid var(--lares-line);
   border-radius: var(--lares-control-radius);
 }
 .skip:focus {
   top: var(--space-3);
 }
-.sidebar {
-  width: 200px;
-  flex: none;
-  position: sticky;
-  top: 0;
-  height: 100dvh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-8);
-  padding: 28px 12px;
-  border-right: 1px solid var(--sidebar-border);
-  background: var(--sidebar);
-}
 .brand {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  padding-inline: var(--space-3);
-  color: var(--sidebar-foreground);
-  font: var(--text-console-title);
+  padding-inline: var(--space-2);
+  color: var(--lares-text);
+  font: var(--lares-type-section);
+  font-size: 15px;
 }
 .brand:hover {
   text-decoration: none;
 }
-.navItems {
-  display: grid;
-  gap: var(--space-1);
-}
-.navItem {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-height: var(--lares-control-height);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--lares-control-radius);
-  color: var(--muted-foreground);
-  font: var(--text-body);
-}
-.navItem svg {
-  width: 17px;
-  height: 18px;
-  flex: none;
-}
-.navItem:hover {
-  text-decoration: none;
-  background: var(--lares-hover);
-}
-.unreadDot {
-  width: 8px;
-  height: 8px;
-  margin-left: auto;
-  border-radius: 50%;
-  background: var(--primary);
-  flex: none;
-}
-.signOut {
-  width: 100%;
-  border: 0;
-  background: none;
-  cursor: pointer;
-  text-align: left;
-}
-.navItem.current {
-  background: var(--sidebar-accent);
-  color: var(--sidebar-accent-foreground);
-  font-weight: 500;
-}
-.groupLabel {
-  margin: 14px 0 4px;
-  padding: 25px 12px 8px;
-  border-top: 1px solid var(--border);
-  font: var(--text-body-sm);
-  font-weight: 600;
-  color: var(--muted-foreground);
-}
-.bottom {
+.groups {
   display: grid;
   gap: var(--space-4);
-  margin-top: auto;
 }
-.installation {
-  margin: 0 var(--space-3);
-  color: var(--muted-foreground);
-  font: var(--text-mono-sm);
+.unreadDot {
+  width: var(--lares-badge-dot);
+  height: var(--lares-badge-dot);
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--lares-accent);
+  flex: none;
+}
+.person {
+  color: var(--lares-text-muted);
+}
+.appearance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: var(--lares-menu-item-height);
+  padding-left: var(--space-2);
+}
+.appearanceLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.appearanceLabel svg {
+  width: var(--lares-menu-icon);
+  height: var(--lares-menu-icon);
+  color: var(--lares-text-muted);
+}
+.appearance :global(.lares-actions) {
+  gap: 2px;
+}
+.appearance :global(.lares-button) {
+  width: var(--lares-control-height-sm);
+  height: var(--lares-control-height-sm);
+  min-height: var(--lares-control-height-sm);
+}
+.appearance :global(.lares-button) svg {
+  width: var(--lares-menu-icon);
+  height: var(--lares-menu-icon);
 }
 .main {
-  flex: 1;
-  min-width: 0;
-  padding: 40px 60px 64px;
-}
-.content {
-  max-width: var(--lares-page-width);
+  padding: var(--space-10) var(--space-10) var(--space-16);
 }
 .mobileBar {
   display: none;
@@ -117,23 +85,15 @@
   .shell {
     flex-direction: column;
   }
-  .sidebar {
-    display: none;
-  }
   .mobileBar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-3) var(--space-4);
-    background: var(--sidebar);
-    border-bottom: 1px solid var(--border);
+    padding: var(--space-2) var(--space-4);
+    background: var(--lares-sidebar-bg);
+    border-bottom: 1px solid var(--lares-line);
   }
   .main {
-    padding: var(--space-8) var(--space-4) var(--space-12);
-  }
-  .mobileMenu {
-    display: grid;
-    gap: var(--space-5);
-    background: var(--sidebar);
+    padding: var(--space-6) var(--space-4) var(--space-12);
   }
 }

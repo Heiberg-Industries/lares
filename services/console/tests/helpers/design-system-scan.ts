@@ -97,6 +97,44 @@ export function cssWidthLimits(css: string): string[] {
   return limits;
 }
 
+/** Every value of one property in a stylesheet, as "selector: value", one entry per declaration. */
+function cssValues(css: string, property: string): string[] {
+  const found: string[] = [];
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const declaration = new RegExp(`(?:^|[;\\s])${property}\\s*:\\s*([^;]+)`, "g");
+  for (const [, selector, body] of clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    for (const [, value] of body.matchAll(declaration)) found.push(`${selector.trim().replace(/\s+/g, " ")}: ${value.trim()}`);
+  }
+  return found;
+}
+
+/** Every column layout a stylesheet sets for itself (`grid-template-columns`). Page and Col own the page's columns. */
+export const cssColumnLayouts = (css: string): string[] => cssValues(css, "grid-template-columns");
+
+// The size from which a fixed width is layout rather than the size of an icon or a dot.
+const BLOCK_SIZED: Record<string, number> = { px: 120, rem: 8, em: 8, ch: 20, vw: 0 };
+
+/** Every block-sized fixed `width` or `min-width` (a length, not a share of the space on offer) in a stylesheet. */
+export function cssFixedWidths(css: string): string[] {
+  const fixed = (entry: string) => {
+    const [, amount, unit] = /: (\d*\.?\d+)(px|rem|em|ch|vw)$/.exec(entry) ?? [];
+    return !!unit && Number(amount) >= BLOCK_SIZED[unit]!;
+  };
+  return [...cssValues(css, "width").map((entry) => entry.replace(": ", " width: ")), ...cssValues(css, "min-width").map((entry) => entry.replace(": ", " min-width: "))]
+    .filter(fixed);
+}
+
+/** Classes in a source file that size a block by hand, or name a column span the grid does not have. */
+export function widthClasses(source: string): string[] {
+  const sized = source.match(/(?<![\w-])(?:max-w|min-w|w|basis)-(?:\[[^\]]+\]|\d[\w./]*|full|screen|xs|sm|md|lg|xl|\dxl|prose)(?![\w-])/g) ?? [];
+  const spans = (source.match(/lares-col-[\w-]+/g) ?? []).filter((name) => !/^lares-col-(12|8|6|4|3)$/.test(name) && name !== "lares-col-");
+  return [...sized, ...spans];
+}
+
+/** How many times a file writes a class that starts with the given prefix. */
+export const countClass = (source: string, prefix: string): number =>
+  source.match(new RegExp(`(?<![\\w-])${prefix}[\\w-]*`, "g"))?.length ?? 0;
+
 export function sourceFiles(root: string, directory: string, extension: string): string[] {
   const found: string[] = [];
   const walk = (current: string) => {

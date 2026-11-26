@@ -1,136 +1,207 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import {
-  MessageSquareText,
+  House,
   Inbox,
-  UsersRound,
-  History,
+  MessageSquareText,
+  Bot,
+  PenLine,
+  Sparkles,
+  IdCard,
+  CircleUserRound,
   Plug,
+  Wrench,
+  BookOpen,
   CalendarDays,
+  ListChecks,
   Bookmark,
+  ShieldCheck,
+  Bell,
+  UsersRound,
+  Tags,
   Settings2,
-  Menu,
+  Clock,
+  Route,
+  DatabaseBackup,
+  UserRound,
+  SunMoon,
   LogOut,
 } from "@lares/ui/icons";
-import { HomeIcon, Mark } from "@lares/ui/patterns";
-import { Button } from "@lares/ui/primitives/button";
+import { Mark } from "@lares/ui/patterns";
 import {
-  Dialog,
-  DialogTrigger,
-  DialogContent,
-  DialogTitle,
-} from "@lares/ui/primitives/dialog";
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@lares/ui/primitives/sidebar";
 import { ThemeControl, useConsoleTheme } from "./ThemeControl";
 import { InboxDot } from "./InboxDot";
 import styles from "./AppShell.module.css";
-const main = [
-  { href: "/", label: "Home", Icon: HomeIcon },
-  { href: "/reviews", label: "Waiting on you", Icon: Inbox },
-  { href: "/chat", label: "Chat", Icon: MessageSquareText },
-  { href: "/agents", label: "Agents", Icon: UsersRound },
-  { href: "/permission-checks", label: "Activity", Icon: History },
-  { href: "/members", label: "Members", Icon: UsersRound },
+
+type Icon = ComponentType<{ "aria-hidden"?: boolean | "true" | "false" }>;
+/** A page in the menu. Its address reads like its words. */
+export type MenuPage = { href: string; label: string; Icon: Icon };
+/** A group of pages under one label. The first group has none. */
+export type MenuGroup = { label: string | null; pages: MenuPage[] };
+
+/** The owner's menu, in order. */
+export const OWNER_MENU: MenuGroup[] = [
+  { label: null, pages: [
+    { href: "/", label: "Overview", Icon: House },
+    { href: "/reviews", label: "Reviews", Icon: Inbox },
+    { href: "/chat", label: "Chat", Icon: MessageSquareText },
+  ] },
+  { label: "Agents", pages: [
+    { href: "/agents", label: "Agents", Icon: Bot },
+    { href: "/writing-style", label: "Writing style", Icon: PenLine },
+  ] },
+  { label: "Connections", pages: [
+    { href: "/your-accounts", label: "Your accounts", Icon: CircleUserRound },
+    { href: "/integrations", label: "Integrations", Icon: Plug },
+    { href: "/outside-tools", label: "Outside tools", Icon: Wrench },
+  ] },
+  { label: "Tools", pages: [
+    { href: "/deadlines", label: "Deadlines", Icon: CalendarDays },
+    { href: "/meeting-follow-ups", label: "Meeting follow-ups", Icon: ListChecks },
+    { href: "/saved-preferences", label: "Saved preferences", Icon: Bookmark },
+  ] },
+  { label: "Activity", pages: [
+    { href: "/permission-checks", label: "Permission checks", Icon: ShieldCheck },
+    { href: "/alerts", label: "Alerts", Icon: Bell },
+  ] },
+  { label: "Organisation", pages: [
+    { href: "/members", label: "Members", Icon: UsersRound },
+  ] },
+  { label: "Installation", pages: [
+    { href: "/general", label: "General", Icon: Settings2 },
+    { href: "/quiet-hours-and-delivery", label: "Quiet hours and delivery", Icon: Clock },
+    { href: "/alert-routing", label: "Alert routing", Icon: Route },
+    { href: "/backups", label: "Backups", Icon: DatabaseBackup },
+  ] },
 ];
-// "Connections" is a group: one page for the member's own accounts, one for the shared services.
-const connections = [
-  { href: "/your-accounts", label: "Your accounts", Icon: UsersRound },
-  { href: "/integrations", label: "Integrations", Icon: Plug },
+
+/** Pages that are announced but not built yet. Each shows greyed at the end of its group with a "Coming" tag,
+    and is plain text: not a link, and nothing happens when it is clicked. When one ships, delete its line here
+    and add it to its group in OWNER_MENU with an address. */
+export const COMING: { group: string; label: string; Icon: Icon }[] = [
+  { group: "Agents", label: "Skills", Icon: Sparkles },
+  { group: "Agents", label: "Profiles", Icon: IdCard },
+  { group: "Connections", label: "Knowledge sources", Icon: BookOpen },
+  { group: "Organisation", label: "Brands", Icon: Tags },
 ];
-const [beforeConnections, afterConnections] = [main.slice(0, 5), main.slice(5)];
-const tools = [
-  { href: "/deadlines", label: "Deadlines", Icon: CalendarDays },
-  { href: "/saved-preferences", label: "Preferences", Icon: Bookmark },
+
+/** Under the signed-in person's name, for everyone. */
+export const MEMBERSHIP: MenuPage = { href: "/your-membership", label: "Your membership", Icon: UserRound };
+
+/** What a member who is not the owner sees. */
+export const MEMBER_MENU: MenuGroup[] = [
+  { label: null, pages: [OWNER_MENU[0]!.pages[2]!] },
+  { label: "Connections", pages: [OWNER_MENU[2]!.pages[0]!] },
 ];
-export function Nav({owner}:{owner:boolean}) {
+
+/** The one current menu page for an address: the page whose address is the longest match. */
+export function currentHref(pathname: string, pages: MenuPage[]): string | null {
+  let best: string | null = null;
+  for (const { href } of pages) {
+    const match = href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+    if (match && (best === null || href.length > best.length)) best = href;
+  }
+  return best;
+}
+
+export function Nav({ owner, person }: { owner: boolean; person?: string | null }) {
   const pathname = usePathname();
   const theme = useConsoleTheme();
   const [open, setOpen] = useState(false);
-  function active(href: string) {
-    if (href === "/permission-checks" && pathname.startsWith("/alerts")) return true;
-    if (
-      href === "/integrations" &&
-      (pathname === "/writing-style" || pathname === "/meeting-follow-ups")
-    )
-      return true;
-    if (
-      href === "/general" &&
-      (pathname === "/backups" || pathname === "/quiet-hours-and-delivery")
-    )
-      return true;
-    return href === "/"
-      ? pathname === "/"
-      : pathname === href || pathname.startsWith(`${href}/`);
-  }
-  const item = ({ href, label, Icon }: (typeof main)[number]) => (
-    <Link
-      key={href}
-      href={href}
-      onClick={() => setOpen(false)}
-      className={`${styles.navItem} ${active(href) ? styles.current : ""}`}
-      aria-current={active(href) ? "page" : undefined}
-    >
-      <Icon aria-hidden="true" />
-      {label}
-      {owner && href === "/chat" && <InboxDot />}
-    </Link>
+  const menu = owner ? OWNER_MENU : MEMBER_MENU;
+  const current = currentHref(pathname, [...menu.flatMap((group) => group.pages), MEMBERSHIP]);
+  const close = () => setOpen(false);
+  const page = ({ href, label, Icon }: MenuPage) => (
+    <SidebarMenuItem key={href}>
+      <SidebarMenuButton asChild isActive={current === href}>
+        <Link href={href} onClick={close} aria-current={current === href ? "page" : undefined}>
+          <Icon aria-hidden="true" />
+          <span>{label}</span>
+          {owner && href === "/chat" && <InboxDot />}
+        </Link>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
   );
+  const home = owner ? "/" : "/chat";
   const contents = (
     <>
-      <Link className={styles.brand} href={owner?"/":"/chat"} onClick={() => setOpen(false)}>
-        <Mark />
-        lares
-      </Link>
-      <nav aria-label="Console navigation" className={styles.navItems}>
-        {owner ? <>
-          {beforeConnections.map(item)}
-          <p className={styles.groupLabel}>Connections</p>
-          {connections.map(item)}
-          {afterConnections.map(item)}
-        </> : [
-          {href:'/chat',label:'Chat',Icon:MessageSquareText},
-          connections[0],
-          {href:'/your-membership',label:'Membership',Icon:UsersRound},
-        ].map(item)}
-        {owner && <><p className={styles.groupLabel}>Tools</p>{tools.map(item)}</>}
-      </nav>
-      <div className={styles.bottom}>
-        {owner && item({ href: "/general", label: "Settings", Icon: Settings2 })}
-        <form action="/api/auth/logout" method="post">
-          <button type="submit" className={`${styles.navItem} ${styles.signOut}`}>
-            <LogOut aria-hidden="true" />
-            Sign out
-          </button>
-        </form>
-        <ThemeControl {...theme} />
-        <p className={styles.installation}>this installation</p>
-      </div>
-    </>
-  );
-  return (
-    <>
-      <aside className={styles.sidebar}>{contents}</aside>
-      <div className={styles.mobileBar}>
-        <Link className={styles.brand} href={owner?"/":"/chat"}>
+      <SidebarHeader>
+        <Link className={styles.brand} href={home} onClick={close}>
           <Mark />
           lares
         </Link>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button variant="ghost" size="icon" aria-label="Open navigation">
-              <Menu />
-            </Button>
-          </DialogTrigger>
-          <DialogContent
-            className={styles.mobileMenu}
-            aria-describedby={undefined}
-          >
-            <DialogTitle className="sr-only">Console navigation</DialogTitle>
-            {contents}
-          </DialogContent>
-        </Dialog>
-      </div>
+      </SidebarHeader>
+      <SidebarContent>
+        <nav aria-label="Console navigation" className={styles.groups}>
+          {menu.map((group) => (
+            <SidebarGroup key={group.label ?? "top"}>
+              {group.label && <SidebarGroupLabel asChild><p>{group.label}</p></SidebarGroupLabel>}
+              <SidebarMenu>
+                {group.pages.map(page)}
+                {owner && COMING.filter((item) => item.group === group.label).map(({ label, Icon }) => (
+                  <SidebarMenuItem key={label}>
+                    <SidebarMenuButton disabled>
+                      <Icon aria-hidden="true" />
+                      <span>{label}</span>
+                      <SidebarMenuBadge>Coming</SidebarMenuBadge>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroup>
+          ))}
+        </nav>
+      </SidebarContent>
+      <SidebarFooter>
+        <SidebarGroup>
+          <SidebarGroupLabel asChild><p className={styles.person}>{person || "Signed in"}</p></SidebarGroupLabel>
+          <SidebarMenu>
+            {page(MEMBERSHIP)}
+            <SidebarMenuItem className={styles.appearance}>
+              <span className={styles.appearanceLabel}>
+                <SunMoon aria-hidden="true" />
+                Appearance
+              </span>
+              <ThemeControl {...theme} />
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <form action="/api/auth/logout" method="post">
+                <SidebarMenuButton type="submit">
+                  <LogOut aria-hidden="true" />
+                  <span>Sign out</span>
+                </SidebarMenuButton>
+              </form>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
+      </SidebarFooter>
     </>
+  );
+  return (
+    <SidebarProvider openMobile={open} onOpenMobileChange={setOpen}>
+      <Sidebar label="Console navigation">{contents}</Sidebar>
+      <div className={styles.mobileBar}>
+        <Link className={styles.brand} href={home}>
+          <Mark />
+          lares
+        </Link>
+        <SidebarTrigger aria-label="Open navigation" />
+      </div>
+    </SidebarProvider>
   );
 }
