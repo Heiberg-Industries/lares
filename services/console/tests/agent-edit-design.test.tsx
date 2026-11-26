@@ -21,7 +21,7 @@ it('puts who the agent is and what it can do side by side, with status first and
  edit();
  const who=screen.getByRole('heading',{name:'Who it is'}),what=screen.getByRole('heading',{name:'What it can do'});
  const grid=who.closest('.lares-grid');expect(grid).not.toBeNull();expect(grid!.contains(what)).toBe(true);
- expect(who.closest('.lares-surface')).not.toBe(what.closest('.lares-surface'));
+ expect(who.closest('[data-slot="card"]')).not.toBe(what.closest('[data-slot="card"]'));
  const status=screen.getByRole('heading',{name:'Status'}),lifecycle=screen.getByRole('heading',{name:'Agent lifecycle'});
  expect(order(status,who)).toBe(true);expect(order(screen.getByText('Doors setup'),lifecycle)).toBe(true);
  // Everything on the page is shown, not folded away behind summaries.

@@ -1,5 +1,6 @@
 "use client";
-import { FieldGroup } from "@lares/ui/patterns";
+import { Field, FieldGroup, Notice } from "@lares/ui/patterns";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { Input } from "@lares/ui/primitives/input";
 import {useEffect,useRef,useState} from 'react';
 import {slackClaimMessage,slackExistingAppSteps,SLACK_ICON_STEP,slackManifest,telegramConnectLink,telegramSteps,doorStateText,doorTouched} from '../lib/doors';
@@ -91,38 +92,43 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
  let createUrl='',manifestText='';try{const m=slackManifest({name:p.name,display:p.display,role:p.role,...(p.description?{description:p.description}:{})},p.origin);createUrl=m.createUrl;manifestText=JSON.stringify(m.manifest,null,2);}catch{}
  const expiredAt=connect?Date.parse(connect.expiresAt):NaN;
  const touchedPending=rows.some(r=>doorTouched(r)&&r.pending);
- return <section aria-label="Door setup" className="lares-door-setup"><h2>Connect doors</h2>
- <p>Paste your bot's credentials and press Connect. Saving, switching the door on, applying it to this agent and checking it all happen by themselves; at the end you confirm it is you with one tap or one message.</p>
+ const expired=Number.isFinite(expiredAt)&&expiredAt<Date.now()?' (it has expired; ask for a new one above)':'';
+ return <section aria-label="Door setup" className="lares-stack"><h2 className="lares-section-title">Connect doors</h2>
+ <p className="lares-muted">Paste your bot's credentials and press Connect. Saving, switching the door on, applying it to this agent and checking it all happen by themselves; at the end you confirm it is you with one tap or one message.</p>
  <SaveEndsConversations running={p.running}/>
- {!createUrl&&<p role="alert">Configure the public HTTPS webhook address before creating new apps or connecting a chat door.</p>}
- {busy&&<p role="status" aria-live="polite" className="lares-door-progress"><strong>{progress}</strong> Keep this page open.</p>}
- {!busy&&touchedPending&&<p role="status" className="lares-door-progress"><strong>Changes are waiting to be applied.</strong> The agent restarts when you apply them.</p>}
- {SUPPORTED[p.role]?.map(kind=>{const row=rows.find(r=>r.kind===kind);const touched=doorTouched(row);const step=connect?.kind===kind?connect:null;return <FieldGroup key={kind} legend={LABEL[kind]} disabled={busy||unknown}>
- <p>{doorStateText(row)}</p>
+ {!createUrl&&<Notice error>Set the public HTTPS address for incoming messages before creating new apps or connecting a chat door.</Notice>}
+ {busy&&<Notice tone="working"><strong>{progress}</strong> Keep this page open.</Notice>}
+ {!busy&&touchedPending&&<Notice tone="needs-you"><strong>Changes are waiting to be applied.</strong> The agent restarts when you apply them.</Notice>}
+ {SUPPORTED[p.role]?.map(kind=>{const row=rows.find(r=>r.kind===kind);const touched=doorTouched(row);const step=connect?.kind===kind?connect:null;return <Card key={kind}>
+ <CardHeader><CardTitle role="heading" aria-level={3}>{LABEL[kind]}</CardTitle><CardDescription>{doorStateText(row)}</CardDescription></CardHeader>
+ <CardContent><FieldGroup legend={<span className="sr-only">{LABEL[kind]}</span>} disabled={busy||unknown}>
+ <div className="lares-stack">
  {kind==='slack'&&<><ol><li>Create the Slack app from the manifest below: pick your workspace and confirm.</li><li>Install the app into your workspace. Copy its Bot User OAuth Token (OAuth &amp; Permissions) and its Signing Secret (Basic Information).</li><li>Paste both here and press Connect.</li><li>Then send the app one direct message, <code>claim</code> followed by the code shown here. That is the only manual step.</li></ol>
   <p>{SLACK_ICON_STEP}</p>
   <details><summary>Already have this Slack app (it shows as an app, not an agent)?</summary><ol>{slackExistingAppSteps.map(t=><li key={t}>{t}</li>)}</ol></details>
-  <p>{createUrl&&<a href={createUrl} target="_blank" rel="noreferrer">Create this Slack app from its manifest</a>}{manifestText&&<> <Button variant="outline" type="button" onClick={()=>copy(manifestText,'Manifest copied. In Slack, choose Create new app, From a manifest, and paste it.')}>Copy manifest</Button></>}</p>
-  <label>Bot token<Input type="password" autoComplete="off" value={tokens.slack??''} onChange={e=>setTokens({...tokens,slack:e.target.value})}/></label><label>Signing secret<Input type="password" autoComplete="off" value={signing} onChange={e=>setSigning(e.target.value)}/></label>
+  {(createUrl||manifestText)&&<div className="lares-actions">{createUrl&&<a href={createUrl} target="_blank" rel="noreferrer">Create this Slack app from its manifest</a>}{manifestText&&<Button variant="outline" type="button" onClick={()=>copy(manifestText,'Manifest copied. In Slack, choose Create new app, From a manifest, and paste it.')}>Copy manifest</Button>}</div>}
+  <Field label="Bot token"><Input type="password" autoComplete="off" value={tokens.slack??''} onChange={e=>setTokens({...tokens,slack:e.target.value})}/></Field><Field label="Signing secret"><Input type="password" autoComplete="off" value={signing} onChange={e=>setSigning(e.target.value)}/></Field>
   </>}
- {kind==='telegram'&&<><ol>{telegramSteps(p.display).map(s=><li key={s.step}>{s.text}</li>)}</ol><label>Bot token<Input type="password" autoComplete="off" value={tokens.telegram??''} onChange={e=>setTokens({...tokens,telegram:e.target.value})}/></label></>}
- <>
+ {kind==='telegram'&&<><ol>{telegramSteps(p.display).map(s=><li key={s.step}>{s.text}</li>)}</ol><Field label="Bot token"><Input type="password" autoComplete="off" value={tokens.telegram??''} onChange={e=>setTokens({...tokens,telegram:e.target.value})}/></Field></>}
+ <div className="lares-actions">
  <Button variant="outline" type="button" disabled={!tokens[kind]||(kind==='slack'&&!signing)||(kind==='telegram'&&!createUrl)||(kind==='slack'&&!createUrl)} onClick={()=>void run(()=>connectChat(kind))}>{touched?'Replace credentials and connect':'Connect'}</Button>
  {!step&&row?.enabled&&!row.claimed&&!row.pending&&<Button variant="outline" type="button" onClick={()=>void run(()=>showConnectStep(kind))}>{kind==='telegram'?'Show the tap-to-connect link':'Show the one-time code'}</Button>}
- {testsBrief&&doorStateText(row)==='Connected'&&<div className="lares-test-brief">
-  <Button variant="outline" type="button" disabled={asking||Boolean(brief?.view?.waiting)} onClick={()=>void askTestBrief(kind)}>{`Send a test brief to ${LABEL[kind]}`}</Button>
-  {briefRefusal?.kind===kind?<p role="alert">{briefRefusal.text}</p>:brief?.view?.door===kind&&<p role="status">{brief.view.text}</p>}
+ {testsBrief&&doorStateText(row)==='Connected'&&<Button variant="outline" type="button" disabled={asking||Boolean(brief?.view?.waiting)} onClick={()=>void askTestBrief(kind)}>{`Send a test brief to ${LABEL[kind]}`}</Button>}
+ {kind==='telegram'&&row?.enabled&&!row.pending&&createUrl&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{unwrap(await registerTelegram(p.name));setMessage('Telegram is set to send messages here.');})}>Register Telegram webhook</Button>}
+ {touched&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{const result=unwrap(await setDoorEnabled(p.name,kind,!row?.enabled));latestHash.current=result.hash;p.onDefinitionChanged?.(result.hash);if(result.messagesFollow)setFollows(messagesFollowText(result.messagesFollow));setMessage(`Door ${row?.enabled?'disabled':'enabled'} in the saved definition.${result.backup.ok?'':` ${result.backup.message??'Git backup failed; definition remains saved.'}`} Apply connection changes for this to take effect.`);})}>{row?.enabled?'Disable door':'Enable door'}</Button>}
+ </div>
+ {testsBrief&&doorStateText(row)==='Connected'&&<>
+  {briefRefusal?.kind===kind?<Notice error>{briefRefusal.text}</Notice>:brief?.view?.door===kind&&<Notice>{brief.view.text}</Notice>}
   {brief?.dnd&&<p className="lares-muted">Do-not-disturb is on; this test still goes out because you asked.</p>}
- </div>}
- {kind==='telegram'&&row?.enabled&&!row.pending&&createUrl&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{unwrap(await registerTelegram(p.name));setMessage('Webhook registered.');})}>Register Telegram webhook</Button>}
- {step?.link&&<div role="status" className="lares-door-connect"><p><strong>Last step:</strong> open Telegram with this link and press Start.</p><p><a className="lares-door-tap" href={step.link} target="_blank" rel="noreferrer">Tap to connect</a></p><p>This page notices by itself and finishes applying. The link works once, for 10 minutes{Number.isFinite(expiredAt)&&expiredAt<Date.now()?' (it has expired; ask for a new one above)':''}.</p></div>}
- {step?.message&&<div role="status" className="lares-door-connect"><p><strong>Last step:</strong> {step.who?`open a direct message with ${step.who}`:'open a direct message with the app'} in Slack and send exactly:</p><p><code>{step.message}</code> <Button variant="outline" type="button" onClick={()=>copy(step.message!,'Copied. Paste it into the direct message with the app.')}>Copy</Button></p><p>This page notices by itself and finishes applying. The code works once, for 10 minutes{Number.isFinite(expiredAt)&&expiredAt<Date.now()?' (it has expired; ask for a new one above)':''}.</p></div>}</>
- {kind==='slack'&&<p>To use the agent in a channel, invite the app to that channel and mention it there. In a channel it answers only the people it answers in a direct message (usually just you); everyone else in the channel can read its answers but cannot ask it anything. In a channel it answers from general knowledge and the public Lares pages{p.role==='chief-of-staff'?'. It can also look up your contacts (when contacts are connected), deadlines and reminders there, read-only, and everyone in the channel can read what it finds':''}. It is not given your mail, calendar, notes or what you asked it to remember. When you ask it for something it can only do in a direct message, it tells you to write to it there, and anything that needs your approval has to be asked for in a direct message, never in the channel. A private channel counts as a channel here too. A conversation in a channel is stored and learned from the same way a direct message is.</p>}
- {touched&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{const result=unwrap(await setDoorEnabled(p.name,kind,!row?.enabled));latestHash.current=result.hash;p.onDefinitionChanged?.(result.hash);if(result.messagesFollow)setFollows(messagesFollowText(result.messagesFollow));setMessage(`Door ${row?.enabled?'disabled':'enabled'} in the saved definition.${result.backup.ok?'':` ${result.backup.message??'Git backup failed; definition remains saved.'}`} Apply connection changes to update runtime mounts.`);})}>{row?.enabled?'Disable door':'Enable door'}</Button>}
- </FieldGroup>;})}
+ </>}
+ {step?.link&&<Notice tone="needs-you"><p><strong>Last step:</strong> open Telegram with this link and press Start.</p><p><Button asChild><a href={step.link} target="_blank" rel="noreferrer">Tap to connect</a></Button></p><p>This page notices by itself and finishes applying. The link works once, for 10 minutes{expired}.</p></Notice>}
+ {step?.message&&<Notice tone="needs-you"><p><strong>Last step:</strong> {step.who?`open a direct message with ${step.who}`:'open a direct message with the app'} in Slack and send exactly:</p><p><code>{step.message}</code> <Button variant="outline" type="button" onClick={()=>copy(step.message!,'Copied. Paste it into the direct message with the app.')}>Copy</Button></p><p>This page notices by itself and finishes applying. The code works once, for 10 minutes{expired}.</p></Notice>}
+ {kind==='slack'&&<p className="lares-muted">To use the agent in a channel, invite the app to that channel and mention it there. In a channel it answers only the people it answers in a direct message (usually just you); everyone else in the channel can read its answers but cannot ask it anything. In a channel it answers from general knowledge and the public Lares pages{p.role==='chief-of-staff'?'. It can also look up your contacts (when contacts are connected), deadlines and reminders there, read-only, and everyone in the channel can read what it finds':''}. It is not given your mail, calendar, notes or what you asked it to remember. When you ask it for something it can only do in a direct message, it tells you to write to it there, and anything that needs your approval has to be asked for in a direct message, never in the channel. A private channel counts as a channel here too. A conversation in a channel is stored and learned from the same way a direct message is.</p>}
+ </div>
+ </FieldGroup></CardContent></Card>;})}
  {touchedPending&&<Button variant="outline" type="button" disabled={busy||unknown} onClick={()=>void run(()=>applyAndReload('Applying (restarts the agent, about a minute)…'))}>Apply connection changes (restarts agent)</Button>}
- {follows&&<p role="status">{follows}</p>}
- {message&&<p role="status">{message}</p>}{error&&<p role="alert">{error}{unknown?' Some changes may already have taken effect. Inspect current state before retrying.':''}</p>}
+ {follows&&<Notice>{follows}</Notice>}
+ {message&&<Notice tone="success">{message}</Notice>}{error&&<Notice error>{error}{unknown?' Some changes may already have taken effect. Reload and check before trying again.':''}</Notice>}
  {unknown&&<p><a href={`/agents/${encodeURIComponent(p.name)}/edit`}>Reload this agent’s current state</a> before trying again.</p>}
  </section>;
 }

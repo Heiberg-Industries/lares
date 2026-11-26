@@ -133,6 +133,15 @@ it('keeps a token connector a token connector when the owner said so, whatever a
   expect(await asOwner('outside.connector-probe', { id: connector.id })).toMatchObject({ authKind: 'none' });
 });
 
+it('does not write a sign-in answer over a Token recorded while the check was still asking', async () => {
+  const { connector } = await create();
+  answer = { status: 401, wwwAuthenticate: 'Bearer resource_metadata="https://tools.example.org/.well-known/oauth-protected-resource"', mcp: false };
+  // The other check (the owner's "Use a token instead") lands after this one read the row and before it saves.
+  probe.mockImplementationOnce(async () => { await pool.query("UPDATE outside_connectors SET auth_kind='token' WHERE id=$1", [connector.id]); return answer; });
+  expect(await asOwner('outside.connector-probe', { id: connector.id })).toMatchObject({ authKind: 'token', usable: true, connector: { authKind: 'token' } });
+  expect((await pool.query('SELECT auth_kind FROM outside_connectors')).rows).toEqual([{ auth_kind: 'token' }]);
+});
+
 it('records a sign-in server as one when the owner did not say Token', async () => {
   const { connector } = await create();
   answer = { status: 401, wwwAuthenticate: 'Bearer resource_metadata="https://tools.example.org/.well-known/oauth-protected-resource"', mcp: false };

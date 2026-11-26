@@ -22,7 +22,6 @@ export const CSS_WIDTH_LIMITS: string[] = [
   "app/sign-in/sign-in.module.css .card: 380px",
   "app/sign-in/sign-in.module.css .headline: none",
   "components/AgentDetail.module.css .tabs: 100%",
-  "components/AgentsList.module.css .hint: var(--measure)",
 ];
 
 /** Block-sized fixed widths in the console's own stylesheets, as "file selector property: value". Width comes from
@@ -44,7 +43,6 @@ export const CSS_COLUMN_LAYOUTS: string[] = [
   "app/globals.css .lares-purpose: 18px 1fr",
   "app/sign-in/sign-in.module.css .page: minmax(0, 1.1fr) minmax(0, 1fr)",
   "app/sign-in/sign-in.module.css .page: minmax(0, 1fr)",
-  "components/AgentsList.module.css .table tr: repeat(2, minmax(0, 1fr))",
 ];
 
 /** How many times each file still writes a lares-operational* class. These pages predate the shared parts; each
@@ -55,9 +53,7 @@ export const OPERATIONAL_LEFT: Record<string, number> = {
   "app/meeting-follow-ups/page.tsx": 3,
   "app/quiet-hours-and-delivery/page.tsx": 13,
   "app/saved-preferences/page.tsx": 11,
-  "app/writing-style/page.tsx": 11,
   "components/BriefLanguageControl.tsx": 2,
-  "components/DeliveryGrid.tsx": 1,
   "components/ProactivityControls.tsx": 1,
   "components/ScheduleHoursControl.tsx": 2,
   "components/ServicePermissions.tsx": 2,

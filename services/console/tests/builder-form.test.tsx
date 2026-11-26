@@ -19,7 +19,7 @@ it('keeps new-agent permission writes unavailable and gives every field its timi
  expect(html.split(NOTE).length-1).toBe(1);
  expect(html).toContain('Create this agent first');expect(html).not.toContain('open web-chat conversations');expect(html).not.toContain('role="group" aria-label=');
  expect(html).toContain('What is this agent for? Write it the way you would tell a person.');
- expect(html).toContain('This box holds up to 6 agents. You have 3.');expect(html).toContain('Open Settings → Agents');
+ expect(html).toContain('This server holds up to 6 agents. You have 3.');expect(html).toContain('Open Settings → Agents');
  expect(html).toContain('Access and skills');expect(html).toContain('Schedules');
  expect(html).not.toContain('installation-brain');
 });
