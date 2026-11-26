@@ -1,5 +1,5 @@
 "use client";
-import { Choice, Field } from "@lares/ui/patterns";
+import { Choice, Field, Notice } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { Input } from "@lares/ui/primitives/input";
@@ -74,9 +74,9 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       const pending=await previewOutsideCredentialApply({agentName:target.agentName,connectionName:target.connectionName});
       if(version!==pendingApplyVersion.current||selectionRef.current!==selection||pending.agentName!==target.agentName||pending.connectionName!==target.connectionName||
           pending.candidateRevision!==target.credentialStatus.candidateRevision)return;
-      setStaged(pending);setApplyUncertain(false);setMessage("The exact pending custody revision was recovered from Keeper's saved stage evidence and is ready for Apply.");
+      setStaged(pending);setApplyUncertain(false);setMessage("The exact pending credential revision was recovered from the record Lares saved when it was staged, and is ready for Apply.");
     }catch{
-      if(version===pendingApplyVersion.current&&selectionRef.current===selection)setError("The pending credential's exact Apply evidence is unavailable or ambiguous. Refresh status and review this connection again; if the old candidate still blocks staging, stop and contact the credential custodian for the normal custody resolution path.");
+      if(version===pendingApplyVersion.current&&selectionRef.current===selection)setError("The pending credential's exact Apply evidence is unavailable or ambiguous. Refresh status and review this connection again; if the old candidate still blocks staging, stop and ask the person who looks after this credential to resolve it.");
     }
   }
 
@@ -105,9 +105,9 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
           item.credentialStatus.accountId===null&&item.credentialStatus.state==='unavailable'&&!item.credentialStatus.hasCredentialMaterial);
         if(freed){
           clearRemovedRecovery(removalUncertain);setRemovalUncertain(undefined);
-          setMessage(`Keeper confirms removal for ${removalUncertain.agentName} · ${removalUncertain.connectionName}; audit receipts remain.`);
+          setMessage(`Lares confirms removal for ${removalUncertain.agentName} · ${removalUncertain.connectionName}; audit receipts remain.`);
         }else if(exact?.credentialStatus.hasCredentialMaterial&&exact.credentialStatus.generation===removalUncertain.generation){
-          setRemovalUncertain(undefined);setMessage(`The exact ${removalUncertain.agentName} · ${removalUncertain.connectionName} account remains at the requested generation with held material; removal did not commit.`);
+          setRemovalUncertain(undefined);setMessage(`The exact ${removalUncertain.agentName} · ${removalUncertain.connectionName} account remains at the requested generation and its credential is still stored; the removal did not happen.`);
         }else setMessage(`Removal remains unconfirmed for ${removalUncertain.agentName} · ${removalUncertain.connectionName}. Its exact account version is unavailable or has since changed; do not repeat the request.`);
       }
       if(items.length){const current=items.find(item=>`${item.agentName}\0${item.connectionName}`===selectionRef.current);
@@ -115,7 +115,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       selectionRef.current=selectedKey;setSelected(selectedKey);
       if(applyUncertain&&staged?.agentName===target.agentName&&staged.connectionName===target.connectionName){
         if(target.credentialStatus.activeRevision===staged.candidateRevision&&!target.credentialStatus.applyPending){
-          setStaged(undefined);setApplyUncertain(false);setMessage(`Credential revision ${staged.candidateRevision} is active in Keeper custody. This does not confirm that the outside server is reachable or the agent is running.`);
+          setStaged(undefined);setApplyUncertain(false);setMessage(`Credential revision ${staged.candidateRevision} is active in Lares's protected store. This does not confirm that the outside server is reachable or the agent is running.`);
         }else if(target.credentialStatus.applyPending&&target.credentialStatus.candidateRevision===staged.candidateRevision)void restorePendingApply(target,selectedKey);
       }else if(!applyUncertain&&target.credentialStatus.applyPending)void restorePendingApply(target,selectedKey);
     }if(!removalUncertain)setMessage(items.length?"Current connections loaded.":"No saved bearer connections are available for your agents.");}
@@ -234,20 +234,20 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
     setBusy(true);setError("");setMessage("");
     try{
       const result=await applyOutsideCredentialCandidate(staged);
-      setStaged(undefined);setApplyUncertain(false);setMessage(`Credential revision ${result.credentialRevision} is active in Keeper custody. This does not confirm that the outside server is reachable or the agent is running.`);
-      try{setTargets(await listOutsideDiscoveryTargets());}catch{setError("Apply succeeded and Keeper confirmed the active custody revision, but the refreshed connection list is unavailable.");}
+      setStaged(undefined);setApplyUncertain(false);setMessage(`Credential revision ${result.credentialRevision} is active in Lares's protected store. This does not confirm that the outside server is reachable or the agent is running.`);
+      try{setTargets(await listOutsideDiscoveryTargets());}catch{setError("Apply succeeded and Lares confirmed the active credential revision, but the refreshed connection list is unavailable.");}
     }catch{
       setApplyUncertain(true);
       try{
         const current=await listOutsideDiscoveryTargets();setTargets(current);
         const target=current.find(item=>item.agentName===staged.agentName&&item.connectionName===staged.connectionName);
         if(target?.credentialStatus.activeRevision===staged.candidateRevision&&!target.credentialStatus.applyPending){
-          setApplyUncertain(false);setMessage(`Credential revision ${staged.candidateRevision} is active in Keeper custody. This does not confirm that the outside server is reachable or the agent is running.`);
+          setApplyUncertain(false);setMessage(`Credential revision ${staged.candidateRevision} is active in Lares's protected store. This does not confirm that the outside server is reachable or the agent is running.`);
         }else if(target?.credentialStatus.applyPending&&target.credentialStatus.candidateRevision===staged.candidateRevision&&
             selectionRef.current===`${staged.agentName}\0${staged.connectionName}`){
           setError("Apply was not confirmed. The exact current candidate and evidence were recovered; review it before choosing Apply again.");
         }else setError("Apply could not be confirmed and the exact candidate is no longer current. Refresh status; no Apply action is available until the current revision is recovered.");
-      }catch{setError("Apply could not be confirmed and current custody state is unavailable. Refresh before taking another action.");}
+      }catch{setError("Apply could not be confirmed and the current state of the stored credential is unavailable. Refresh before taking another action.");}
     }finally{setBusy(false);}
   }
 
@@ -266,21 +266,21 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       const current=await listOutsideDiscoveryTargets();
       if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
       setTargets(current);
-      if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Keeper confirmed that use is stopped and the held credential material is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.");}
-      else{setRemovalUncertain(identity);setError("The removal result could not be matched to this exact account version. Refresh custody status before another action.");}
+      if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Lares confirmed that use is stopped and the stored credential is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.");}
+      else{setRemovalUncertain(identity);setError("The removal result could not be matched to this exact account version. Refresh the credential status before another action.");}
     }catch{
       if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
       try{
         const current=await listOutsideDiscoveryTargets();
         if(version!==credentialMutationVersion.current||selectionRef.current!==selection)return;
         setTargets(current);
-        if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Keeper confirmed that use is stopped and the held credential material is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.");}
-        else{setRemovalUncertain(identity);setError("Removal could not be confirmed for the exact account version. Refresh custody status before another action; do not repeat an uncertain request.");}
-      }catch{setRemovalUncertain(identity);setError("Removal could not be confirmed and current custody status is unavailable. Refresh before taking another action.");}
+        if(confirms(current)){clearRemovedRecovery(identity);setRemovalUncertain(undefined);setMessage("Lares confirmed that use is stopped and the stored credential is removed. The connection name is free again, so you can connect it again with a fresh review and consent. Non-secret audit receipts remain.");}
+        else{setRemovalUncertain(identity);setError("Removal could not be confirmed for the exact account version. Refresh the credential status before another action; do not repeat an uncertain request.");}
+      }catch{setRemovalUncertain(identity);setError("Removal could not be confirmed and the current credential status is unavailable. Refresh before taking another action.");}
     }finally{if(version===credentialMutationVersion.current)setBusy(false);}
   }
 
-  return <section className="lares-stack" aria-label="Private outside-tool discovery">
+  return <section className="lares-surface lares-stack" aria-label="Private outside-tool discovery">
     <h2 className="lares-section-title">Discover available tools</h2>
     <p>Review a saved connection and, if you choose, share its bearer credential for one bounded description lookup. This does not enable or run tools.</p>
     {targets.length>0&&<Field label="Agent connection">
@@ -292,7 +292,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
         {targets.map(target=><option key={`${target.agentName}:${target.connectionName}`} value={`${target.agentName}\0${target.connectionName}`}>{target.agentName} · {target.connectionName}</option>)}
       </Select>
     </Field>}
-    {selectedTarget&&<p role="status">{removalUncertain?"The last credential-removal result is uncertain. Do not repeat it until the exact current custody state is confirmed.":applyUncertain?"The last Apply result is uncertain. No candidate is ready to Apply until the exact current custody state and evidence are recovered.":selectedTarget.credentialStatus.reviewPending&&selectedTarget.credentialStatus.applyPending
+    {selectedTarget&&<Notice tone={removalUncertain||applyUncertain?"needs-you":"info"}>{removalUncertain?"The last credential-removal result is uncertain. Do not repeat it until the exact current state of the stored credential is confirmed.":applyUncertain?"The last Apply result is uncertain. No candidate is ready to Apply until the exact current state of the stored credential and its saved record are recovered.":selectedTarget.credentialStatus.reviewPending&&selectedTarget.credentialStatus.applyPending
       ?selectedTarget.credentialStatus.state==='active-pending'
         ?"A completed discovery is pending review and a staged credential revision is pending Apply. The active saved revision remains in place."
         :"A completed discovery is pending review and a staged credential revision is pending Apply; no active saved revision is available."
@@ -303,26 +303,26 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       :selectedTarget.credentialStatus.state==='unavailable'
       ?"Credential status is unavailable under your current account and connection access."
       :selectedTarget.credentialStatus.state==='revoked'
-        ?selectedTarget.credentialStatus.hasCredentialMaterial?"Use is stopped, but Keeper still holds encrypted credential material. Remove it here or reconnect after review.":"Use is stopped and no credential material is held. A fresh review and consent can reconnect this account."
+        ?selectedTarget.credentialStatus.hasCredentialMaterial?"Use is stopped, but Lares still stores the encrypted credential. Remove it here or reconnect after review.":"Use is stopped and no credential is stored. A fresh review and consent can reconnect this account."
         :selectedTarget.credentialStatus.applyPending&&selectedTarget.credentialStatus.state==='pending'
           ?"A staged credential revision is pending Apply; no active saved revision is available."
         :selectedTarget.credentialStatus.applyPending
           ?"A staged credential revision is pending Apply. The previous active saved revision remains in place."
         :selectedTarget.credentialStatus.state==='active'
           ?"An active saved credential revision exists. This status does not confirm that the outside server is reachable."
-          :"Credential status is unavailable under your current account and connection access."}</p>}
+          :"Credential status is unavailable under your current account and connection access."}</Notice>}
     <div className="lares-inline-form">
       <Button type="button" variant="outline" disabled={busy||unresolved} onClick={()=>void loadTargets()}>Refresh connections</Button>
       <Button type="button" variant="outline" disabled={busy||unresolved||applyUncertain||!selectedTarget} onClick={()=>void review()}>Review connection</Button>
     </div>
     {selectedTarget?.credentialStatus.hasCredentialMaterial&&<div className="lares-surface lares-stack">
-      <strong>Credential custodian controls</strong>
-      <p>This action immediately stops Lares use, invalidates pending work and approval revisions, removes held credential material from live Keeper rows, frees the connection name so it can be connected again from scratch, and keeps non-secret audit receipts. It does not revoke the key at its provider; backups may retain encrypted database snapshots.</p>
+      <strong>Stop use and remove the credential</strong>
+      <p>This action immediately stops Lares use, invalidates pending work and approval revisions, removes the stored credential from Lares's live records, frees the connection name so it can be connected again from scratch, and keeps non-secret audit receipts. It does not revoke the key at its provider; backups may retain encrypted database snapshots.</p>
       <Button type="button" variant="destructive" disabled={busy||unresolved||applyUncertain||!!removalUncertain||!selectedTarget.credentialStatus.accountId||
-        selectedTarget.credentialStatus.generation===null} onClick={()=>void removeHeldCredential()}>Stop use and remove held credential</Button>
+        selectedTarget.credentialStatus.generation===null} onClick={()=>void removeHeldCredential()}>Stop use and remove stored credential</Button>
     </div>}
-    {removalUncertain&&<div className="lares-surface lares-stack" role="status">
-      <p>Removal is unconfirmed for {removalUncertain.agentName} · {removalUncertain.connectionName} at generation {removalUncertain.generation}. Do not repeat the request; another account’s status cannot resolve it.</p>
+    {removalUncertain&&<div className="lares-surface lares-stack">
+      <Notice tone="needs-you">Removal is unconfirmed for {removalUncertain.agentName} · {removalUncertain.connectionName} at generation {removalUncertain.generation}. Do not repeat the request; another account’s status cannot resolve it.</Notice>
       <Button type="button" variant="outline" disabled={busy} onClick={()=>void loadTargets()}>Refresh uncertain removal status</Button>
     </div>}
     {preview&&<div className="lares-surface lares-stack">
@@ -337,7 +337,7 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       </Button>
       <p>The credential is not saved in browser storage. If the result is uncertain, this page checks the saved request and never sends it again.</p>
     </div>}
-    {busy&&<p role="status">Working…</p>}{message&&<p role="status">{message}</p>}{error&&<p role="alert">{error}</p>}
+    {busy&&<Notice tone="working">Working…</Notice>}{message&&<Notice>{message}</Notice>}{error&&<Notice tone="error">{error}</Notice>}
     {recovery&&<p>Recovery reference saved for {recovery.agentName} · {recovery.connectionName}.</p>}
     {document&&<div className="lares-stack" aria-label="Discovered tool descriptions">
       <p>{document.serverInfo.name} {document.serverInfo.version} · {document.tools.length} tools found</p>
@@ -357,11 +357,11 @@ function OutsideDiscoverySectionForMember({memberId}:{memberId:string}){
       {acceptance&&!staged&&<Button type="button" disabled={busy} onClick={()=>void stageReviewedCandidate()}>Stage credential candidate</Button>}
     </div>}
     {staged&&!applyUncertain&&<div className="lares-surface lares-stack" aria-label="Pending credential revision">
-      <p role="status">Credential revision {staged.candidateRevision} is pending Apply and is not active.</p>
+      <Notice tone="needs-you">Credential revision {staged.candidateRevision} is pending Apply and is not active.</Notice>
       <Button type="button" disabled={busy||applyUncertain||selectedTarget?.agentName!==staged.agentName||selectedTarget.connectionName!==staged.connectionName||
         !selectedTarget.credentialStatus.applyPending||selectedTarget.credentialStatus.candidateRevision!==staged.candidateRevision}
         onClick={()=>void applyCandidate()}>{busy?"Applying credential…":"Apply credential revision"}</Button>
-      <p>Apply activates this exact credential revision in Keeper custody. It does not apply agent declarations or confirm runtime availability.</p>
+      <p>Apply activates this exact credential revision in Lares's protected store. It does not apply agent declarations or confirm that the agent is running.</p>
     </div>}
   </section>;
 }

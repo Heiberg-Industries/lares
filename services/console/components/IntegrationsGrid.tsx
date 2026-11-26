@@ -1,29 +1,33 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
-import { Search } from "@lares/ui/icons";
+import { Notice, Row, Rows } from "@lares/ui/patterns";
+import { Badge } from "@lares/ui/primitives/badge";
+import { Button } from "@lares/ui/primitives/button";
+import { Card } from "@lares/ui/primitives/card";
 import { Input } from "@lares/ui/primitives/input";
-import { STATUS_TEXT, type IntegrationCard } from "../lib/integrations-grid";
-import { LogoTile } from "./LogoTile";
+import { STATUS_BADGE, STATUS_TEXT, type IntegrationCard } from "../lib/integrations-grid";
 
-function Cards({ cards }: { cards: IntegrationCard[] }) {
+/** One plain row per service: its name, one line of purpose, its status in words and one link to its page. */
+function List({ id, title, cards }: { id: string; title: string; cards: IntegrationCard[] }) {
   return (
-    <div className="lares-card-grid">
-      {cards.map(c => (
-        <Link key={c.id} href={c.href} className="lares-card-link">
-          <div className="lares-card-top">
-            <LogoTile logo={c.logo} label={`${c.name} logo`} />
-            <span className="lares-card-status" data-enabled={c.status === "enabled"}>{STATUS_TEXT[c.status]}</span>
-          </div>
-          <div className="lares-service-name">{c.name}</div>
-          <p className="lares-service-line">{c.line}</p>
-        </Link>
-      ))}
-    </div>
+    <section aria-labelledby={id} className="lares-stack">
+      <h2 id={id} className="lares-section-title">{title}</h2>
+      <Card>
+        <Rows>
+          {cards.map(c => (
+            <Row key={c.id} title={c.name} description={c.line} control={<>
+              <Badge variant={STATUS_BADGE[c.status]}>{STATUS_TEXT[c.status]}</Badge>
+              <Button variant="outline" size="sm" asChild><Link href={c.href} aria-label={`Open ${c.name}`}>Open</Link></Button>
+            </>} />
+          ))}
+        </Rows>
+      </Card>
+    </section>
   );
 }
 
-/** Enabled cards first, then the rest. Without JavaScript the search does nothing and every card shows. */
+/** Enabled services first, then the rest. Without JavaScript the search does nothing and every row shows. */
 export function IntegrationsGrid({ cards }: { cards: IntegrationCard[] }) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
@@ -34,13 +38,11 @@ export function IntegrationsGrid({ cards }: { cards: IntegrationCard[] }) {
     <>
       <div className="lares-stack">
         <label htmlFor="integrations-search" className="sr-only">Search integrations</label>
-        <div className="lares-actions"><Search aria-hidden="true" width={16} height={16} />
-          <Input id="integrations-search" type="search" placeholder="Notion, Slack, CRM…" value={query} onChange={e => setQuery(e.target.value)} />
-        </div>
+        <Input id="integrations-search" type="search" placeholder="Search: Notion, Slack, CRM…" value={query} onChange={e => setQuery(e.target.value)} />
       </div>
-      {enabled.length > 0 && <section aria-labelledby="sec-enabled" className="lares-stack"><h2 id="sec-enabled" className="lares-section-title">Enabled</h2><Cards cards={enabled} /></section>}
-      {rest.length > 0 && <section aria-labelledby="sec-available" className="lares-stack"><h2 id="sec-available" className="lares-section-title">Available</h2><Cards cards={rest} /></section>}
-      {shown.length === 0 && <p className="lares-muted" role="status">No integration matches “{query.trim()}”.</p>}
+      {enabled.length > 0 && <List id="sec-enabled" title="Enabled" cards={enabled} />}
+      {rest.length > 0 && <List id="sec-available" title="Available" cards={rest} />}
+      {shown.length === 0 && <Notice>No integration matches “{query.trim()}”.</Notice>}
     </>
   );
 }

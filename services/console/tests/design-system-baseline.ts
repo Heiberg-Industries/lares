@@ -50,12 +50,10 @@ export const CSS_COLUMN_LAYOUTS: string[] = [
 export const OPERATIONAL_LEFT: Record<string, number> = {
   "app/backups/page.tsx": 6,
   "app/deadlines/page.tsx": 10,
-  "app/integrations/[id]/page.tsx": 4,
   "app/meeting-follow-ups/page.tsx": 3,
   "app/quiet-hours-and-delivery/page.tsx": 13,
   "app/saved-preferences/page.tsx": 11,
   "components/BriefLanguageControl.tsx": 2,
-  "components/NotionProposalsCard.tsx": 7,
   "components/ProactivityControls.tsx": 1,
   "components/ScheduleHoursControl.tsx": 2,
   "components/ServicePermissions.tsx": 2,

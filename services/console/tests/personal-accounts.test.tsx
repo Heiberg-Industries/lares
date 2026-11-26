@@ -166,7 +166,7 @@ it("explains a missing Google client prominently, with the install guide link", 
 it("keeps technical words and raw errors off the page", async () => {
   m.list.mockResolvedValue([google]);
   await show({ error: "PRIVATE PROVIDER RESPONSE" });
-  expect(screen.getByRole("alert").textContent).toBe("The account could not be connected. Try again.");
+  expect(screen.getByRole("alert").querySelector(".lares-notice-body")!.textContent).toBe("The account could not be connected. Try again.");
   const text = document.body.textContent!;
   for (const word of ["PRIVATE", "partial", "credentials", "consumers", "catalogue", "scope"]) expect(text).not.toContain(word);
 });
