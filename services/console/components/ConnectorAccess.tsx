@@ -9,14 +9,14 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { connectActivateCredential, connectApplyAgent, connectDeclare, connectLookUpTools, connectReviewAndStage, connectSetTools, connectSwitchOnTrust,
   type ConnectIdentity, type ConnectStep, type ConnectTool } from "../app/actions/outside-connect";
-import { removeFromAgent } from "../app/actions/outside-connectors";
+import { removeFromAgent, switchConnectorToToken } from "../app/actions/outside-connectors";
 import type { OutsidePendingApplyDto } from "../lib/outside-discovery-dto";
 import { toolNamesOf } from "../lib/outside-connect-words";
 import { DANGER_BADGE, readOnlyChoiceWords, whereToolsWork } from "../lib/outside-tools-words";
 import type { AgentUse } from "../lib/outside-connector-view";
 
 type Agent = { name: string; displayName: string };
-type Conn = { slug: string; url: string; description: string; authKind: "none" | "token" | "signin" };
+type Conn = { id: string; slug: string; url: string; description: string; authKind: "none" | "token" | "signin" };
 type Plan = { label: string; run: () => Promise<ConnectStep<unknown>> }[];
 type Row = { name: string; description?: string; inputSchema?: Record<string, unknown>; use: boolean; kind: "read" | "change"; free: boolean; seen: boolean };
 type Conflict = { agent: string; tools: string[]; confirming: boolean };
@@ -330,6 +330,26 @@ function ReplaceToken({ conn, agents }: { conn: Conn; agents: Agent[] }) {
 }
 
 /** Everything on the connector page that changes who can use it. */
+/** A server that offers a sign-in page. Sign-in is not built yet, but many such servers also take a token (an API key):
+ *  the owner can say so here and carry on with the token steps, without removing the connector. */
+function SignInOrToken({ id }: { id: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  async function switchToToken() {
+    setBusy(true); setError("");
+    const r = await switchConnectorToToken(id).catch(() => ({ ok: false as const, message: "Lares could not confirm that. Try again." }));
+    setBusy(false);
+    if (!r.ok) { setError(r.message); return; }
+    router.refresh();
+  }
+  return <div className="lares-stack">
+    <Notice tone="needs-you">This server uses a sign-in page. Sign-in comes in a later release. If the server also takes a token (an API key from its maker), use that instead.</Notice>
+    <div className="lares-actions"><Button type="button" disabled={busy} onClick={() => void switchToToken()}>Use a token instead</Button></div>
+    {busy && <Notice tone="working">Saving.</Notice>}
+    {error && <Notice tone="error">{error}</Notice>}
+  </div>;
+}
+
 export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines, known = {} }: { conn: Conn; uses: AgentUse[]; allAgents: Agent[]; canWiden: boolean; keyLines: Record<string, string>; known?: Record<string, string[]> }) {
   const universe = (() => {
     const seenNames = new Map<string, "read" | "change">();
@@ -342,7 +362,7 @@ export function ConnectorAccess({ conn, uses, allAgents, canWiden, keyLines, kno
   // here too (the same steps as giving access), or they would keep failing for want of a token with nothing on the page to fix it.
   const needToken = conn.authKind === "token" ? uses.filter(u => !u.needsKey).map(u => u.agent) : [];
   const without = allAgents.filter(a => !uses.some(u => u.agent === a.name) || needToken.includes(a.name));
-  if (conn.authKind === "signin") return <Notice tone="needs-you">This server uses a sign-in page. Sign-in comes in a later release, so no agent can use it yet.</Notice>;
+  if (conn.authKind === "signin") return <SignInOrToken id={conn.id} />;
   return <div className="lares-stack">
     <h2 className="lares-section-title">Who can use it</h2>
     {uses.length === 0 && <p className="lares-muted">No agent uses this connector yet.</p>}

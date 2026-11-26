@@ -101,6 +101,17 @@ export async function checkConnector(id: string): Promise<ConnectorResult<{ auth
   });
 }
 
+/** "Use a token instead": the owner says this server takes a token, so it is recorded as one, even if it also offers a sign-in page. */
+export async function switchConnectorToToken(id: string): Promise<ConnectorResult<{ authKind: Connector["authKind"]; sentence: string }>> {
+  await requireConsoleMember();
+  if (!uuid.safeParse(id).success) return { ok: false, message: "That connector is not valid." };
+  return run("Lares could not reach that server. Check the address, then try again.", async (w) => {
+    const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id, expectToken: true }, w.actor, TIMEOUT);
+    const authKind = connectorSchema.shape.authKind.parse(r.authKind);
+    return { authKind, sentence: foundSentence(authKind) };
+  });
+}
+
 /** The label only. The technical name, every agent's declaration and every held token stay as they are. */
 export async function renameConnector(input: { id: string; displayName: string }): Promise<ConnectorResult<null>> {
   await requireConsoleMember();

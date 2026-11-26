@@ -2,9 +2,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn(), add: vi.fn(), setTools: vi.fn(), declare: vi.fn(), lookUp: vi.fn(), review: vi.fn(), removeDecl: vi.fn(), check: vi.fn() }));
+const mocks = vi.hoisted(() => ({ push: vi.fn(), refresh: vi.fn(), add: vi.fn(), setTools: vi.fn(), declare: vi.fn(), lookUp: vi.fn(), review: vi.fn(), removeDecl: vi.fn(), check: vi.fn(), toToken: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push, refresh: mocks.refresh }) }));
-vi.mock("../app/actions/outside-connectors", () => ({ addConnector: mocks.add, checkConnector: mocks.check, renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: mocks.removeDecl }));
+vi.mock("../app/actions/outside-connectors", () => ({ addConnector: mocks.add, checkConnector: mocks.check, renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: mocks.removeDecl, switchConnectorToToken: mocks.toToken }));
 vi.mock("../app/actions/outside-connect", () => ({ connectSetTools: mocks.setTools, connectDeclare: mocks.declare, connectLookUpTools: mocks.lookUp, connectReviewAndStage: mocks.review, connectRemoveDeclaration: mocks.removeDecl,
   connectActivateCredential: vi.fn(), connectApplyAgent: vi.fn(), connectSwitchOnTrust: vi.fn() }));
 import { AddConnectorForm } from "../components/AddConnectorForm";
@@ -13,7 +13,7 @@ import { ConnectorActions } from "../components/ConnectorActions";
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const agents = [{ name: "ada", displayName: "Ada" }, { name: "ben", displayName: "Ben" }];
-const conn = { slug: "rates", url: "https://tools.example.org/mcp", description: "", authKind: "token" as const };
+const conn = { id: "00000000-0000-4000-8000-000000000001", slug: "rates", url: "https://tools.example.org/mcp", description: "", authKind: "token" as const };
 const uses = [{ agent: "ada", displayName: "Ada", needsKey: true, tools: [{ name: "find_rate", kind: "read" as const, free: true }, { name: "set_rate", kind: "change" as const, free: false }] }];
 
 describe("Add", () => {
@@ -117,6 +117,21 @@ describe("the connector page", () => {
     render(<ConnectorAccess conn={{ ...conn, authKind: "signin" }} uses={[]} allAgents={agents} canWiden keyLines={{}} />);
     expect(screen.getByText(/Sign-in comes in a later release/)).toBeTruthy();
     expect(screen.queryByLabelText(/^Token/)).toBeNull();
+  });
+  it("lets the owner say a sign-in server takes a token instead, and reloads the page into the token steps", async () => {
+    mocks.toToken.mockResolvedValue({ ok: true, value: { authKind: "token", sentence: "Found the server. It asks for a token." } });
+    render(<ConnectorAccess conn={{ ...conn, authKind: "signin" }} uses={[]} allAgents={agents} canWiden keyLines={{}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Use a token instead" }));
+    await vi.waitFor(() => expect(mocks.refresh).toHaveBeenCalled());
+    expect(mocks.toToken).toHaveBeenCalledWith(conn.id);
+  });
+  it("says so when switching to a token fails, and stays on the page", async () => {
+    mocks.refresh.mockClear();
+    mocks.toToken.mockResolvedValue({ ok: false, message: "Lares could not reach that server. Check the address, then try again." });
+    render(<ConnectorAccess conn={{ ...conn, authKind: "signin" }} uses={[]} allAgents={agents} canWiden keyLines={{}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Use a token instead" }));
+    expect(await screen.findByText(/could not reach that server/)).toBeTruthy();
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 });
 
