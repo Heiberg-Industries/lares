@@ -41,7 +41,14 @@ Commit titles from 355c2965efefb7a7a3cd25b305143cf8310b864b to 9cd65931407291e74
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- New outside-tools pages. Integrations > Outside tools now lists every connected service with its state, its tools and which agents use it. "Add custom connector" is one screen: name, address and Automatic or Token, then Continue. Each connector has its own page where you choose tools, set "run without asking", give agents access with a token typed once, rename it, replace the token, check that it works, or remove it. Only the owner can use these pages.
+- The danger zone. At the bottom of a connector's page, a red section lists the tools that change something. You can let one such tool run without asking by typing its exact name. Each switch is recorded in the log, the tool carries a red badge wherever it is listed, and the permission switches itself off when the tool's description changes. It is never used in a shared channel. A change you make here takes full effect from the agent's next conversation; in a conversation already open, a tool you switched off is refused rather than run.
+- Old release images are removed. After a successful update, lares update keeps the release now running and the one before it, removes older Lares images that no container uses, and says how much space it freed.
+- A read-only database login. sudo lares db opens a database session that reads non-secret state only (connectors, custody history without sealed values, approvals, update and backup history) and cannot change anything. lares doctor has a new line that checks it.
+- If an agent fails to restart at the end of an update, the update now names the command to retry them all.
+- No database file and no setting changes.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
