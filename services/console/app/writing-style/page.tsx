@@ -5,11 +5,13 @@ import { VoiceSettings } from "../../components/VoiceSettings";
 import { ProposedCard } from "../../components/ProposedCard";
 import { ExampleToggle } from "../../components/ExampleToggle";
 import { RelearnButton } from "../../components/RelearnButton";
-import { PageHeader, Page } from "@lares/ui/patterns";
+import { EmptyState, PageHeader, Page, Row, Rows } from "@lares/ui/patterns";
+import { Badge } from "@lares/ui/primitives/badge";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 
 export const dynamic = "force-dynamic";
 
-// : one voice card per mailbox. `default` is the shared fallback (and carries the learn
+// One style card per mailbox. `default` is the shared fallback (and carries the learn
 // settings); each enrolled mailbox has its own card, its own proposal and its own learn status.
 // A mailbox whose card is still empty drafts with the default card until it has learned.
 export default async function VoicePage() {
@@ -18,60 +20,79 @@ export default async function VoicePage() {
   const def = cards[0]!;
   const mailboxes = cards.slice(1);
   return (
-    <Page className="lares-operational">
-      <PageHeader title="Email writing style" description="Mailbox-specific style and shared defaults." />
-      <p className="lares-muted lares-operational-intro">
-        One card per mailbox — you write differently from each. Learned from that mailbox&apos;s Sent mail; your edits always win.
+    <Page>
+      <PageHeader
+        title="Writing style"
+        description="How your agents write email for you: one style per mailbox, and shared defaults."
+      />
+      <p className="lares-muted">
+        One card per mailbox, because you write differently from each. A card is learned from that mailbox&apos;s Sent mail; your edits always win.
         A mailbox with an empty card uses the shared defaults below until it has learned.
       </p>
 
-      <div className="lares-operational-actions">
-        <RelearnButton status={def.learnStatus} message={def.learnMessage} />
-      </div>
+      <RelearnButton status={def.learnStatus} message={def.learnMessage} />
 
       {mailboxes.length === 0 && (
-        <p className="lares-operational-empty">No mailbox cards yet. Run a Sent mail learning pass to create them.</p>
+        <EmptyState title="No mailbox cards yet">Press Re-learn from Sent mail to create them.</EmptyState>
       )}
       {mailboxes.map((card) => (
-        <section key={card.id} className="lares-operational-section">
-          <h2>
-            {card.id}
-            {card.learnStatus === "error" && <span className="lares-operational-meta lares-status-error" title={card.learnMessage}> · Last learn failed</span>}
-            {card.learnStatus === "running" && <span className="lares-operational-meta lares-status-muted"> · Learning…</span>}
-          </h2>
-          {card.proposed && <ProposedCard id={card.id} proposed={card.proposed} />}
-          <VoiceCardEditor id={card.id} core={card.core} notesEn={card.notesEn} notesNo={card.notesNo} />
-        </section>
+        <Card key={card.id}>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={2}>{card.id}</CardTitle>
+            {card.learnStatus === "error" && <CardDescription>Learning from this mailbox failed last time{card.learnMessage ? `: ${card.learnMessage}` : "."}</CardDescription>}
+            {card.learnStatus === "error" && <CardAction><Badge variant="error">Last learn failed</Badge></CardAction>}
+            {card.learnStatus === "running" && <CardAction><Badge variant="info">Learning…</Badge></CardAction>}
+          </CardHeader>
+          <CardContent className="lares-stack">
+            {card.proposed && <ProposedCard id={card.id} proposed={card.proposed} />}
+            <VoiceCardEditor id={card.id} core={card.core} notesEn={card.notesEn} notesNo={card.notesNo} />
+          </CardContent>
+        </Card>
       ))}
 
-      <h2>Shared defaults</h2>
-      <p className="lares-muted lares-operational-note">Used by any mailbox whose own card is empty.</p>
-      {def.proposed && <ProposedCard id={def.id} proposed={def.proposed} />}
-      <VoiceCardEditor id={def.id} core={def.core} notesEn={def.notesEn} notesNo={def.notesNo} />
+      <Card>
+        <CardHeader>
+          <CardTitle role="heading" aria-level={2}>Shared defaults</CardTitle>
+          <CardDescription>Used by any mailbox whose own card is empty.</CardDescription>
+        </CardHeader>
+        <CardContent className="lares-stack">
+          {def.proposed && <ProposedCard id={def.id} proposed={def.proposed} />}
+          <VoiceCardEditor id={def.id} core={def.core} notesEn={def.notesEn} notesNo={def.notesNo} />
+        </CardContent>
+      </Card>
 
-      <h2>Learn settings</h2>
-      <p className="lares-muted lares-operational-note">
-        Limit how far back learning reads Sent mail and how many messages it checks per mailbox.
-      </p>
-      <VoiceSettings
-        lookbackDays={def.lookbackDays} cap={def.cap}
-      />
+      <Card>
+        <CardHeader>
+          <CardTitle role="heading" aria-level={2}>Learn settings</CardTitle>
+          <CardDescription>
+            Limit how far back learning reads Sent mail and how many messages it checks per mailbox.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <VoiceSettings lookbackDays={def.lookbackDays} cap={def.cap} />
+        </CardContent>
+      </Card>
 
-      <h2>Example emails ({examples.length})</h2>
-      <p className="lares-muted lares-operational-note">Untick to exclude an example from style matching. The email stays stored.</p>
-      <div className="lares-table-scroll"><table className="card lares-operational-table">
-        <thead><tr><th>Lang</th><th>Snippet</th><th>In voice</th></tr></thead>
-        <tbody>
-          {examples.length === 0 && <tr><td colSpan={3} className="lares-status-muted">No examples yet. Run a Sent mail learning pass above.</td></tr>}
-          {examples.map((e) => (
-            <tr key={e.id}>
-              <td className="mono">{e.lang}</td>
-              <td className="lares-status-muted">{e.snippet}</td>
-              <td><ExampleToggle id={e.id} included={e.included} /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
+      <Card>
+        <CardHeader>
+          <CardTitle role="heading" aria-level={2}>Example emails ({examples.length})</CardTitle>
+          <CardDescription>Untick an example to stop using it for your style. The email stays stored.</CardDescription>
+        </CardHeader>
+        {examples.length === 0 ? (
+          <CardContent className="lares-muted">No examples yet. Press Re-learn from Sent mail above.</CardContent>
+        ) : (
+          <Rows label="Example emails">
+            {examples.map((e) => (
+              <Row
+                key={e.id}
+                title={e.snippet}
+                description={`Language: ${e.lang}`}
+                control={<ExampleToggle id={e.id} included={e.included} />}
+              />
+            ))}
+          </Rows>
+        )}
+      </Card>
     </Page>
   );
 }

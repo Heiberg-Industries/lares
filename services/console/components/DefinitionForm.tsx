@@ -8,6 +8,7 @@ import { Select } from "@lares/ui/primitives/select";
 import { Textarea } from "@lares/ui/primitives/textarea";
 import { Checkbox, Radio } from "@lares/ui/primitives/checkbox";
 import { Choice, Field, FieldGroup, Notice } from "@lares/ui/patterns";
+import { Card, CardContent, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import {
   Dialog,
   DialogContent,
@@ -196,6 +197,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
     setDefinition((d) => ({ ...d, ...value }));
   // The edit page shows every part at once, in two cards; the create dialog folds the longer parts away.
   const Sub = editing ? "h3" : "h2";
+  // On the edit page each part is a card; in the create dialog the parts are plain blocks inside the dialog.
+  const Panel: React.ElementType = editing ? Card : "div";
+  const PanelBody: React.ElementType = editing ? CardContent : React.Fragment;
   const group = (summary: React.ReactNode, title: string | null, open: boolean, children: React.ReactNode) =>
     editing ? (
       <div className="lares-edit-group">
@@ -243,8 +247,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
   }
   const feedback = (
     <>
-      {message && <p role="status">{message}</p>}
-      {error && !(editing && uncertain) && <p role="alert">{error}</p>}
+      {message && <Notice>{message}</Notice>}
+      {error && !(editing && uncertain) && <Notice error>{error}</Notice>}
     </>
   );
   const content = (
@@ -259,10 +263,10 @@ export function DefinitionForm(p: DefinitionFormProps) {
         </ol>
       )}
       {!active && (
-        <p role="status">
+        <Notice>
           This agent is retired and stopped. Its definition is read-only;
           permanent deletion remains available below.
-        </p>
+        </Notice>
       )}
       {editing && uncertain && (
         <Notice error={Boolean(error)}>
@@ -277,8 +281,11 @@ export function DefinitionForm(p: DefinitionFormProps) {
         </Notice>
       )}
       {editing && (
-        <section className="lares-surface">
-          <h2>Status</h2>
+        <Card>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={2}>Status</CardTitle>
+          </CardHeader>
+          <CardContent className="lares-stack">
           <p>
             {!active
               ? "Agent stopped."
@@ -294,7 +301,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                       ? "Running. Saved connections are applied."
                       : runtime
                         ? "Saved connections are applied."
-                        : "Runtime connection status is unavailable."}
+                        : "Whether this agent is running could not be read."}
           </p>
           {!nativeHeld && (runtime?.pending ||
             (active &&
@@ -312,7 +319,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                   });
                   if (!response.ok) throw new Error(response.error.message);
                   setMessage(
-                    "Connection changes applied. Reload to inspect runtime state.",
+                    "Connection changes applied. Reload to see the agent’s current state.",
                   );
                   router.refresh();
                   setUncertain(true);
@@ -325,7 +332,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
             </Button>
           )}
           {active && <ConversationControl name={definition.name} />}
-        </section>
+          </CardContent>
+        </Card>
       )}
       <form
         onSubmit={(event) => {
@@ -408,11 +416,18 @@ export function DefinitionForm(p: DefinitionFormProps) {
             </section>
           )}
           <section hidden={!editing && step !== 1} className={editing ? "lares-grid" : undefined}>
-          <div className={editing ? "lares-surface" : undefined}>
-            <h2>{editing ? "Who it is" : "Identity"}</h2>
+          <Panel>
+            {editing ? (
+              <CardHeader>
+                <CardTitle role="heading" aria-level={2}>Who it is</CardTitle>
+              </CardHeader>
+            ) : (
+              <h2>Identity</h2>
+            )}
+            <PanelBody>
             {!editing && (
               <>
-                <Field label="Name (permanent slug)">
+                <Field label="Permanent name">
                   <Input
                     required
                     pattern="[a-z][a-z0-9-]{1,30}"
@@ -537,7 +552,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                   onChange={(e) => patch({ model: e.target.value })}
                 >
                   {!validModel && (
-                    <option value="">Choose a configured purpose alias</option>
+                    <option value="">Choose a model purpose</option>
                   )}
                   {p.aliases.map((a) => (
                     <option key={a.alias} value={a.alias}>
@@ -554,9 +569,15 @@ export function DefinitionForm(p: DefinitionFormProps) {
               {timing("model")}
                           </>,
             )}
-          </div>
-          <div className={editing ? "lares-surface" : undefined}>
-            {editing && <h2>What it can do</h2>}
+            </PanelBody>
+          </Panel>
+          <Panel>
+            {editing && (
+              <CardHeader>
+                <CardTitle role="heading" aria-level={2}>What it can do</CardTitle>
+              </CardHeader>
+            )}
+            <PanelBody>
             {group(
               <>Access and skills · {definition.grants.length} integrations</>,
               null,
@@ -566,12 +587,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
               {retiredGrants.map((g) => {
                 const dependents = skillsNeeding(g.capability);
                 return (
-                  <div
-                    key={g.capability}
-                    role="status"
-                    data-retired-grant={g.capability}
-                    className="lares-editor-item"
-                  >
+                  <div key={g.capability} data-retired-grant={g.capability}>
+                  <Notice tone="needs-you">
                     <strong>{g.capability}</strong> ({g.scope}): no longer
                     available in this version. Saving is refused while it stays.
                     {dependents.length > 0 && (
@@ -605,6 +622,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                     >
                       Remove {g.capability}
                     </Button>
+                  </Notice>
                   </div>
                 );
               })}
@@ -616,12 +634,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
                     ),
                 )
                 .map((k) => (
-                  <div
-                    key={k.name}
-                    role="status"
-                    data-retired-skill={k.name}
-                    className="lares-editor-item"
-                  >
+                  <div key={k.name} data-retired-skill={k.name}>
+                  <Notice tone="needs-you">
                     Skill <strong>{k.name}</strong>: no longer available in this
                     version. Saving is refused while it stays.{" "}
                     <Button
@@ -638,6 +652,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                     >
                       Remove skill {k.name}
                     </Button>
+                  </Notice>
                   </div>
                 ))}
               <div className="lares-choice-list">
@@ -799,7 +814,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 {timing("doors")}
               </>
             )}
-          </div>
+            </PanelBody>
+          </Panel>
           </section>
           {!editing && step === 2 && (
             <section className="lares-surface">
@@ -917,7 +933,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
         />
       )}
       {!editing && creating !== "idle" && (
-        <div role="status" aria-live="polite" className="lares-create-progress">
+        <Notice tone={creating === "working" ? "working" : creating === "done" ? "success" : "needs-you"}>
           <ol>
             <li>{CREATE_STEPS[0]}{creating === "done" ? " ✓" : creating === "working" ? "…" : ""}</li>
             <li>{CREATE_STEPS[1]}{creating === "done" ? " ✓" : creating === "working" ? "…" : ""}</li>
@@ -926,7 +942,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
           {creating === "working" && <p>{CREATE_WORKING}</p>}
           {creating === "done" && <p>{CREATE_DONE}</p>}
           {creating === "failed" && <p>{CREATE_FAILED}</p>}
-        </div>
+        </Notice>
       )}
       {!editing && feedback}
       {!editing && uncertain && (
@@ -937,12 +953,16 @@ export function DefinitionForm(p: DefinitionFormProps) {
         </p>
       )}
       {editing && (
-        <section className="lares-surface">
-          <h2>Agent lifecycle</h2>
+        <Card>
+          <CardHeader>
+            <CardTitle role="heading" aria-level={2}>Agent lifecycle</CardTitle>
+          </CardHeader>
+          <CardContent className="lares-stack">
           <p>
-            Retiring preserves its workflow data. Deleting removes its owned
-            data and requires confirmation.
+            Retiring stops the agent and keeps its recorded work. Deleting
+            removes the agent and its own data, and asks you to confirm.
           </p>
+          <div className="lares-actions">
           {active && (
             <Button
               variant="outline"
@@ -964,6 +984,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
           >
             Delete agent…
           </Button>
+          </div>
           {dirty && (
             <p>
               Save your definition changes before changing the agent lifecycle.
@@ -984,8 +1005,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
               </DialogTitle>
               <DialogDescription id="lifecycle-description">
                 {deleteConfirm
-                  ? "This removes the agent and its owned data. It cannot be undone."
-                  : "This stops the agent and preserves its workflow data."}
+                  ? "This removes the agent and its own data. It cannot be undone."
+                  : "This stops the agent and keeps its recorded work."}
               </DialogDescription>
               {deleteConfirm && (
                 <Field label={<>Type {definition.name} to confirm</>}>
@@ -1008,7 +1029,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                   Cancel
                 </Button>
                 <Button
-                  variant="destructive"
+                  variant={deleteConfirm ? "destructive" : "default"}
                   disabled={
                     busy ||
                     uncertain ||
@@ -1060,10 +1081,11 @@ export function DefinitionForm(p: DefinitionFormProps) {
                       : "Retire agent"}
                 </Button>
               </div>
-              {error && <p role="alert">{error}</p>}
+              {error && <Notice error>{error}</Notice>}
             </DialogContent>
           </Dialog>
-        </section>
+          </CardContent>
+        </Card>
       )}
       <Dialog
         open={leaveTo !== null}

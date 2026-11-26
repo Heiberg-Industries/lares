@@ -105,6 +105,36 @@ export function runsWithoutAsking(entry: Pick<OutsideToolDeclaration, "tools">, 
   return isTrustedRead(entry, bareTool, currentPin) || isDangerRun(entry, bareTool, currentPin);
 }
 
+/** A conversation's definition with the owner's "run without asking" switches (`trusted`, `danger`) as they are NOW.
+ *  A conversation keeps the definition it started on, but those switches are not part of that identity (`hashOf` leaves
+ *  them out), so without this a switch flipped mid-conversation only reached the next one: a tool just switched on stayed
+ *  behind its card, and a tool just switched off kept skipping the card and was then refused by Keeper. The caller passes
+ *  `current` only when it is the SAME definition (equal `hashOf`), so nothing else about the conversation moves. Entries are
+ *  matched by name; `trustGrantFor` and `dangerGrantFor` still hold each switch to the entry's own `allow` and `read`. */
+export function withSwitchesFrom<D extends Pick<AgentDefinition, "outsideTools">>(pinned: D, current: Pick<AgentDefinition, "outsideTools">): D {
+  if (pinned.outsideTools === undefined) return pinned;
+  return { ...pinned, outsideTools: pinned.outsideTools.map((entry) => {
+    const { trusted: _trusted, danger: _danger, ...tools } = entry.tools;
+    const now = current.outsideTools?.find((e) => e.name === entry.name)?.tools;
+    return { ...entry, tools: { ...tools, ...(now?.trusted ? { trusted: now.trusted } : {}), ...(now?.danger ? { danger: now.danger } : {}) } };
+  }) };
+}
+
+/** Whether a definition's "run without asking" switches obey the rules the definition check holds them to
+ *  (`validateDefinition`, the outside-tools block): a trusted tool is a lookup, a danger-zone tool is an allowed tool that
+ *  changes something on a grant that is not read-only, and no tool is listed twice. A fresh read whose switches break
+ *  these is an invalid hand edit: the agent keeps its last valid switches, as it keeps its last valid definition. */
+export function switchesHold(d: Pick<AgentDefinition, "grants" | "outsideTools">): boolean {
+  const readOnly = d.grants.find((g) => g.capability === OUTSIDE_CAPABILITY)?.scope === "read";
+  return (d.outsideTools ?? []).every(({ tools }) => {
+    const trusted = (tools.trusted ?? []).map((t) => t.tool);
+    const danger = (tools.danger ?? []).map((t) => t.tool);
+    return trusted.every((t) => tools.read.includes(t)) && new Set(trusted).size === trusted.length
+      && danger.every((t) => tools.allow.includes(t) && !tools.read.includes(t)) && new Set(danger).size === danger.length
+      && !(danger.length > 0 && readOnly);
+  });
+}
+
 /** Where a conversation happens, for the one question "may this outside tool be offered here?".
  *  `web-chat`: the console's own verified session, where every allowed tool is offered and a card asks first.
  *  `private-door-chat`: the claimed person in a private chat on a door (Slack, Telegram, ...). A door has no

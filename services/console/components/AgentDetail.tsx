@@ -8,11 +8,14 @@ import {
   TabsContent,
 } from "@lares/ui/primitives/tabs";
 import { Button } from "@lares/ui/primitives/button";
+import { Badge } from "@lares/ui/primitives/badge";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import {
   AgentAvatar,
   PageHeader,
   Notice,
-  EmptyState,
+  Row,
+  Rows,
 } from "@lares/ui/patterns";
 import type { AgentFolder } from "../lib/agents";
 import type { BoardRowDTO } from "../lib/contracts";
@@ -22,8 +25,20 @@ import { PermissionEvents } from "./PermissionEvents";
 import { OutsideToolsSection, type OutsideToolView } from "./OutsideToolsSection";
 import { DeliveryGrid, type DeliveryGridProps } from "./DeliveryGrid";
 import type { OutsideToolEvidence } from "../lib/outside-tools";
+import type { AgentStatus } from "../lib/agent-detail";
 import { scheduleExplanation, scheduleLabel } from "../lib/schedule-labels";
 import styles from "./AgentDetail.module.css";
+
+// One badge and one sentence per status. "Running" is only said when the server reports the agent as started and answering.
+const STATUS: Record<AgentStatus, { words: string; variant: "neutral" | "success" | "warning"; detail: string }> = {
+  running: { words: "Running", variant: "success", detail: "Started and answering." },
+  starting: { words: "Starting", variant: "warning", detail: "Started, not answering yet. A first start after an upgrade can take several minutes; reload to check." },
+  stopped: { words: "Stopped", variant: "neutral", detail: "This agent is not running. Edit agent shows why and how to start it." },
+  "changes-waiting": { words: "Changes waiting", variant: "warning", detail: "Saved changes have not been applied yet. Apply them in Edit agent." },
+  "not-started": { words: "Not started", variant: "neutral", detail: "This agent has not been started yet." },
+  retired: { words: "Retired", variant: "neutral", detail: "This agent is retired and stopped." },
+  unknown: { words: "Status unavailable", variant: "neutral", detail: "Whether this agent is running could not be read. Reload to try again." },
+};
 export function AgentDetail({
   agent,
   board,
@@ -36,6 +51,7 @@ export function AgentDetail({
   providerKeySettings,
   mailboxSettings,
   waiting = false,
+  status = "unknown",
 }: {
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
@@ -54,28 +70,42 @@ export function AgentDetail({
   mailboxSettings?: ReactNode;
   /** The agent has saved changes that are not applied yet. */
   waiting?: boolean;
+  /** What the agent is doing, from the state the server reports; `unknown` when it could not be read. */
+  status?: AgentStatus;
 }) {
   const edit = `/agents/${encodeURIComponent(agent.name)}/edit`;
+  const state = STATUS[status];
+  const access = agent.grants.filter((g) => g.scope !== "none").length;
   const groups = [
     {
       title: "You decide",
       scope: "write-with-confirm",
-      help: "Approval-controlled access. Changes save immediately and reach the agent at its next policy check.",
+      help: "The agent asks you first, unless you choose otherwise here. A change saves at once and applies from the agent’s next action.",
     },
     {
       title: "Acts without asking",
       scope: "write",
-      help: "Plain write access from the definition. Change it in Edit agent.",
+      help: "The agent may change these without asking. To change that, open Edit agent.",
     },
     {
       title: "Reads",
       scope: "read",
-      help: "Read access is allowed while granted.",
+      help: "The agent may read these.",
     },
   ];
+  const scheduleRows = (on: boolean) =>
+    schedules.available &&
+    schedules.value.filter((s) => s.on === on).map((s) => (
+      <Row
+        key={s.name}
+        title={scheduleLabel(s.name)}
+        description={scheduleExplanation(s.name) || undefined}
+        control={<Badge variant={on ? "success" : "neutral"}>{on ? "On" : "Off"}</Badge>}
+      />
+    ));
   return (
     <>
-      <div className={styles.back}>
+      <div>
         <Link href="/agents">← Agents</Link>
       </div>
       <div className={styles.identity}>
@@ -105,46 +135,64 @@ export function AgentDetail({
             </TabsTrigger>
           ))}
         </TabsList>
-        <TabsContent value="overview">
-          <div className="lares-stack">
-            {waiting && (
-              <p role="status">
-                Changes are waiting: <Link href={edit}>open Edit agent</Link> to apply them.
-              </p>
-            )}
-            <section className="lares-surface">
-              <h2 className="lares-section-title">About this agent</h2>
-              <p>
-                {agent.role} · <span className="mono">{agent.name}</span>
-              </p>
-              {agent.startedAt ? (
-                <p className="lares-muted">
-                  Last registered:{" "}
-                  <time dateTime={agent.startedAt}>
-                    {agent.startedAt.replace("T", " ").slice(0, 19)} UTC
-                  </time>
-                  . Registration is not a current health check.
-                </p>
-              ) : (
-                <p className="lares-muted">
-                  Not started yet. Adopt it on the Access tab, then run{" "}
-                  <code>sudo lares agent start {agent.name}</code> on the server.
-                </p>
+        <TabsContent value="overview" className="lares-stack">
+          {waiting && (
+            <Notice tone="needs-you">
+              Changes are waiting: <Link href={edit}>open Edit agent</Link> to apply them.
+            </Notice>
+          )}
+          <Card>
+            <CardHeader>
+              <CardTitle role="heading" aria-level={2}>About this agent</CardTitle>
+            </CardHeader>
+            <Rows label="About this agent">
+              <Row
+                title="Status"
+                description={
+                  status === "not-started" ? (
+                    <>
+                      Not started yet. Take ownership of it on the Access tab, then run{" "}
+                      <code>sudo lares agent start {agent.name}</code> on the server.
+                    </>
+                  ) : (
+                    state.detail
+                  )
+                }
+                control={<Badge variant={state.variant}>{state.words}</Badge>}
+              />
+              <Row
+                title={agent.role}
+                description={<>Permanent name: <span className="mono">{agent.name}</span></>}
+              />
+              {agent.startedAt && (
+                <Row
+                  title="Last started"
+                  description={
+                    <>
+                      <time dateTime={agent.startedAt}>
+                        {agent.startedAt.replace("T", " ").slice(0, 19)} UTC
+                      </time>
+                      . This is when it last started, not a check that it is running now.
+                    </>
+                  }
+                />
               )}
-              <p>
-                {agent.grants.filter((g) => g.scope !== "none").length} granted
-                capabilities · {agent.skills.length} skills
-              </p>
-              {promptCache && <p className="lares-muted">{promptCache}</p>}
+              <Row
+                title="Access and skills"
+                description={`Access to ${access} ${access === 1 ? "integration" : "integrations"} · ${agent.skills.length} ${agent.skills.length === 1 ? "skill" : "skills"}`}
+              />
+              {promptCache && <Row title="Model use" description={promptCache} />}
+            </Rows>
+            <CardFooter>
               <Link href={edit}>
                 Edit instructions, personality and model →
               </Link>
-            </section>
-            <section>
-              <h2 className="lares-section-title">Recent permission checks</h2>
-              <PermissionEvents events={events} />
-            </section>
-          </div>
+            </CardFooter>
+          </Card>
+          <section>
+            <h2 className="lares-section-title">Recent permission checks</h2>
+            <PermissionEvents events={events} />
+          </section>
         </TabsContent>
         <TabsContent value="access" className="lares-stack">
           {accessSettings}
@@ -153,132 +201,131 @@ export function AgentDetail({
           <OutsideToolsSection agent={agent.name} tools={outsideTools.tools} inEffect={outsideTools.inEffect} evidence={outsideTools.evidence} dangerLive={outsideTools.dangerLive} />
           {!board.available ? (
             <Notice error>
-              Access controls are unavailable. Reload before changing
+              Access controls could not be loaded. Reload before changing
               permissions.
             </Notice>
           ) : (
-            <div className="lares-stack">
+            <>
               {groups.map((group) => {
                 const rows = board.value.filter((r) => r.scope === group.scope);
                 return (
-                  <section key={group.scope} className="lares-surface">
-                    <h2 className="lares-section-title">{group.title}</h2>
-                    <p className="lares-muted">{group.help}</p>
+                  <Card key={group.scope}>
+                    <CardHeader>
+                      <CardTitle role="heading" aria-level={2}>{group.title}</CardTitle>
+                      <CardDescription>{group.help}</CardDescription>
+                    </CardHeader>
                     {!rows.length ? (
-                      <p>No access in this group.</p>
+                      <CardContent className="lares-muted">No access in this group.</CardContent>
                     ) : (
-                      <ul className="lares-data-list">
+                      <Rows label={group.title}>
                         {rows.map((row) => (
-                          <li key={`${row.capability}:${row.action}`}>
-                            <div className={styles.accessRow}>
-                              <strong>
-                                {row.capability}
-                                {row.actionLabel ? ` · ${row.actionLabel}` : ""}
-                              </strong>
-                              {row.controllable && (
+                          <Row
+                            key={`${row.capability}:${row.action}`}
+                            title={`${row.capability}${row.actionLabel ? ` · ${row.actionLabel}` : ""}`}
+                            description={
+                              row.controllable
+                                ? `${row.source.kind === "board" ? `Set by ${row.source.by}` : "From its starting setup"} · asked you ${row.evidence.asked} ${row.evidence.asked === 1 ? "time" : "times"}, went ahead without asking ${row.evidence.autonomous} ${row.evidence.autonomous === 1 ? "time" : "times"} in the last 30 days.`
+                                : undefined
+                            }
+                            control={
+                              row.controllable ? (
                                 <AutonomyControl
                                   agent={agent.name}
                                   capability={row.capability}
                                   action={row.action || undefined}
                                   level={row.level}
                                 />
-                              )}
-                            </div>
-                            {row.controllable && (
-                              <>
-                                <p className="lares-muted">
-                                  {row.source.kind === "board"
-                                    ? `Set by ${row.source.by}`
-                                    : "Starting definition"}{" "}
-                                  · {row.evidence.asked} asked,{" "}
-                                  {row.evidence.autonomous} allowed by policy in
-                                  30 days.
-                                </p>
-                                {row.lockedTools.length > 0 && (
-                                  <details>
-                                    <summary>Actions that still ask</summary>
-                                    <ul>
-                                      {row.lockedTools.map((t) => (
-                                        <li key={t.tool}>
-                                          {t.tool} — {t.reason}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </details>
-                                )}
-                              </>
+                              ) : undefined
+                            }
+                          >
+                            {row.controllable && row.lockedTools.length > 0 && (
+                              <details>
+                                <summary>Actions that still ask</summary>
+                                <ul>
+                                  {row.lockedTools.map((t) => (
+                                    <li key={t.tool}>
+                                      {t.tool} — {t.reason}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </details>
                             )}
-                          </li>
+                          </Row>
                         ))}
-                      </ul>
+                      </Rows>
                     )}
-                  </section>
+                  </Card>
                 );
               })}
               <Button variant="outline" asChild>
                 <Link href="/meeting-follow-ups">Meeting follow-up controls →</Link>
               </Button>
-            </div>
+            </>
           )}
         </TabsContent>
         <TabsContent value="schedules" className="lares-stack">
-          <section className="lares-surface">
-            <h2 className="lares-section-title">Recurring work</h2>
+          <Card>
+            <CardHeader>
+              <CardTitle role="heading" aria-level={2}>Recurring work</CardTitle>
+              <CardDescription>
+                On means the setting is saved. It does not confirm the next run.
+              </CardDescription>
+            </CardHeader>
             {!schedules.available ? (
-              <Notice>
-                Saved schedules are unavailable. Open Edit agent to inspect the
-                definition.
-              </Notice>
+              <CardContent>
+                <Notice>
+                  The saved schedules could not be loaded. Open Edit agent to
+                  see them.
+                </Notice>
+              </CardContent>
             ) : schedules.value.length ? (
               <>
                 {schedules.value.some((s) => s.on) ? (
-                  <ul className="lares-data-list">
-                    {schedules.value.filter((s) => s.on).map((s) => (
-                      <li key={s.name}>{scheduleLabel(s.name)} · Enabled{scheduleExplanation(s.name) && <p className="lares-muted">{scheduleExplanation(s.name)}</p>}</li>
-                    ))}
-                  </ul>
-                ) : <p>No recurring work enabled.</p>}
+                  <Rows label="Recurring work that is on">{scheduleRows(true)}</Rows>
+                ) : (
+                  <CardContent className="lares-muted">No recurring work is on.</CardContent>
+                )}
                 {schedules.value.some((s) => !s.on) && (
-                  <details className="lares-inset-disclosure">
-                    <summary>Disabled schedules ({schedules.value.filter((s) => !s.on).length})</summary>
-                    <ul className="lares-data-list">
-                      {schedules.value.filter((s) => !s.on).map((s) => (
-                        <li key={s.name}>{scheduleLabel(s.name)}{scheduleExplanation(s.name) && <p className="lares-muted">{scheduleExplanation(s.name)}</p>}</li>
-                      ))}
-                    </ul>
-                  </details>
+                  <CardContent>
+                    <details>
+                      <summary>Schedules that are off ({schedules.value.filter((s) => !s.on).length})</summary>
+                      <Rows label="Schedules that are off">{scheduleRows(false)}</Rows>
+                    </details>
+                  </CardContent>
                 )}
               </>
             ) : (
-              <EmptyState title="No schedules configured">
-                This definition has no recurring work.
-              </EmptyState>
+              <CardContent className="lares-muted">
+                No schedules yet. This agent has no recurring work.
+              </CardContent>
             )}
-            <p className="lares-muted">
-              Enabled is a saved setting, not confirmation of the next run.
-            </p>
-            <Button variant="outline" asChild>
-              <Link href={edit}>Edit schedules</Link>
-            </Button>
-          </section>
+            <CardFooter>
+              <Button variant="outline" asChild>
+                <Link href={edit}>Edit schedules</Link>
+              </Button>
+            </CardFooter>
+          </Card>
           {routing && (
-            <section className="lares-surface">
-              <h2 className="lares-section-title">Where messages go</h2>
-              <DeliveryGrid agent={agent.name} {...routing} />
-            </section>
+            <Card>
+              <CardHeader>
+                <CardTitle role="heading" aria-level={2}>Where messages go</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <DeliveryGrid agent={agent.name} {...routing} />
+              </CardContent>
+            </Card>
           )}
         </TabsContent>
-        <TabsContent value="activity">
-          <section>
-            <p className="lares-muted">
-              Permission policy evidence for this agent. It does not include
-              every action or prove completion.
-            </p>
-            <PermissionEvents events={events} />
-            <Link href={`/permission-checks?agent=${encodeURIComponent(agent.name)}`}>
-              View all checks →
-            </Link>
-          </section>
+        <TabsContent value="activity" className="lares-stack">
+          <p className="lares-muted">
+            Each time this agent checked whether it was allowed to do
+            something. This is not a list of everything it did, and it does
+            not show that a task was finished.
+          </p>
+          <PermissionEvents events={events} />
+          <Link href={`/permission-checks?agent=${encodeURIComponent(agent.name)}`}>
+            View all checks →
+          </Link>
         </TabsContent>
       </Tabs>
     </>

@@ -10,6 +10,7 @@
  *
  * CLIENT component: imports only the database-free `lib/delivery.ts`, never the server modules.
  */
+import { Notice } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { SaveEndsConversations } from "./SaveEndsConversations";
 import { Select } from "@lares/ui/primitives/select";
@@ -61,13 +62,13 @@ export function DeliveryGrid({ agent, delivery, connected, notes = {}, running }
   }
 
   return (
-    <div>
+    <div className="lares-stack">
       <p className="lares-muted">
         Number the doors in the order each message should try them. If a door is not connected, the
         message tries the next one, and web chat is always the last resort - so nothing is dropped.
         {!saved && " Rows marked “today” show where the message goes now; saving makes the choice explicit."}
       </p>
-      <div className="lares-table-scroll"><table className="card lares-operational-table" aria-label="Where messages go">
+      <div className="lares-table-scroll"><table aria-label="Where messages go">
         <thead>
           <tr>
             <th>Message</th>
@@ -79,10 +80,10 @@ export function DeliveryGrid({ agent, delivery, connected, notes = {}, running }
         <tbody>
           {initial.map((row) => (
             <tr key={row.kind}>
-              <td className="mono lares-small">
+              <td>
                 {row.label}
-                {row.fromToday && !saved && <span className="lares-status-muted"> · today</span>}
-                {notes[row.kind] && <div className="lares-status-muted">{notes[row.kind]}</div>}
+                {row.fromToday && !saved && <span className="lares-muted"> · today</span>}
+                {notes[row.kind] && <div className="lares-muted">{notes[row.kind]}</div>}
               </td>
               {DELIVERY_DOORS.map((door) => (
                 <td key={door}>
@@ -106,13 +107,9 @@ export function DeliveryGrid({ agent, delivery, connected, notes = {}, running }
         </tbody>
       </table></div>
       <SaveEndsConversations running={running} />
-      <div className="lares-actions lares-row-actions">
-        <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
-        {msg && (
-          <span role={msg.ok ? "status" : "alert"} className={msg.ok ? "lares-form-success" : "lares-form-error"}>
-            {msg.text}
-          </span>
-        )}
+      {msg && <Notice tone={msg.ok ? "success" : "error"}>{msg.text}</Notice>}
+      <div className="lares-actions">
+        <Button type="button" variant="outline" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
       </div>
     </div>
   );

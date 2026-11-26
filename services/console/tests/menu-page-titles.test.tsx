@@ -27,7 +27,6 @@ function pageTitle(href: string): string | null {
 /** Pages whose title does not say what the menu says yet, with the title they show today. The slices that
     restyle these pages rename them and delete their line. Nothing may be added here. */
 const NOT_YET: Record<string, string> = {
-  "/writing-style": "Email writing style",
   "/general": "Settings",
   "/quiet-hours-and-delivery": "Proactivity",
   "/backups": "Backup",

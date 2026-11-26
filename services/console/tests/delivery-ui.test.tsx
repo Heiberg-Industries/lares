@@ -66,7 +66,7 @@ describe("DeliveryGrid", () => {
     fireEvent.change(select("Digest via Slack"), { target: { value: "0" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(mocks.save).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert").textContent).toBe("Digest: pick a first door.");
+    expect(screen.getByRole("alert").textContent).toContain("Digest: pick a first door.");
   });
 
   it("shows the refusal sentence from the save", async () => {

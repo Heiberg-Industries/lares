@@ -96,7 +96,7 @@ describe("agent discovery", () => {
   };
   it("keeps all 23 capabilities available and searches display names and roles", async () => {
     render(<AgentsList snapshot={snapshot} />);
-    await userEvent.click(screen.getByText("23 capabilities"));
+    await userEvent.click(screen.getByText("Access to 23 integrations"));
     expect(screen.getByText("capability-22")).toBeTruthy();
     await userEvent.type(screen.getByRole("searchbox"), "travel");
     expect(screen.getByText("No agents found")).toBeTruthy();
@@ -113,6 +113,6 @@ describe("agent discovery", () => {
       />,
     );
     expect(screen.getByRole("alert").textContent).toContain("unavailable");
-    expect(screen.queryByText("No agents registered yet")).toBeNull();
+    expect(screen.queryByText("No agents yet")).toBeNull();
   });
 });
