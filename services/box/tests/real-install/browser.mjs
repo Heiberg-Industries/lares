@@ -89,7 +89,7 @@ const steps = {
     await page.goto(`${origin}/agents/new`);
     await page.getByRole("radio", { name: "Chief of staff" }).check({ timeout: 30_000 });
     await page.getByRole("button", { name: "Continue →" }).click();
-    await page.getByLabel("Name (permanent slug)").fill(settings.agent);
+    await page.getByLabel("Permanent name").fill(settings.agent);
     await page.getByRole("button", { name: "Continue →" }).click();
     await page.getByRole("button", { name: "Create agent" }).click();
     await page.waitForURL((url) => url.pathname !== "/agents/new", { timeout: STEP_MS });
@@ -103,8 +103,8 @@ const steps = {
   async "member-limit"(page) {
     await page.goto(`${origin}/members`);
     await page.locator('input[name="monthlyLimit"]').fill(settings.memberLimit, { timeout: 30_000 });
-    await page.getByRole("button", { name: "Save initial limit" }).click();
-    await page.getByText("Initial monthly limit saved.").waitFor({ timeout: 60_000 });
+    await page.getByRole("button", { name: "Save first limit" }).click();
+    await page.getByText("First monthly limit saved.").waitFor({ timeout: 60_000 });
   },
   // A tool that just runs, a Track change and a Vault note that each need the owner's answer on
   // their card, then one more message in the same conversation.
@@ -210,7 +210,7 @@ async function waitForDoor(page, wanted, what) {
   const deadline = Date.now() + DOOR_MS;
   while (Date.now() < deadline) {
     if (await wanted.count()) return;
-    if (await alert.count()) throw new Error(`The door page says: ${(await alert.first().innerText().catch(() => "")).slice(0, 500)}`);
+    if (await alert.count()) throw new Error(`The door page says: ${(await alert.first().locator(".lares-notice-body").innerText().catch(() => "")).slice(0, 500)}`);
     await page.waitForTimeout(1000);
   }
   throw new Error(`The door page did not show ${what} within ${DOOR_MS / 1000} seconds`);
@@ -222,12 +222,15 @@ const CLAIM_WAITING = "Pending: Owner claimed door; apply connection changes (re
 // An Apply (or a save's firewall step) is running now; pressing anything would start a second one.
 const RUNNING = /^Pending: .*in progress/;
 
-// The door's state line (the first paragraph of its fieldset). It reads "Not set up" until the page has
+// The door's own card: the fieldset holds its fields and buttons, the card around it its name and state line.
+const doorCard = (page, group) => page.locator('section[aria-label="Door setup"] [data-slot="card"]').filter({ has: group });
+
+// The door's state line (the description under the door's name on its card). It reads "Not set up" until the page has
 // fetched the doors, so a door that has been touched is read again for a little while.
 async function doorState(page, group) {
   let state = "";
   for (let tries = 0; tries < 10; tries++) {
-    state = (await group.locator("p").first().innerText().catch(() => "")).trim();
+    state = (await doorCard(page, group).locator('[data-slot="card-description"]').first().innerText().catch(() => "")).trim();
     if (state && state !== "Not set up") break;
     await page.waitForTimeout(1000);
   }
@@ -255,7 +258,7 @@ const pressApply = (page) => page.locator('section[aria-label="Door setup"]').ge
 // keeper clears "pending", before it starts the agent), so they are not that signal. Nothing here reloads the
 // page or presses anything while the Apply it started is still running.
 async function pressApplyAndWaitForIt(page) {
-  const applying = page.locator('section[aria-label="Door setup"] .lares-door-progress', { hasText: "Applying" }).first();
+  const applying = page.locator('section[aria-label="Door setup"] [data-tone="working"]', { hasText: "Applying" }).first();
   await pressApply(page);
   await applying.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {});
   await applying.waitFor({ state: "detached", timeout: DOOR_MS });
@@ -283,11 +286,11 @@ async function connectDoor(page, kind) {
     await group.getByRole("button", { name: /^(Connect|Replace credentials and connect)$/ }).click();
   }
   if (kind === "slack") {
-    const code = group.locator(".lares-door-connect code");
+    const code = group.locator('[data-tone="needs-you"] code');
     await waitForDoor(page, code, "the one-time code");
     writeFileSync(`${settings.doorCodeDir}/slack`, (await code.first().innerText()).trim(), { mode: 0o600 });
   } else {
-    const link = group.locator("a.lares-door-tap");
+    const link = group.locator('[data-tone="needs-you"] a[href*="?start="]');
     await waitForDoor(page, link, "the tap-to-connect link");
     const start = new URL(await link.first().getAttribute("href")).searchParams.get("start") ?? "";
     writeFileSync(`${settings.doorCodeDir}/telegram`, start, { mode: 0o600 });
@@ -326,8 +329,8 @@ async function testBrief(page, kind) {
   await button.waitFor({ timeout: 60_000 });
   // The status line is fetched after the door rows; give it the same moment.
   await page.waitForTimeout(3000);
-  const line = group.locator('.lares-test-brief [role="status"]');
-  const refusal = group.locator('.lares-test-brief [role="alert"]');
+  const line = group.locator('[data-tone="info"] .lares-notice-body');
+  const refusal = group.locator('[data-tone="error"] .lares-notice-body');
   const said = async () => ((await refusal.count()) ? await refusal.first().innerText().catch(() => "")
     : (await line.count()) ? await line.first().innerText().catch(() => "") : "").trim();
   seen.statusBeforePress = await said();
@@ -362,7 +365,7 @@ async function testBrief(page, kind) {
   save();
   // What the console's overview says about the agent's work afterwards.
   await page.goto(`${origin}/agents`);
-  const cell = page.locator("tr", { has: page.locator(`a[href="/agents/${settings.agent}"]`) }).locator('td[data-label="Workflows"]');
+  const cell = page.locator("li.lares-row", { has: page.locator(`a[href="/agents/${settings.agent}"]`) }).locator('.lares-row-control [data-slot="badge"]');
   seen.overview = (await cell.first().innerText({ timeout: 30_000 }).catch(() => "")).trim() || null;
   save();
 }
