@@ -27,7 +27,7 @@
   },
   "breaking": [
     "This is a test release, not a finished rc.15. Use it only on a test server or on an installation whose owner has agreed to test it.",
-    "Update in place from rc.15.test.17 with lares update, then run lares agent refresh once more to be sure every agent moved to the new software. This release adds no database file and changes no setting.",
+    "Update in place from rc.15.test.17 with lares update. It moves every agent to the new software by itself and names the retry command only if one fails. This release adds no database file and changes no setting.",
     "The old Connect screen and the per-agent outside-connections editor are gone. Outside tools are now managed only on Integrations > Outside tools, and only by the owner. Old addresses redirect there."
   ]
 }
