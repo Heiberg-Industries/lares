@@ -16,7 +16,7 @@ import { Notice } from '@lares/ui/patterns';
 import { Button } from '@lares/ui/primitives/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@lares/ui/primitives/card';
 import { Input } from '@lares/ui/primitives/input';
-import { NOTION_CREDENTIAL_CHANGED } from './NotionCredential';
+import { NOTION_CREDENTIAL_CHANGED, NOTION_KEY_UPDATED } from './NotionCredential';
 
 const when = (iso: string | null) => (iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : 'never');
 
@@ -125,6 +125,16 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
 
   const live = view.unavailable ? null : view;
   const status: CredentialStatus | null = cred.kind === 'status' ? cred.status : null;
+
+  // The Notion key card on the same page changed the key: take the status it got back, so the switch below is not stale.
+  useEffect(() => {
+    const onKey = (event: Event) => {
+      const parsed = credentialStatusSchema.safeParse((event as CustomEvent).detail);
+      if (parsed.success) { setCred({ kind: 'status', status: parsed.data }); setFlow(null); setConfirmed(false); }
+    };
+    window.addEventListener(NOTION_KEY_UPDATED, onKey);
+    return () => window.removeEventListener(NOTION_KEY_UPDATED, onKey);
+  }, []);
 
   // ---- polling: every 5 s while a request is waiting, then stop --------------------------------
   const polling = !!live?.busy;

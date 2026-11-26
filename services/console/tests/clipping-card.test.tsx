@@ -229,6 +229,16 @@ describe('every state has its own sentence', () => {
       const t = text(view(saved), cred({ activeRevision: null, state: 'not-configured' }));
       expect(t).toContain('No Notion key is saved yet. Add it under Notion key above.'); expect(t).not.toContain('Switch clipping');
     });
+    it('shows the switch as soon as the Notion key card on the same page says the first key was applied, without a reload', async () => {
+      render(<ClippingCard initial={view(saved)} credential={cred({ activeRevision: null, state: 'not-configured' })} />);
+      expect(screen.getByText('No Notion key is saved yet. Add it under Notion key above.')).toBeTruthy();
+      expect(screen.queryByText('Switch clipping on')).toBeNull();
+      act(() => { window.dispatchEvent(new CustomEvent('lares:notion-key-updated', { detail: { not: 'a status' } })); });
+      expect(screen.queryByText('Switch clipping on')).toBeNull();
+      act(() => { window.dispatchEvent(new CustomEvent('lares:notion-key-updated', { detail: status() })); });
+      await waitFor(() => expect(screen.getByText('Switch clipping on')).toBeTruthy());
+      expect(screen.queryByText('No Notion key is saved yet. Add it under Notion key above.')).toBeNull();
+    });
     it('no chief of staff, or several: explained, switch hidden', () => {
       const none = text(view({ ...saved, chiefOfStaff: { kind: 'none' } }));
       expect(none).toContain('No chief of staff is set up'); expect(none).not.toContain('Switch clipping');

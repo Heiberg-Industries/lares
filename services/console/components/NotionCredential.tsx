@@ -32,6 +32,8 @@ const progress = (items: CredentialStatus['activation']) => items.length
 
 /** Fired by another card (Clipping) after it changed this credential, so this card reads it again. */
 export const NOTION_CREDENTIAL_CHANGED = 'lares:notion-credential-changed';
+/** Fired by this card after it changed the credential, carrying the new status, so the Clipping card on the same page shows the same key. */
+export const NOTION_KEY_UPDATED = 'lares:notion-key-updated';
 
 export function NotionCredential({ initial }: { initial: CredentialView }) {
   const [view, setView] = useState(initial), [busy, setBusy] = useState(false), [message, setMessage] = useState('');
@@ -66,6 +68,7 @@ export function NotionCredential({ initial }: { initial: CredentialView }) {
         setMessage(messages[code]); setStale(true); if (code === 'outcome-unknown') setUncertain(true); return;
       }
       setView({ kind: 'status', status: parsed.data }); setMessage('Operation recorded. Review the result below.');
+      window.dispatchEvent(new CustomEvent<CredentialStatus>(NOTION_KEY_UPDATED, { detail: parsed.data }));
     } catch { setMessage(messages['outcome-unknown']); setUncertain(true); setStale(true); }
     finally { inFlight.current = false; setBusy(false); }
   }
