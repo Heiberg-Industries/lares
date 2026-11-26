@@ -141,7 +141,7 @@ export function waitingPageLink(interactionId: string, env: NodeJS.ProcessEnv = 
     return null;
   }
   if (base.protocol !== "https:" && base.protocol !== "http:") return null;
-  const url = new URL("waiting", base.href.endsWith("/") ? base.href : `${base.href}/`);
+  const url = new URL("reviews", base.href.endsWith("/") ? base.href : `${base.href}/`);
   url.searchParams.set("request", interactionId);
   return url.href;
 }
