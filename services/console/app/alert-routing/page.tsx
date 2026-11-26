@@ -4,23 +4,77 @@ import { getRules, getConsumers } from "../../lib/signals";
 import { JsonEditor } from "../../components/JsonEditor";
 import { ConsumerSwitches } from "../../components/ConsumerSwitches";
 import { saveRules, saveConsumers } from "../actions/signals";
-import { PageHeader, Page } from "@lares/ui/patterns";
+import { Notice, PageHeader, Page, Row, Rows } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 export const dynamic = "force-dynamic";
 export default async function RulesPage() {
   await requireConsolePage();
-  // : the switches sit ABOVE the rules rather than on their own page, because they are the
-  // same question — where does a signal go — asked one level up. Fetched independently so a spine
+  // The switches sit ABOVE the rules rather than on their own page, because they are the same
+  // question — where does an alert go — asked one level up. Fetched independently so a spine
   // that answers one and not the other still renders what it can.
   const [r, c] = await Promise.all([getRules(), getConsumers()]);
   return (
-    <Page className="lares-operational">
-      <PageHeader title="Signal routes" description="Delivery switches and ordered routing rules." />
-      <nav className="lares-operational-nav" aria-label="Signals sections"><Link href="/alerts">Recent</Link><span aria-current="page">Routes</span><Link href="/alert-routing/catalogue">Catalogue</Link></nav>
-      {"unavailable" in c ? <p className="lares-operational-error" role="alert">Delivery switches could not be loaded. Check the Signals service, then reload.</p> :
-        <ConsumerSwitches initial={c.consumers} onSave={saveConsumers} />}
-      {"unavailable" in r ? <p className="lares-operational-error" role="alert">Routing rules could not be loaded. Check the Signals service, then reload.</p> :
-        <JsonEditor initial={r.rules} onSave={saveRules}
-          hint="Ordered list; first match wins. Fields project / severity / type / source / kind are optional matchers (absent = any). destinations = Slack channel ids (fan-out). allowTarget lets a report choose its own channel. Save replaces the whole list." />}
+    <Page>
+      <PageHeader
+        title="Alert routing"
+        description="Where alerts are sent, and what each one means."
+        actions={
+          <Button variant="outline" asChild>
+            <Link href="/alerts">Alerts →</Link>
+          </Button>
+        }
+      />
+      <Card>
+        <CardHeader>
+          <CardTitle>Delivery</CardTitle>
+          <CardDescription>Turn a whole destination on or off. A change applies as soon as you flip the switch.</CardDescription>
+        </CardHeader>
+        {"unavailable" in c ? (
+          <CardContent className="lares-stack">
+            <Notice error>
+              The delivery switches could not be loaded because the service that records alerts did not answer. Check that it is running on your server, then reload this page.
+            </Notice>
+          </CardContent>
+        ) : (
+          <ConsumerSwitches initial={c.consumers} onSave={saveConsumers} />
+        )}
+      </Card>
+      <Card>
+        <Rows label="Catalogue">
+          <Row
+            title="Catalogue"
+            description="The plain sentence shown with each kind of alert: what it means and what to do next."
+            control={
+              <Button variant="outline" size="sm" asChild>
+                <Link href="/alert-routing/catalogue">Open catalogue →</Link>
+              </Button>
+            }
+          />
+        </Rows>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle role="heading" aria-level={2}>Advanced</CardTitle>
+          <CardDescription>
+            The rules that decide which Slack channel each alert goes to. They are written as a list in a code-like format. Change them only if you are comfortable editing it; a mistake is refused when you save, and nothing changes until a save succeeds.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="lares-stack">
+          {"unavailable" in r ? (
+            <Notice error>
+              The routing rules could not be loaded because the service that records alerts did not answer. Check that it is running on your server, then reload this page.
+            </Notice>
+          ) : (
+            <JsonEditor
+              label="Routing rules"
+              initial={r.rules}
+              onSave={saveRules}
+              hint="The list is read from the top and the first rule that matches wins. In a rule, project, severity, type, source and kind are optional: leave one out to match anything. destinations is the list of Slack channel ids the alert is posted to. allowTarget lets a report choose its own channel. Save replaces the whole list."
+            />
+          )}
+        </CardContent>
+      </Card>
     </Page>
   );
 }

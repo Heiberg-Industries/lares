@@ -1,6 +1,6 @@
 "use client";
 /**
- * The Waiting on you page's list and detail: every item the agents are waiting on the owner for,
+ * The Reviews page's list and detail: every item the agents are waiting on the owner for,
  * one selected at a time, with its whole body and the actions its kind allows.
  *
  * Kind-agnostic on purpose (`lib/waiting.ts` explains the item): nothing here knows what an
@@ -13,8 +13,10 @@
  * An attachment links only to a same-origin path.
  */
 import { useState, useTransition } from "react";
+import { Badge } from "@lares/ui/primitives/badge";
 import { Button } from "@lares/ui/primitives/button";
-import { EmptyState, Notice, StatusBadge } from "@lares/ui/patterns";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
+import { Col, EmptyState, Notice, Row, Rows } from "@lares/ui/patterns";
 import type { DecideResult, Unreadable, UnreadableKind, WaitingBody, WaitingItem } from "../lib/waiting";
 
 export interface WaitingListProps {
@@ -63,11 +65,7 @@ export function age(createdAt: string | null, now: number): string {
 }
 
 function Body({ part }: { part: WaitingBody }) {
-  const label = part.label ? (
-    <p className="lares-eyebrow">
-      {part.label}
-    </p>
-  ) : null;
+  const label = part.label ? <p className="lares-eyebrow">{part.label}</p> : null;
   if (part.format === "attachment") {
     const safe = part.href.startsWith("/") && !part.href.startsWith("//");
     return (
@@ -124,12 +122,15 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
     });
   }
 
+  const meta = (item: WaitingItem) => `${labelOf(item)} · ${item.agent} · ${item.channel} · ${age(item.createdAt, now)}`;
+  const outcome = selected ? decided[selected.id]?.result : undefined;
+
   return (
-    <div className="lares-stack">
+    <>
       {unreadableGroups(unreadable).map((group) => (
         <Notice error key={group.reason}>
           Could not read what {group.agents.join(", ")} {group.agents.length === 1 ? "is" : "are"} waiting on: {group.agents.length === 1 ? "it" : "they"}{" "}
-          {group.reason}. This list may be incomplete.
+          {group.reason}. This list may be incomplete. Reload this page to try again.
         </Notice>
       ))}
       {shown.length === 0 ? (
@@ -137,81 +138,78 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
           When an agent asks for your approval, or Notion or the shared notes propose a change, it shows up here.
         </EmptyState>
       ) : (
-        <div className="lares-master-detail">
-          <section className="lares-surface" aria-label="Waiting items">
-            <ul className="lares-data-list">
-              {shown.map((item) => {
-                const done = decided[item.id];
-                return (
-                  <li key={item.id}>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      className="lares-list-option"
-                      onClick={() => setSelectedId(item.id)}
-                      aria-current={item.id === selected?.id ? "true" : undefined}
-                    >
-                      <span className="lares-list-option-title">{item.title}</span>
-                      <span className="lares-muted lares-small">
-                        {labelOf(item)} · {item.agent} · {item.channel} · {age(item.createdAt, now)}
-                      </span>{" "}
-                      {done ? <StatusBadge tone={done.result.ok ? "success" : "quiet"}>Decided</StatusBadge> : null}
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
+        <>
+          <Col span={4}>
+            <section aria-label="Waiting items">
+              <Card>
+                <Rows>
+                  {shown.map((item) => {
+                    const done = decided[item.id];
+                    return (
+                      <Row
+                        key={item.id}
+                        title={item.title}
+                        description={meta(item)}
+                        control={
+                          <>
+                            {done ? <Badge variant={done.result.ok ? "success" : "neutral"}>Decided</Badge> : null}
+                            {item.id === selected?.id ? (
+                              <Badge variant="accent" aria-current="true">Showing</Badge>
+                            ) : (
+                              <Button type="button" variant="outline" size="sm" onClick={() => setSelectedId(item.id)} aria-label={`Show ${item.title}`}>
+                                Show
+                              </Button>
+                            )}
+                          </>
+                        }
+                      />
+                    );
+                  })}
+                </Rows>
+              </Card>
+            </section>
+          </Col>
           {selected ? (
-            <article className="lares-surface lares-stack" aria-label="Selected item">
-              <header>
-                <p className="lares-eyebrow">
-                  {labelOf(selected)} · {selected.agent} · {selected.channel} · {age(selected.createdAt, now)}
-                </p>
-                <h2 className="lares-section-title">{selected.title}</h2>
-              </header>
-              {selected.body.map((part, i) => (
-                <Body key={i} part={part} />
-              ))}
-              {decided[selected.id] ? (
-                <p
-                  role="status"
-                  className={
-                    decided[selected.id]!.result.ok
-                      ? "lares-form-success"
-                      : (decided[selected.id]!.result as { reason?: string }).reason === "action-failed"
-                        ? "lares-form-error"
-                        : "lares-muted"
-                  }
-                >
-                  {decided[selected.id]!.result.message}
-                </p>
-              ) : (
-                <>
-                  {selected.note ? <p className="lares-muted">{selected.note}</p> : null}
-                  <div className="lares-actions">
-                    {selected.actions.map((action) => (
-                      <Button
-                        key={action.id}
-                        type="button"
-                        variant={action.tone === "primary" ? "default" : "outline"}
-                        disabled={busy !== null}
-                        onClick={() => act(selected, action.id)}
-                      >
-                        {action.label}
-                      </Button>
+            <Col span={8}>
+              <article aria-label="Selected item">
+                <Card>
+                  <CardHeader>
+                    <CardTitle role="heading" aria-level={2}>{selected.title}</CardTitle>
+                    <CardDescription>{meta(selected)}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="lares-stack">
+                    {selected.body.map((part, i) => (
+                      <Body key={i} part={part} />
                     ))}
-                    {busy === selected.id ? <span className="lares-muted">Sending your answer…</span> : null}
-                  </div>
-                  {failure[selected.id] ? (
-                    <p role="alert" className="lares-form-error">{failure[selected.id]!.message}</p>
-                  ) : null}
-                </>
-              )}
-            </article>
+                    {outcome ? (
+                      <Notice tone={outcome.ok ? "success" : outcome.reason === "action-failed" ? "error" : "info"}>{outcome.message}</Notice>
+                    ) : (
+                      <>
+                        {selected.note ? <p className="lares-muted">{selected.note}</p> : null}
+                        <div className="lares-actions">
+                          {selected.actions.map((action) => (
+                            <Button
+                              key={action.id}
+                              type="button"
+                              variant={action.tone === "primary" ? "default" : "outline"}
+                              disabled={busy !== null}
+                              onClick={() => act(selected, action.id)}
+                            >
+                              {action.label}
+                            </Button>
+                          ))}
+                        </div>
+                        {busy === selected.id ? <Notice tone="working">Sending your answer…</Notice> : null}
+                        {failure[selected.id] ? <Notice error>{failure[selected.id]!.message}</Notice> : null}
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              </article>
+            </Col>
           ) : null}
-        </div>
+        </>
       )}
-    </div>
+    </>
   );
 }

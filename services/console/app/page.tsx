@@ -1,14 +1,10 @@
 import { requireConsolePage } from "../lib/auth";
 import Link from "next/link";
 import { AgentsList } from "../components/AgentsList";
-import {
-  PageHeader,
-  EmptyState,
-  Notice,
-  AgentAvatar,
-  Page,
-} from "@lares/ui/patterns";
+import { Col, Notice, Page, PageHeader, Row, Rows } from "@lares/ui/patterns";
+import { Badge } from "@lares/ui/primitives/badge";
 import { Button } from "@lares/ui/primitives/button";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { getFleetSnapshot, getPermissionEvents } from "../lib/console-overview";
 import { PermissionEvents } from "../components/PermissionEvents";
 export const dynamic = "force-dynamic";
@@ -22,56 +18,84 @@ export default async function HomePage() {
     ? snapshot.workflows.value.filter((r) => r.status === "failed" && r.n > 0)
     : [];
   return (
-    <Page className="lares-stack">
+    <Page>
       <PageHeader
-        title="Your house"
-        description="A quiet place to keep an eye on things."
+        title="Overview"
+        description="What is waiting for you, what needs a look, and your agents."
         actions={
           <Button asChild>
             <Link href="/chat">Open chat →</Link>
           </Button>
         }
       />
-      <section className="lares-surface">
-        <h2 className="lares-section-title">Work to review</h2>
-        {!snapshot.workflows.available ? (
-          <Notice error>Workflow status is unavailable.</Notice>
-        ) : failures.length ? (
-          <ul className="lares-data-list">
-            {failures.map((r) => (
-              <li key={r.agent}>
-                <Link href={`/agents/${encodeURIComponent(r.agent)}`}>
-                  {r.agent}
-                </Link>{" "}
-                · {r.n} failed {r.n === 1 ? "workflow" : "workflows"}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="lares-muted">No failed workflows recorded.</p>
-        )}
-        <p className="lares-muted">
-          Approval requests from every conversation are in{" "}
-          <Link href="/reviews">Waiting on you</Link>.
-        </p>
+      <Col span={6}>
+        <Card>
+          <CardHeader>
+            <CardTitle>Waiting for you</CardTitle>
+            <CardDescription>What your agents have asked you to decide.</CardDescription>
+          </CardHeader>
+          <Rows label="Waiting for you">
+            <Row
+              title="Approval requests"
+              description="Requests from every conversation are in Reviews."
+              control={
+                <Button variant="outline" size="sm" asChild>
+                  <Link href="/reviews">Open Reviews →</Link>
+                </Button>
+              }
+            />
+          </Rows>
+        </Card>
+      </Col>
+      <Col span={6}>
+        <Card>
+          <CardHeader>
+            <CardTitle>Alerts</CardTitle>
+            <CardDescription>Work that failed and needs a look.</CardDescription>
+            <CardAction>
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/alerts">All alerts →</Link>
+              </Button>
+            </CardAction>
+          </CardHeader>
+          {!snapshot.workflows.available ? (
+            <CardContent className="lares-stack">
+              <Notice error>Workflow status could not be loaded. Reload this page to try again.</Notice>
+            </CardContent>
+          ) : failures.length ? (
+            <Rows label="Failed work">
+              {failures.map((r) => (
+                <Row
+                  key={r.agent}
+                  title={<Link href={`/agents/${encodeURIComponent(r.agent)}`}>{r.agent}</Link>}
+                  control={
+                    <Badge variant="error">
+                      {r.n} failed {r.n === 1 ? "workflow" : "workflows"}
+                    </Badge>
+                  }
+                />
+              ))}
+            </Rows>
+          ) : (
+            <CardContent className="lares-muted">No failed workflows recorded.</CardContent>
+          )}
+        </Card>
+      </Col>
+      <section className="lares-stack" aria-labelledby="overview-agents">
+        <h2 id="overview-agents" className="lares-section-title">Agents</h2>
+        <AgentsList snapshot={snapshot} compact />
+        <Button variant="outline" asChild>
+          <Link href="/agents">Manage agents →</Link>
+        </Button>
       </section>
-      <div className="lares-stack">
-        <section>
-          <div className="lares-section-heading">
-            <h2 className="lares-section-title">Your agents</h2>
-            <Link href="/agents">Manage agents →</Link>
-          </div>
-          <AgentsList snapshot={snapshot} compact />
-        </section>
-        <section>
-          <h2 className="lares-section-title">Recent permission checks</h2>
-          <p className="lares-muted">
-            Recent decisions about what your agents may do.
-          </p>
-          <PermissionEvents events={events} />
-          <Link href="/permission-checks">View activity →</Link>
-        </section>
-      </div>
+      <section className="lares-stack" aria-labelledby="overview-checks">
+        <h2 id="overview-checks" className="lares-section-title">Recent permission checks</h2>
+        <p className="lares-muted">Recent decisions about what your agents may do.</p>
+        <PermissionEvents events={events} />
+        <Button variant="outline" asChild>
+          <Link href="/permission-checks">All permission checks →</Link>
+        </Button>
+      </section>
     </Page>
   );
 }

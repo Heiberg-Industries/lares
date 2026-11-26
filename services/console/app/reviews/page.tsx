@@ -10,7 +10,7 @@ import { WaitingList } from "../../components/WaitingList";
 export const dynamic = "force-dynamic";
 
 /**
- * Waiting on you — every approval an agent is waiting on, whichever conversation it was asked in,
+ * Reviews — every approval an agent is waiting on, whichever conversation it was asked in,
  * with the whole of what would be done and the buttons to decide it. A Telegram card too long for
  * one message links here (`?request=<id>` opens that one). Only the owner of an agent sees its items
  * (`lib/waiting.ts`).
@@ -21,10 +21,10 @@ export default async function WaitingPage({ searchParams }: { searchParams: Prom
   if (!member) throw new Error("unauthenticated");
   const [{ request }, list] = await Promise.all([searchParams, listWaiting(member, waitingDeps)]);
   return (
-    <Page className="lares-stack">
+    <Page>
       <PageHeader
-        title="Waiting on you"
-        description="What your agents have asked you, from every conversation, with everything they would do, plus Notion and shared notes changes waiting for your yes or no. Decide here or where it was asked."
+        title="Reviews"
+        description="Everything your agents are waiting for you to approve or reject."
       />
       <WaitingList
         items={list.items}
