@@ -149,7 +149,7 @@ export default async function TastePage({
       ) : (
         <Card>
           <CardHeader>
-            <CardTitle>What is saved</CardTitle>
+            <CardTitle role="heading" aria-level={2}>What is saved</CardTitle>
             <CardDescription>
               {filtered
                 ? `${matching} of ${total} entries`
@@ -174,7 +174,7 @@ export default async function TastePage({
       {total > 0 && TASTE_DOMAINS.map((domain) => (
         <Card key={domain}>
           <CardHeader>
-            <CardTitle>
+            <CardTitle role="heading" aria-level={3}>
               {domain}{" "}
               <span className="lares-muted">
                 ·{" "}

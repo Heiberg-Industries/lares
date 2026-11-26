@@ -93,7 +93,7 @@ export default async function DeadlinesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Open</CardTitle>
+          <CardTitle role="heading" aria-level={2}>Open</CardTitle>
           <CardDescription>
             {today}, your clock. Done closes a completed deadline; Dismiss closes one that no longer applies. Both ask for a reason before saving.
           </CardDescription>
@@ -129,7 +129,7 @@ export default async function DeadlinesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Candidates</CardTitle>
+          <CardTitle role="heading" aria-level={2}>Candidates</CardTitle>
           <CardDescription>
             Deadlines the mail scanner has spotted but not yet turned into a row.
           </CardDescription>
@@ -161,7 +161,7 @@ export default async function DeadlinesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Closed, last 20</CardTitle>
+          <CardTitle role="heading" aria-level={2}>Closed, last 20</CardTitle>
           <CardDescription>{view.closed.length} shown</CardDescription>
         </CardHeader>
         <div className="lares-table-scroll"><table>
