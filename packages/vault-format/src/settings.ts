@@ -948,7 +948,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: "",
     secret: false,
-    breaksWithout: "Nothing breaks — an approval too long for one Telegram message says \"open the console to approve\" instead of carrying a link to the console's Waiting on you page.",
+    breaksWithout: "Nothing breaks — an approval too long for one Telegram message says \"open the console to approve\" instead of carrying a link to the console's Reviews page.",
     readAt: ["services/chief-of-staff/agent/channels/telegram.ts"],
   },
 
