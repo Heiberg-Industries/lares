@@ -151,9 +151,12 @@ function noRedirects(root: string, allowedRepositories: ReadonlySet<string>): vo
         throw new VaultStorageError();
     for (const name of readdirSync(root)) {
         const path = join(root, name), st = lstatGone(path);
-        // Git's own background maintenance creates and removes lock files under .git while this walks; an entry that is gone
-        // by the time it is looked at cannot be a redirect, so it is skipped. Every other error still refuses.
-        if (!st) continue;
+        // Git's own background maintenance creates and removes lock files (*.lock) while this walks. Only such a lock file that
+        // is gone by the time it is looked at is skipped; any other entry that vanishes, and every other error, still refuses.
+        if (!st) {
+            if (name.endsWith('.lock')) continue;
+            throw new VaultStorageError();
+        }
         if (st.isSymbolicLink() || (!st.isDirectory() && !st.isFile()) || (st.isFile() && st.nlink !== 1))
             throw new VaultStorageError();
         if (st.isDirectory())
