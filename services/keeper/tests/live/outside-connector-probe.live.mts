@@ -8,7 +8,7 @@
  *   --url https://<server>/mcp --expect none|token|signin [--owner-says-token]
  * --owner-says-token applies the owner's Token choice the way outside.connector-probe does (expectToken): a dual-mode server
  * (sign-in page and token) is then recorded as token. Run it once against a server of each kind and note the date and result.
- * LAST RUN: UNRUN.
+ * LAST RUN: 2026-11-26, a dual-mode production server (sign-in page and token): status 401 with a resource_metadata challenge, classified as signin; with --owner-says-token recorded as token, as expected.
  * It goes direct from this machine, not through the outside route, so it proves the answer's shape, not the route.
  */
 import { Agent } from 'undici';
