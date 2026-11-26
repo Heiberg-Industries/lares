@@ -9,9 +9,9 @@ import { resetActions, runAction } from '../lib/actions.js';
 import { classifyProbe, connectorRouteHosts, registerOutsideConnectorActions, type ConnectorProbeAnswer } from '../lib/outside-connectors.js';
 
 const repo = resolve('../..');
-const OWNER = 'member-owner', ADMIN = 'member-admin';
+const OWNER = 'member-owner', SECOND_OWNER = 'member-second-owner', ADMIN = 'member-admin', PLAIN = 'member-plain';
 const token = (seed: string) => seed.padEnd(43, 'x');
-const sessions = { owner: token('owner'), admin: token('admin'), expired: token('expired') };
+const sessions = { owner: token('owner'), second: token('second'), admin: token('admin'), plain: token('plain'), expired: token('expired') };
 let container: StartedPostgreSqlContainer, pool: Pool;
 const audit = vi.fn(async (_record: unknown) => { });
 const run = (name: string, input: Record<string, unknown>) => runAction(name, input, { actor: 'owner@example.com', audit }, {}) as Promise<any>;
@@ -28,13 +28,13 @@ const definition = (name: string, outsideTools: unknown[], scope = 'write-with-c
 beforeAll(async () => {
   container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
   pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
-  for (const name of ['001_baseline.sql', '007_member_identity_sessions.sql', '039_outside_connectors.sql']) await pool.query(readFileSync(join(repo, 'services/box/sql', name), 'utf8'));
+  for (const name of ['001_baseline.sql', '007_member_identity_sessions.sql', '039_outside_connectors.sql', '040_admin_role.sql']) await pool.query(readFileSync(join(repo, 'services/box/sql', name), 'utf8'));
   await pool.query("INSERT INTO orgs(id,display_name) VALUES('org','Example') ON CONFLICT DO NOTHING");
-  for (const [id, role] of [[OWNER, 'owner'], [ADMIN, 'owner']]) await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,$1,'org',$2,'active')", [id, role]);
+  for (const [id, role] of [[OWNER, 'owner'], [SECOND_OWNER, 'owner'], [ADMIN, 'admin'], [PLAIN, 'member']]) await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,$1,'org',$2,'active')", [id, role]);
   const add = (id: string, member: string, expires: string) => pool.query(
     'INSERT INTO member_sessions(id,member_id,token_hash,created_at,expires_at) VALUES($1,$2,$3,now() - interval \'1 day\',now() + $4::interval)',
     [id, member, createHash('sha256').update(sessions[id as keyof typeof sessions]).digest('hex'), expires]);
-  await add('owner', OWNER, '1 hour'); await add('admin', ADMIN, '1 hour'); await add('expired', OWNER, '-1 second');
+  await add('owner', OWNER, '1 hour'); await add('second', SECOND_OWNER, '1 hour'); await add('admin', ADMIN, '1 hour'); await add('plain', PLAIN, '1 hour'); await add('expired', OWNER, '-1 second');
 });
 afterAll(async () => { await pool?.end(); await container?.stop(); });
 beforeEach(async () => {
@@ -48,16 +48,41 @@ beforeEach(async () => {
 
 const create = (extra: Record<string, unknown> = {}) => asOwner('outside.connector-create', { slug: 'registry', displayName: 'Registry', url: 'https://tools.example.org/mcp', ...extra });
 
-it('is for the designated owner only, on every action', async () => {
+const everyAction = (id: string) => [['outside.connector-list', {}], ['outside.connector-create', { slug: 'other', displayName: 'Other', url: 'https://o.example.org/' }],
+  ['outside.connector-rename', { id, displayName: 'X' }], ['outside.connector-retire', { id }], ['outside.connector-probe', { id }]] as const;
+
+it('refuses a member, a second owner who is not the designated one, and an expired session, on every action', async () => {
   const { connector } = await create();
-  for (const who of ['admin', 'expired'] as const)
-    for (const [name, extra] of [['outside.connector-list', {}], ['outside.connector-create', { slug: 'other', displayName: 'Other', url: 'https://o.example.org/' }],
-      ['outside.connector-rename', { id: connector.id, displayName: 'X' }], ['outside.connector-retire', { id: connector.id }], ['outside.connector-probe', { id: connector.id }]] as const)
-      await expect(run(name, { sessionToken: sessions[who], ...extra })).rejects.toThrow('Only the designated owner');
+  for (const who of ['plain', 'second', 'expired'] as const)
+    for (const [name, extra] of everyAction(connector.id))
+      await expect(run(name, { sessionToken: sessions[who], ...extra }), `${who} ${name}`).rejects.toThrow('Only the designated owner');
   await expect(run('outside.connector-list', { sessionToken: token('unknown') })).rejects.toThrow('Only the designated owner');
+});
+
+it('lets an admin read the directory, add, rename and check a connector, and never remove one', async () => {
+  const { connector } = await create();
+  const asAdmin = (name: string, input: Record<string, unknown> = {}) => run(name, { sessionToken: sessions.admin, ...input });
+  expect((await asAdmin('outside.connector-list')).connectors.map((c: { slug: string }) => c.slug)).toEqual(['registry']);
+  expect((await asAdmin('outside.connector-create', { slug: 'other', displayName: 'Other', url: 'https://o.example.org/' })).connector.slug).toBe('other');
+  expect((await asAdmin('outside.connector-rename', { id: connector.id, displayName: 'Renamed' })).connector.displayName).toBe('Renamed');
+  expect((await asAdmin('outside.connector-probe', { id: connector.id })).authKind).toBe('token');
+  await expect(asAdmin('outside.connector-retire', { id: connector.id })).rejects.toThrow('Only the designated owner can change the outside connector directory.');
+  expect((await pool.query("SELECT state FROM outside_connectors WHERE id=$1", [connector.id])).rows[0].state).not.toBe('retired');
+  // The owner still does all five.
+  for (const name of ['outside.connector-list', 'outside.connector-rename', 'outside.connector-probe', 'outside.connector-retire'])
+    await asOwner(name, everyAction(connector.id).find(([n]) => n === name)![1]);
+  expect((await pool.query("SELECT state FROM outside_connectors WHERE id=$1", [connector.id])).rows[0].state).toBe('retired');
+  // A person the owner made a member again loses it at once: the role is read from the database on every call.
+  await pool.query("UPDATE users SET org_role='member' WHERE id=$1", [ADMIN]);
+  try { await expect(asAdmin('outside.connector-list')).rejects.toThrow('Only the designated owner or an admin'); }
+  finally { await pool.query("UPDATE users SET org_role='admin' WHERE id=$1", [ADMIN]); }
+});
+
+it('answers nobody when no owner is configured: not the owner, and not an admin either', async () => {
   resetActions();
   registerOutsideConnectorActions({ pool, probe, reseal: reseals });
   await expect(asOwner('outside.connector-list')).rejects.toThrow('Only the designated owner');
+  await expect(run('outside.connector-list', { sessionToken: sessions.admin })).rejects.toThrow('Only the designated owner');
   expect(probe).not.toHaveBeenCalled();
 });
 

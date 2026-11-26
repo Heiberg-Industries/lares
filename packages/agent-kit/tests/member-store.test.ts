@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { PgMemberStore, currentMember, type VerifiedProviderProof } from '../src/member-store.js';
 import { quiet } from './helpers/quiet-pool.js';
 const migration = readFileSync(new URL('../../../services/box/sql/007_member_identity_sessions.sql',import.meta.url),'utf8');
+const adminRole = readFileSync(new URL('../../../services/box/sql/040_admin_role.sql',import.meta.url),'utf8');
 const tomorrow = () => new Date(Date.now()+86_400_000);
 const proof = (subject: string, tenantId?: string): VerifiedProviderProof => ({ identity: { issuer:'https://identity.example.invalid', subject, ...(tenantId ? {tenantId} : {}) }, verifiedAt: new Date() });
 const schema = `CREATE TABLE orgs(id text PRIMARY KEY,display_name text NOT NULL);
@@ -22,8 +23,9 @@ beforeEach(async()=> {
   await db.query(schema);
   await db.query("INSERT INTO orgs VALUES('org','Example'),('other','Other'); INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES('owner','Owner','owner@example.invalid','org','owner'),('second','Second','second@example.invalid','org','member'),('outsider','Other','other@example.invalid','other','owner');");
   await db.query(migration);
+  await db.query(adminRole);
 });
-async function invite(email='invite@example.invalid', role: 'owner'|'member'|'restricted'='member') {
+async function invite(email='invite@example.invalid', role: 'owner'|'admin'|'member'|'restricted'='member') {
   return store.inviteMember('owner',{displayName:'Invited member',email,role,expiresAt:tomorrow()});
 }
 describe('member storage on disposable PostgreSQL',()=> {
@@ -204,6 +206,64 @@ describe('member storage on disposable PostgreSQL',()=> {
     const invitation=await invite(); await db.query("UPDATE users SET status='removed' WHERE id=$1",[invitation.member.id]);
     await expect(store.acceptInvitation(invitation.token,proof('removed'))).rejects.toThrow('denied');
     expect((await db.query('SELECT count(*)::int AS n FROM member_provider_identities WHERE member_id=$1',['second'])).rows[0].n).toBe(1);
+  });
+  it('stores the admin role, keeps every existing role, refuses a role off the list, and can be applied again',async()=> {
+    const before=(await db.query("SELECT id,org_role FROM users ORDER BY id")).rows;
+    await db.query(adminRole); await db.query(adminRole);
+    expect((await db.query("SELECT id,org_role FROM users ORDER BY id")).rows).toEqual(before);
+    for(const role of ['owner','admin','member','restricted']) await db.query("UPDATE users SET org_role=$1 WHERE id='second'",[role]);
+    await expect(db.query("UPDATE users SET org_role='superuser' WHERE id='second'")).rejects.toThrow('users_org_role_check');
+    await expect(db.query("INSERT INTO users(id,display_name,org_id,org_role) VALUES('odd','Odd','org','')")).rejects.toThrow('users_org_role_check');
+    await db.query("UPDATE users SET org_role='admin' WHERE id='second'");
+    expect(await store.currentMember('second')).toMatchObject({id:'second',role:'admin',status:'active'});
+    const invited=await invite('admin-invite@example.invalid','admin');
+    expect(invited.member).toMatchObject({role:'admin',status:'invited'});
+  });
+  it('lets only an owner switch another person between admin and member, and reads the new role at once',async()=> {
+    await store.linkIdentity('second','second',proof('second'));
+    const session=await store.createSession(proof('second'),tomorrow());
+    expect(await store.setRole('owner','second','admin')).toMatchObject({id:'second',role:'admin'});
+    // No new sign-in is needed, in either direction: the session reads the person's row every time.
+    expect(await store.sessionMember(session.token)).toMatchObject({id:'second',role:'admin'});
+    expect(await store.setRole('owner','second','member')).toMatchObject({id:'second',role:'member'});
+    expect(await store.sessionMember(session.token)).toMatchObject({id:'second',role:'member'});
+    // An invited person can be given the role before they first sign in.
+    const invited=await invite();
+    expect(await store.setRole('owner',invited.member.id,'admin')).toMatchObject({role:'admin',status:'invited'});
+  });
+  it('refuses a role change by anyone but an owner, across organisations, to or from owner or restricted, of oneself, and of a removed person',async()=> {
+    const role=async(id:string)=>(await db.query('SELECT org_role FROM users WHERE id=$1',[id])).rows[0].org_role;
+    await db.query("INSERT INTO users(id,display_name,primary_email,org_id,org_role) VALUES('third','Third','third@example.invalid','org','member'),('limited','Limited','limited@example.invalid','org','restricted'),('co-owner','Co','co@example.invalid','org','owner'),('gone','Gone','gone@example.invalid','org','member')");
+    await db.query("UPDATE users SET status='removed' WHERE id='gone'");
+    // A member cannot; an admin cannot either, not even for themselves.
+    await expect(store.setRole('second','third','admin')).rejects.toThrow('denied');
+    await store.setRole('owner','second','admin');
+    await expect(store.setRole('second','third','admin')).rejects.toThrow('denied');
+    await expect(store.setRole('second','second','member')).rejects.toThrow('denied');
+    await expect(store.setRole('second','owner','member')).rejects.toThrow('denied');
+    // Another organisation's owner cannot.
+    await expect(store.setRole('outsider','third','admin')).rejects.toThrow('denied');
+    await expect(store.setRole('owner','outsider','member')).rejects.toThrow('denied');
+    // Never the actor's own role, another owner's, a limited member's or a removed person's.
+    await expect(store.setRole('owner','owner','admin')).rejects.toThrow('denied');
+    await expect(store.setRole('owner','co-owner','admin')).rejects.toThrow('denied');
+    await expect(store.setRole('owner','limited','member')).rejects.toThrow('denied');
+    await expect(store.setRole('owner','gone','admin')).rejects.toThrow('denied');
+    await expect(store.setRole('owner','missing','admin')).rejects.toThrow('denied');
+    // Only admin or member can be set: it can neither make nor unmake an owner.
+    for(const bad of ['owner','restricted','superuser','']) await expect(store.setRole('owner','third',bad as never)).rejects.toThrow('invalid');
+    expect([await role('owner'),await role('co-owner'),await role('limited'),await role('gone'),await role('third'),await role('second'),await role('outsider')])
+      .toEqual(['owner','owner','restricted','member','member','admin','owner']);
+  });
+  it('keeps the last-owner rule with the admin role: an admin never counts as an owner',async()=> {
+    await store.setRole('owner','second','admin');
+    await expect(db.query("UPDATE users SET org_role='admin' WHERE id='owner'")).rejects.toThrow('last active owner');
+    await expect(db.query("UPDATE users SET status='removed' WHERE id='owner'")).rejects.toThrow('last active owner');
+    await expect(db.query("DELETE FROM users WHERE id='owner'")).rejects.toThrow('last active owner');
+    expect((await db.query("SELECT count(*)::int AS n FROM users WHERE org_id='org' AND status='active' AND org_role='owner'")).rows[0].n).toBe(1);
+    // An admin is not treated as an owner by the store either.
+    await expect(store.listMembers('second')).rejects.toThrow('denied');
+    await expect(store.inviteMember('second',{displayName:'X',email:'x@example.invalid',role:'member',expiresAt:tomorrow()})).rejects.toThrow('denied');
   });
   it('preserves the last active owner through API and concurrent direct updates',async()=> {
     await expect(db.query("UPDATE users SET status='removed' WHERE id='owner'")).rejects.toThrow('last active owner');

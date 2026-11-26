@@ -2,7 +2,7 @@
  * Trusted admission and current execution checks belong to future runtime consumers.
  */
 import { z } from 'zod';
-import type { OrgRole } from './identity.js';
+import { ORG_ROLES } from './identity.js';
 import { ORIGIN_CLASSES } from './origin.js';
 
 const id = z.string().trim().min(1);
@@ -13,7 +13,7 @@ const resource = z.strictObject({ kind: id, id });
 const owner = z.strictObject({ kind: z.enum(['member', 'organisation']), id });
 const accountRef = z.strictObject({ accountId: id, generation: revision });
 const automationMode = z.enum(['draft-and-ask', 'expanded']);
-const role = z.enum(['owner', 'member', 'restricted'] satisfies OrgRole[]);
+const role = z.enum(ORG_ROLES);
 
 export const memberSchema = z.strictObject({
   id, organisationId: id, role, automationMode, status: z.enum(['invited', 'active', 'removed']),

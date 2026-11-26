@@ -6,7 +6,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import { memberSchema, providerIdentitySchema, type Member, type ProviderIdentity } from './authority-contract.js';
-import type { OrgRole } from './identity.js';
+import { ORG_ROLES, type OrgRole } from './identity.js';
 
 export interface VerifiedProviderProof { identity: ProviderIdentity; verifiedAt: Date }
 export class MemberStoreError extends Error {
@@ -135,7 +135,7 @@ export class PgMemberStore {
   async inviteMember(actorId: string, input: { displayName: string; email: string; role: OrgRole; expiresAt: Date }): Promise<{ member: Member; invitationId: string; token: string }> {
     expiry(input.expiresAt);
     const email = input.email.trim().toLowerCase();
-    if (!z.email().safeParse(email).success || !input.displayName.trim() || !['owner','member','restricted'].includes(input.role)) throw new MemberStoreError('invalid');
+    if (!z.email().safeParse(email).success || !input.displayName.trim() || !(ORG_ROLES as readonly string[]).includes(input.role)) throw new MemberStoreError('invalid');
     return this.transaction(async db => {
       await this.lockOrganisation(db, actorId);
       const actor = await this.active(db, actorId);
@@ -218,6 +218,19 @@ export class PgMemberStore {
     await this.transaction(async db => {
       await this.authorized(db,actorId,targetId);
       await db.query('UPDATE member_sessions SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE member_id=$1',[targetId]);
+    });
+  }
+  /** An owner makes another person an admin, or an ordinary member again. Nothing else: an owner's
+   * role, a restricted person's role, a removed person's role and the actor's own role are never
+   * changed here, so this can neither create nor remove an owner. */
+  async setRole(actorId: string, targetId: string, role: 'admin' | 'member'): Promise<Member> {
+    if (role !== 'admin' && role !== 'member') throw new MemberStoreError('invalid');
+    return this.transaction(async db => {
+      const target = await this.authorized(db,actorId,targetId,true);
+      if (actorId === targetId || target.status === 'removed' || (target.role !== 'admin' && target.role !== 'member'))
+        throw new MemberStoreError('denied');
+      const { rows } = await db.query<MemberRow>(`UPDATE users SET org_role=$2 WHERE id=$1 RETURNING ${columns}`,[targetId,role]);
+      return view(rows[0]);
     });
   }
   async revokeInvitation(actorId: string, invitationId: string): Promise<void> {
