@@ -12,7 +12,7 @@ describe("invitation page", () => {
     expect(html).toContain('id="main-content"');
     expect(html).toContain('aria-label="About Lares"');
     expect(html).toContain(`provider=google&amp;invite=${"a".repeat(43)}`);
-    expect(html).toContain(`provider=microsoft&amp;invite=${"a".repeat(43)}`);
+    expect(html).toContain(`provider=microsoft&amp;invite=${"a".repeat(43)}&amp;next=%2Fyour-membership`);
   });
 
   it("offers no sign-in for a malformed link", async () => {
