@@ -3,7 +3,7 @@
  *  so a client component can use it. */
 export const ROLE_WORDS: Readonly<Record<string, { name: string; meaning: string }>> = {
   owner: { name: "Owner", meaning: "Has the owner role. Only the owner who set up this installation gets the owner's pages in this console: members and roles, backups and the general settings. Anyone else with this role uses the console as a member." },
-  admin: { name: "Admin", meaning: "Can use the console's shared pages: agents, connections, tools, activity, quiet hours and alert routing. Cannot change members and roles, backups or the general settings, and cannot delete the installation's data." },
+  admin: { name: "Admin", meaning: "Can see the agents and use the console's shared pages: connections, tools, activity, quiet hours and alert routing. Cannot create or edit an agent, cannot change members and roles, backups or the general settings, and cannot delete the installation's data." },
   member: { name: "Member", meaning: "Can use what is shared with everyone here, and what is shared with them by name." },
   restricted: { name: "Limited member", meaning: "Can use only what is shared with them by name, not what is shared with everyone." },
 };

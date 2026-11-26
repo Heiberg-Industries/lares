@@ -4,14 +4,11 @@ import { actingAddress } from '../../lib/auth';
 import type { Capacity, DefinitionResult, RetirementResult, Role, RuntimeState } from '../../lib/builder';
 import type { NotionSyncView } from '../../lib/notion-sync';
 import { deliveryFollowingFirstChatDoor } from '../../lib/delivery';
-/** The signed-in person's own address, for an action an admin may use. */
-async function actor(): Promise<string> {
-  const email = await actingAddress("admin");
-  if (!email) throw new Error('unauthenticated');
-  return email;
-}
-/** The same, for an action that stays with the owner: the installation's general settings, anything
- * that deletes data, and the claim that decides who an agent answers to. */
+/** Every action in this file stays with the owner. The keeper does what these ask without a check of
+ * its own: it trusts the console to have let only the owner in. Saving or creating an agent can give
+ * the agent more access, change how freely it acts and rewrite what it is told to do with the owner's
+ * mail and calendar; a chat app's credentials decide who can speak to the agent as the owner; the
+ * claim decides who it answers to. Until the keeper checks these itself, an admin gets none of them. */
 async function ownerActor(): Promise<string> {
   const email = await actingAddress("owner");
   if (!email) throw new Error('unauthenticated');
@@ -39,13 +36,13 @@ async function call<T>(action:string,input:unknown,email:string,timeoutMs?:numbe
 }
 export interface DefinitionInput { name: string; definition: unknown; duties: string; voice: string }
 export async function createAgent(input: DefinitionInput & { startingPoint: Role }): Promise<DefinitionActionResult<DefinitionResult>> {
-  return call('definition.create', input, await actor(), 60_000);
+  return call('definition.create', input, await ownerActor(), 60_000);
 }
 /** A save that changes the doors, role, personal accounts or model of a started agent stops it until Apply, and the
  * stop alone can take Docker's ten-second grace period: saves get the same wait as Apply. */
 const SAVE_TIMEOUT_MS = 90_000;
 export async function saveDefinition(input: DefinitionInput): Promise<DefinitionActionResult<DefinitionResult>> {
-  return call('definition.save', input, await actor(), SAVE_TIMEOUT_MS);
+  return call('definition.save', input, await ownerActor(), SAVE_TIMEOUT_MS);
 }
 export async function setAgentLimit(input: {ceiling: number}): Promise<DefinitionActionResult<Capacity>> {
   return call('definition.capacity_set', {ceiling: input.ceiling}, await ownerActor());
@@ -70,7 +67,7 @@ export async function acceptNotionSyncPreview(input: {hash: string}): Promise<De
   return call('sync.notion_accept', {hash: input.hash}, await ownerActor(), 90_000);
 }
 export async function retireAgent(input: {name: string}): Promise<DefinitionActionResult<RetirementResult>> {
-  return call('definition.retire', input, await actor());
+  return call('definition.retire', input, await ownerActor());
 }
 export async function deleteAgent(input: {name: string; confirm: boolean}): Promise<DefinitionActionResult<unknown>> {
   const email = await ownerActor();
@@ -79,13 +76,13 @@ export async function deleteAgent(input: {name: string; confirm: boolean}): Prom
 }
 /** A stored token is not proof of a connected or active door. */
 export async function connectDoor(input: {name: string; kind:'slack'|'telegram'; secret: string; signingSecret?:string}): Promise<DefinitionActionResult<unknown>> {
-  return call('door.connect', input, await actor());
+  return call('door.connect', input, await ownerActor());
 }
 export async function applyConnections(input: {name: string; hash: string}): Promise<DefinitionActionResult<RuntimeState>> {
-  return call('definition.reconcile', input, await actor(), 90_000);
+  return call('definition.reconcile', input, await ownerActor(), 90_000);
 }
 export async function listConversations(input:{name:string}):Promise<DefinitionActionResult<{sessionId:string;incarnation:string;door:string;observedAt:string;terminal:boolean}[]>> {
-  return call('conversation.list',input,await actor());
+  return call('conversation.list',input,await ownerActor());
 }
 export async function startFreshConversation(input:{name:string;sessionId:string;incarnation:string;confirm:boolean}):Promise<DefinitionActionResult<{status:string}>> {
   const email=await ownerActor();
@@ -96,29 +93,29 @@ export async function startFreshConversation(input:{name:string;sessionId:string
 /** Accepts an outside tool's new descriptions. `expectedHash` is the fingerprint the page showed;
  *  the keeper refuses if the agent has since seen another one. */
 export async function acceptOutsideDescriptions(input:{name:string;tool:string;expectedHash:string}):Promise<DefinitionActionResult<{name:string;tool:string;pinHash:string}>> {
-  return call('outside.accept_fingerprint',{name:input.name,tool:input.tool,expectedHash:input.expectedHash},await actor());
+  return call('outside.accept_fingerprint',{name:input.name,tool:input.tool,expectedHash:input.expectedHash},await ownerActor());
 }
 
 /** The agent's runtime state as the keeper sees it now (pending, running, healthy), for the page's Status box. */
 export async function agentRuntime(name:string):Promise<DefinitionActionResult<RuntimeState|undefined>> {
-  const read=await call<{runtime?:RuntimeState}>('definition.get',{name},await actor());
+  const read=await call<{runtime?:RuntimeState}>('definition.get',{name},await ownerActor());
   return read.ok?{ok:true,result:read.result.runtime}:read;
 }
 export async function doorStatus(name:string):Promise<DefinitionActionResult<import('../../components/DoorSetup').DoorStatus[]>> {
-  return call('door.status',{name},await actor());
+  return call('door.status',{name},await ownerActor());
 }
 export async function verifyDoor(name:string,kind:'slack'|'telegram'):Promise<DefinitionActionResult<{kind:string;username?:string;team?:string;user?:string}>> {
-  return call('door.verify',{name,kind},await actor());
+  return call('door.verify',{name,kind},await ownerActor());
 }
 export async function claimCode(name:string,kind:'slack'|'telegram'):Promise<DefinitionActionResult<{code:string;expiresAt:string;instruction:string}>> {
   return call('door.claim_issue',{name,kind},await ownerActor());
 }
 export async function registerTelegram(name:string):Promise<DefinitionActionResult<{registered:boolean}>> {
-  return call('telegram.webhook_set',{name},await actor());
+  return call('telegram.webhook_set',{name},await ownerActor());
 }
 /** `messagesFollow` is set when this save also moved "Where messages go" to this door (the agent's first chat app). */
 export async function setDoorEnabled(name:string,kind:'slack'|'telegram',enabled:boolean):Promise<DefinitionActionResult<DefinitionResult&{messagesFollow?:'slack'|'telegram'}>> {
-  const email=await actor();
+  const email=await ownerActor();
   try {
   const saved=await keeper<{definition:string;duties:string;voice:string}>('definition.get',{name},email);
   const definition=JSON.parse(saved.definition);

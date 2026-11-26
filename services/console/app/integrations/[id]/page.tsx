@@ -96,7 +96,7 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
   });
   return (
     <Page className="lares-stack">
-      <IntegrationDetail card={card} rows={shown} board={board} />
+      <IntegrationDetail card={card} rows={shown} board={board} owner={mayUse(member, "owner")} />
       {notion && <NotionExtras credential={credential} notion={notion} owner={mayUse(member, "owner")} />}
       {clipping && <ClippingCard initial={clipping} credential={credential} />}
       {card.id === "readability" && !clippingHere && <p className="lares-muted">Saving links from a Notion database is set up on the <Link href="/integrations/notion">Notion</Link> page, under Clipping.</p>}

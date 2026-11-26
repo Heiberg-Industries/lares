@@ -86,6 +86,7 @@ export default async function AgentPage({
   return (
     <Page>
     <AgentDetail
+      owner={owner}
       accessSettings={access && definition.status === "fulfilled" && definition.value.initial ? <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/> : owner ? undefined : <p className="lares-muted">Only the owner decides who may use or edit this agent, and sets the agent's own model key.</p>}
       mailboxSettings={mailbox ? <AgentMailbox name={name} initial={mailbox} /> : undefined}
       providerKeySettings={providerKey ? <AgentProviderKey name={name} initial={providerKey} /> : undefined}

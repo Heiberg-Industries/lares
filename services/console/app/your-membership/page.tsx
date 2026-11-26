@@ -23,7 +23,7 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
   const refused = (await searchParams).refused !== undefined;
   return <Page width="narrow" className="lares-stack">
     <PageHeader title="Your membership" />
-    {refused && <Notice tone="needs-you">You were brought here because the page you opened is not allowed for your role. {level === "admin" ? "Members and roles, backups and the general settings are for the owner of this installation." : "It is for the owner of this installation, or a person the owner made an admin."}</Notice>}
+    {refused && <Notice tone="needs-you">You were brought here because the page you opened is not allowed for your role. {level === "admin" ? "Creating and editing agents, members and roles, backups and the general settings are for the owner of this installation." : "It is for the owner of this installation, or a person the owner made an admin."}</Notice>}
     <Notice tone="success">Your membership is active. {ROLE_WORDS[member.role] ?? "Your kind of membership could not be read."}</Notice>
     <Card>
       <Rows label="What your membership gives you">
@@ -34,7 +34,7 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
         <Row title="How agents act for a new member" description="For a new member, agents prepare a draft and ask before they do anything." />
         {level === "owner" && <Row title="Owner console" description="Everything the owner of this installation manages."
           control={<Button variant="outline" size="sm" asChild><Link href="/">Open the owner console</Link></Button>} />}
-        {level === "admin" && <Row title="Console" description="The shared pages you may use as an admin: agents, connections, tools, activity, quiet hours and alert routing. Members and roles, backups and the general settings stay with the owner."
+        {level === "admin" && <Row title="Console" description="The shared pages you may use as an admin: the agents, connections, tools, activity, quiet hours and alert routing. Creating and editing agents, members and roles, backups and the general settings stay with the owner."
           control={<Button variant="outline" size="sm" asChild><Link href="/">Open the console</Link></Button>} />}
       </Rows>
     </Card>

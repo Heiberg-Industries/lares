@@ -9,8 +9,9 @@
 
 1. Until now one person, the installation's named owner, could use the console's shared pages. Everyone else saw Chat, Your accounts and Your membership.
 2. There is now a level in between: **admin**. The owner sets it per person on the Members page.
-3. An admin may use the shared pages: Overview, Reviews, Agents, Writing style, Integrations, Outside tools, Deadlines, Meeting follow-ups, Saved preferences, Permission checks, Alerts, Quiet hours and delivery, Alert routing.
+3. An admin may use the shared pages: Overview, Reviews, Agents (to see them), Writing style, Integrations, Outside tools, Deadlines, Meeting follow-ups, Saved preferences, Permission checks, Alerts, Quiet hours and delivery, Alert routing.
 4. An admin may not use Members and roles, Backups or the General settings, and may not delete the installation's data. Those stay with the owner.
+4a. For now an admin also may not create or edit an agent, connect a chat app to one, or change how freely it acts. The reason is in "What stays with the owner" below; it is a limit of this first step, not the owner's wish.
 5. A member is exactly as before.
 6. What an admin does is recorded as the admin, never as the owner.
 
@@ -31,9 +32,17 @@
 
 - Members and roles, backups, the General settings: the owner's decision.
 - Deleting an agent, ending a conversation, removing an outside connector: they delete data.
-- The claim step of a chat door: the keeper records whoever asks as the address the agent answers to. An admin sets the door up; the owner does the claim.
+- **Creating and editing an agent.** The keeper saves whatever definition the console sends and has no check of its own on who sent it. Through that one request a person can give an agent more access (including outside access, which is owner-only elsewhere), change how freely it acts, and rewrite what it is told to do with the owner's mail and calendar. Until the keeper checks the sender's right to edit that agent and refuses a non-owner's widening, the form is the owner's.
+- **A chat app's credentials.** Whoever supplies a Slack app's signing secret can send the agent messages that look like the owner's. Storing or replacing them is the owner's.
+- **How freely an agent acts** (ask first, or act by itself), and accepting an outside tool's changed description.
+- The claim step of a chat door: the keeper records whoever asks as the address the agent answers to.
+- Using the installation's Notion key through clipping (reading a database, importing, adding properties).
 - Sharing or adopting an agent, an agent's own model key, the installation's Notion key and Notion settings, the test brief, the owner's message inbox.
 - Answering an approval stays with each agent's owner; answering a proposed change to the installation's notes stays with the owner.
+
+## To open agent editing to admins later
+
+The keeper has to decide for itself, from the signed-in session and not from the console's word: that the sender holds edit access to that agent; that a sender who is not the owner cannot add or raise a grant, autonomy level, skill, outside tool or egress setting; and that door credentials on a claimed door are replaced only by the owner, or the claim is cleared when they change. The agent form's parts already render for a person who is not the owner.
 
 ## Consequences
 

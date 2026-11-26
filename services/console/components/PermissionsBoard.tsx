@@ -12,7 +12,7 @@ export function NoControl({ scope }: { scope: string }) {
   );
 }
 
-export function PermissionsBoard({ detail }: { detail: AgentDetailDTO }) {
+export function PermissionsBoard({ detail, canChange }: { detail: AgentDetailDTO; canChange: boolean }) {
   return (
     <div className="lares-connections">
       {detail.capabilities.map((c) => (
@@ -22,7 +22,7 @@ export function PermissionsBoard({ detail }: { detail: AgentDetailDTO }) {
               {c.name}
             </span>
             {c.scope === "write-with-confirm"
-              ? <AutonomyControl agent={detail.name} capability={c.name} level={c.defaultLevel} />
+              ? <AutonomyControl agent={detail.name} capability={c.name} level={c.defaultLevel} canChange={canChange} />
               : <NoControl scope={c.scope} />}
           </div>
           <div className="mono lares-small lares-status-muted">

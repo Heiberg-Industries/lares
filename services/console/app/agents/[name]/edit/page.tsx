@@ -10,7 +10,7 @@ export default async function EditAgentPage({
 }: {
   params: Promise<{ name: string }>;
 }) {
-  const member = await requirePage("admin");
+  const member = await requirePage("owner");
   const { name } = await params;
   try {
     const data = await builderData(name);

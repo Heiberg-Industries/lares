@@ -8,7 +8,7 @@ import { builderData } from "../../../lib/builder";
 import { DefinitionForm } from "../../../components/DefinitionForm";
 export const dynamic = "force-dynamic";
 export default async function NewAgentPage() {
-  const member = await requirePage("admin");
+  const member = await requirePage("owner");
   const data = await builderData().catch(() => null);
   if (data)
     return (

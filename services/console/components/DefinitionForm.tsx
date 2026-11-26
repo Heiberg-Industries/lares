@@ -740,6 +740,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                             capability={row.capability}
                             action={row.action || undefined}
                             level={row.level}
+                            canChange={p.owner}
                           />
                         ) : (
                           <span>

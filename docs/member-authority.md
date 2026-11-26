@@ -73,8 +73,8 @@ provider credentials, token values or hashes.
 **The console has three levels: owner, admin and member (ADR-0030).** The owner is the active
 session whose stable member id equals `AGENT_OWNER_USER_ID` and whose current role is `owner`. An
 admin is an active member whose role is `admin`; the owner sets it per person in `/members`. An
-admin may use the shared screens, but not members and roles, backups or the general settings, and
-may not delete the installation's data. Every other member, including a different owner, a
+admin may see the agents and use the shared screens, but may not create or edit an agent, open
+members and roles, backups or the general settings, or delete the installation's data. Every other member, including a different owner, a
 restricted member and a role the console does not know, has chat with the agents shared with
 them, their own accounts and their own `/your-membership` view. Giving a second member the owner
 role does not open the owner's screens. One function, `mayUse` in `services/console/lib/auth.ts`,

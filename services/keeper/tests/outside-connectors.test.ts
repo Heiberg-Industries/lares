@@ -72,6 +72,12 @@ it('lets an admin read the directory, add, rename and check a connector, and nev
   for (const name of ['outside.connector-list', 'outside.connector-rename', 'outside.connector-probe', 'outside.connector-retire'])
     await asOwner(name, everyAction(connector.id).find(([n]) => n === name)![1]);
   expect((await pool.query("SELECT state FROM outside_connectors WHERE id=$1", [connector.id])).rows[0].state).toBe('retired');
+  // An admin of another organisation is nobody here.
+  await pool.query("INSERT INTO orgs(id,display_name) VALUES('elsewhere','Elsewhere') ON CONFLICT DO NOTHING");
+  await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('elsewhere-owner','Other owner','elsewhere','owner','active') ON CONFLICT DO NOTHING");
+  await pool.query("UPDATE users SET org_id='elsewhere' WHERE id=$1", [ADMIN]);
+  try { await expect(asAdmin('outside.connector-list')).rejects.toThrow('Only the designated owner or an admin'); }
+  finally { await pool.query("UPDATE users SET org_id='org' WHERE id=$1", [ADMIN]); }
   // A person the owner made a member again loses it at once: the role is read from the database on every call.
   await pool.query("UPDATE users SET org_role='member' WHERE id=$1", [ADMIN]);
   try { await expect(asAdmin('outside.connector-list')).rejects.toThrow('Only the designated owner or an admin'); }

@@ -12,7 +12,7 @@ export interface SetAutonomyInput {
 }
 
 export async function setAutonomy(input: SetAutonomyInput): Promise<void> {
-  const email = await actingAddress("admin");
+  const email = await actingAddress("owner");
   if (!email) throw new Error("unauthenticated");
   const ratchet = new PgRatchet(pool);
   await ratchet.setLevel(input.agent, input.capability, input.level, input.action, email);

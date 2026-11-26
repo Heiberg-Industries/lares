@@ -31,6 +31,7 @@ vi.mock("../app/actions/definition", () => ({
   doorStatus: m.doorStatus, claimCode: m.claimCode, connectDoor: vi.fn(), verifyDoor: vi.fn(), setDoorEnabled: vi.fn(), applyConnections: vi.fn(), registerTelegram: vi.fn(),
   listConversations: vi.fn(async () => ({ ok: true, result: [] })), startFreshConversation: vi.fn(),
 }));
+vi.mock("../app/actions/autonomy", () => ({ setAutonomy: vi.fn() }));
 vi.mock("../app/actions/delivery", () => ({ sendTestBrief: m.sendTestBrief, testBriefStatus: m.testBriefStatus }));
 vi.mock("../app/actions/outside-connectors", () => ({ checkConnector: vi.fn(), removeConnector: vi.fn(), renameConnector: vi.fn() }));
 
@@ -39,6 +40,7 @@ import MembershipPage from "../app/your-membership/page";
 import { WaitingList } from "../components/WaitingList";
 import { ConnectorActions } from "../components/ConnectorActions";
 import { ConversationControl } from "../components/ConversationControl";
+import { AutonomyControl } from "../components/AutonomyControl";
 import { DoorSetup, OWNER_LAST_STEP } from "../components/DoorSetup";
 import { PICKER_ROLES, ROLE_CHOICES, ROLE_WORDS } from "../lib/member-roles";
 
@@ -97,7 +99,7 @@ describe("Members: the owner picks Admin or Member per person", () => {
     expect([...ROLE_CHOICES].sort()).toEqual(["admin", "member", "owner", "restricted"]);
     expect(PICKER_ROLES).toEqual(["member", "admin"]);
     for (const role of ROLE_CHOICES) { expect(ROLE_WORDS[role]!.name.length).toBeGreaterThan(3); expect(ROLE_WORDS[role]!.meaning.length).toBeGreaterThan(30); }
-    expect(ROLE_WORDS.admin!.meaning).toContain("Cannot change members and roles, backups or the general settings");
+    expect(ROLE_WORDS.admin!.meaning).toContain("Cannot create or edit an agent, cannot change members and roles, backups or the general settings");
   });
 });
 
@@ -118,7 +120,7 @@ describe("Your membership says why someone was brought there", () => {
   it("tells an admin which pages stay with the owner, and offers the console they may use", async () => {
     m.person = person("a-1", "admin");
     await show({ refused: "1" });
-    expect(screen.getByText(/not allowed for your role\. Members and roles, backups and the general settings are for the owner of this installation\./)).toBeTruthy();
+    expect(screen.getByText(/not allowed for your role\. Creating and editing agents, members and roles, backups and the general settings are for the owner of this installation\./)).toBeTruthy();
     expect(screen.getByText(/You are an admin\./)).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open the console" }).getAttribute("href")).toBe("/");
     expect(screen.queryByRole("link", { name: "Open the owner console" })).toBeNull();
@@ -129,7 +131,9 @@ describe("Your membership says why someone was brought there", () => {
   });
 });
 
-describe("what an admin is shown in place of the owner's buttons", () => {
+// The agent form (with its chat-door setup and conversation list) is the owner's page for now. Its parts already
+// know how to show themselves to someone who is not the owner, so opening it later does not start from nothing.
+describe("what a person who is not the owner is shown in place of the owner's buttons", () => {
   it("Reviews: an empty list says approvals are answered by each agent's owner", () => {
     render(<WaitingList items={[]} unreadable={[]} now={0} onDecide={vi.fn()} emptyNote="Approvals are answered by each agent's owner, so there is nothing here for you to decide." />);
     expect(screen.getByText("Approvals are answered by each agent's owner, so there is nothing here for you to decide.")).toBeTruthy();
@@ -150,6 +154,15 @@ describe("what an admin is shown in place of the owner's buttons", () => {
   it("Agents: an admin can see recent conversations and is told only the owner can end one", () => {
     render(<ConversationControl name="example" owner={false} />);
     expect(screen.getByText("Only the owner can end a conversation. You can see the recent ones here.")).toBeTruthy();
+  });
+  it("Agents and Integrations: how freely an agent acts is shown, and only the owner can change it", () => {
+    render(<AutonomyControl agent="example" capability="mail" level="gated" canChange={false} />);
+    expect(screen.getByText("Only the owner can change this.")).toBeTruthy();
+    for (const button of screen.getAllByRole("button")) expect((button as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+    render(<AutonomyControl agent="example" capability="mail" level="gated" canChange={true} />);
+    expect(screen.queryByText("Only the owner can change this.")).toBeNull();
+    expect(screen.getAllByRole("button").some(button => !(button as HTMLButtonElement).disabled)).toBe(true);
   });
   it("Chat doors: the door is shown set up, with one sentence that the owner does the last step; no code and no test brief", async () => {
     m.doorStatus.mockResolvedValue({ ok: true, result: [{ kind: "slack", enabled: true, configured: true, claimed: false, pending: false, applied: true }, { kind: "telegram", enabled: true, configured: true, claimed: true, pending: false, applied: true }] });

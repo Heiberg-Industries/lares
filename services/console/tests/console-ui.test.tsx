@@ -28,7 +28,7 @@ describe("permission changes", () => {
       }),
     );
     render(
-      <AutonomyControl
+      <AutonomyControl canChange={true}
         agent="agent-one"
         capability="vault"
         action="private"
@@ -62,7 +62,7 @@ describe("permission changes", () => {
   });
   it("requires authoritative reload after an unknown write outcome", async () => {
     save.mockRejectedValue(new Error("connection lost"));
-    render(<AutonomyControl agent="agent-one" capability="mail" level="gated" />);
+    render(<AutonomyControl canChange={true} agent="agent-one" capability="mail" level="gated" />);
     await userEvent.click(screen.getByRole("button", { name: "Never" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Reload");
     expect(

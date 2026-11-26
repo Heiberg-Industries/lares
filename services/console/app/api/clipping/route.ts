@@ -59,7 +59,7 @@ async function needsSource(): Promise<Response | null> {
 }
 
 async function handlePOST(req: Request): Promise<Response> {
-  const actor = await actingAddress("admin");
+  const actor = await actingAddress("owner");
   if (!actor) return failed('sign-in-required', 401);
   if (!sameOrigin(req)) return failed('origin-refused', 403);
   let parsed;

@@ -146,7 +146,9 @@ describe("an admin", () => {
     const offered = (groups: typeof OWNER_MENU) => [...groups.flatMap((group) => group.pages), MEMBERSHIP].map((page) => page.href);
     for (const href of offered(ADMIN_MENU)) expect(["admin", "member"], `the admin menu offers ${href}`).toContain(level.get(href));
     for (const href of offered(MEMBER_MENU)) expect(level.get(href), `the member menu offers ${href}`).toBe("member");
-    expect(OWNER_ONLY_PAGES.slice().sort()).toEqual([...level].filter(([, see]) => see === "owner").map(([id]) => id).sort());
+    // The menu's owner-only list is exactly the owner-only pages the owner's menu offers.
+    expect(OWNER_ONLY_PAGES.slice().sort()).toEqual(offered(OWNER_MENU).filter((href) => level.get(href) === "owner").sort());
+    for (const href of OWNER_ONLY_PAGES) expect(level.get(href), href).toBe("owner");
     // Nothing an admin may open from the menu is left out: every owner-menu page that is not owner-only is there.
     expect(offered(ADMIN_MENU)).toEqual(offered(OWNER_MENU).filter((href) => level.get(href) !== "owner"));
     expect(OWNER_MENU.flatMap((group) => group.pages).filter((page) => level.get(page.href) === "owner").map((page) => page.label)).toEqual(["Members", "General", "Backups"]);

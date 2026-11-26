@@ -52,6 +52,7 @@ export function AgentDetail({
   mailboxSettings,
   waiting = false,
   status = "unknown",
+  owner,
 }: {
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
@@ -72,6 +73,8 @@ export function AgentDetail({
   waiting?: boolean;
   /** What the agent is doing, from the state the server reports; `unknown` when it could not be read. */
   status?: AgentStatus;
+  /** True for the owner. Editing the agent and changing how freely it acts are the owner's. */
+  owner: boolean;
 }) {
   const edit = `/agents/${encodeURIComponent(agent.name)}/edit`;
   const state = STATUS[status];
@@ -234,6 +237,7 @@ export function AgentDetail({
                                   capability={row.capability}
                                   action={row.action || undefined}
                                   level={row.level}
+                                  canChange={owner}
                                 />
                               ) : undefined
                             }

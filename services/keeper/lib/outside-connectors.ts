@@ -132,12 +132,15 @@ export interface ConnectorOptions {
 export function registerOutsideConnectorActions(o: ConnectorOptions): void {
   const { pool } = o;
 
-  type Admitted = { id: string; status: string; org_role: string } | undefined;
+  type Admitted = { id: string; status: string; org_role: string; with_owner: boolean } | undefined;
   /** The person behind a session that is live right now. Any failure reads as nobody. */
   async function sessionPerson(token: string): Promise<Admitted> {
     try {
-      return (await pool.query(`SELECT u.id,u.status,u.org_role FROM member_sessions s JOIN users u ON u.id=s.member_id
-        WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp()`, [sha256(token)])).rows[0];
+      // with_owner: this person belongs to the designated owner's organisation. An admin of any other one is nobody here.
+      return (await pool.query(`SELECT u.id,u.status,u.org_role,
+          COALESCE(u.org_id IS NOT NULL AND u.org_id=(SELECT o.org_id FROM users o WHERE o.id=$2),false) AS with_owner
+        FROM member_sessions s JOIN users u ON u.id=s.member_id
+        WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp()`, [sha256(token), o.designatedOwnerId ?? ''])).rows[0];
     } catch { return undefined; }
   }
   const isDesignatedOwner = (row: Admitted) =>
@@ -153,7 +156,7 @@ export function registerOutsideConnectorActions(o: ConnectorOptions): void {
   async function requireOwnerOrAdmin(token: string): Promise<void> {
     const row = await sessionPerson(token);
     if (isDesignatedOwner(row)) return;
-    if (!o.designatedOwnerId || !row || row.status !== 'active' || row.org_role !== 'admin')
+    if (!o.designatedOwnerId || !row || row.status !== 'active' || row.org_role !== 'admin' || row.with_owner !== true)
       throw new KeeperRefusedError('Only the designated owner or an admin can use the outside connector directory.');
   }
 

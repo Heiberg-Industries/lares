@@ -52,11 +52,10 @@
       "id": "/agents/[name]/edit",
       "kind": "page",
       "file": "app/agents/[name]/edit/page.tsx",
-      "see": "admin",
-      "act": "admin",
+      "see": "owner",
+      "act": "owner",
       "guards": ["requirePage"],
       "source": "derived",
-      "ownerExtras": true,
       "actions": [
         "autonomy.setAutonomy",
         "avatar.saveAvatar",
@@ -83,11 +82,10 @@
       "id": "/agents/new",
       "kind": "page",
       "file": "app/agents/new/page.tsx",
-      "see": "admin",
-      "act": "admin",
+      "see": "owner",
+      "act": "owner",
       "guards": ["requirePage"],
       "source": "derived",
-      "ownerExtras": true,
       "actions": [
         "autonomy.setAutonomy",
         "avatar.saveAvatar",
@@ -227,7 +225,7 @@
       "kind": "page",
       "file": "app/integrations/[id]/page.tsx",
       "see": "admin",
-      "act": "admin",
+      "act": "owner",
       "guards": ["requirePage"],
       "source": "derived",
       "ownerExtras": true,
@@ -527,7 +525,7 @@
       "id": "autonomy.setAutonomy",
       "kind": "action",
       "file": "app/actions/autonomy.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]", "/agents/[name]/edit", "/agents/new", "/integrations/[id]"],
@@ -537,11 +535,11 @@
       "id": "avatar.saveAvatar",
       "kind": "action",
       "file": "app/actions/avatar.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "deadlines.addDeadline",
@@ -637,7 +635,7 @@
       "id": "definition.acceptOutsideDescriptions",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]"],
@@ -647,21 +645,21 @@
       "id": "definition.agentRuntime",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.applyConnections",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.claimCode",
@@ -671,27 +669,27 @@
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.connectDoor",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.createAgent",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.deleteAgent",
@@ -701,47 +699,47 @@
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.doorStatus",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.listConversations",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.registerTelegram",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.retireAgent",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.runNotionSyncPreview",
@@ -757,11 +755,11 @@
       "id": "definition.saveDefinition",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.setAgentLimit",
@@ -787,11 +785,11 @@
       "id": "definition.setDoorEnabled",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.setMeetingsSource",
@@ -821,17 +819,17 @@
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "definition.verifyDoor",
       "kind": "action",
       "file": "app/actions/definition.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "delivery.saveDelivery",
@@ -851,17 +849,17 @@
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "delivery.testBriefStatus",
       "kind": "action",
       "file": "app/actions/delivery.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
-      "see": "admin"
+      "see": "owner"
     },
     {
       "id": "inbox.markRead",
@@ -1677,7 +1675,7 @@
       "id": "POST /api/clipping",
       "kind": "route",
       "file": "app/api/clipping/route.ts",
-      "act": "admin",
+      "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
       "methods": "POST",

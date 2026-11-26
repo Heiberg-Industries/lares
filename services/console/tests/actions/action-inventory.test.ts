@@ -27,14 +27,16 @@ const MEMBER_PAGES = ["/chat", "/chat/[name]", "/your-accounts", "/your-membersh
 /** An admin may also open these. */
 const ADMIN_PAGES = [
   "/", "/reviews",
-  "/agents", "/agents/[name]", "/agents/[name]/edit", "/agents/new", "/writing-style",
+  "/agents", "/agents/[name]", "/writing-style",
   "/integrations", "/integrations/[id]", "/outside-tools", "/outside-tools/[id]", "/outside-tools/new",
   "/deadlines", "/meeting-follow-ups", "/saved-preferences",
   "/permission-checks", "/alerts",
   "/quiet-hours-and-delivery", "/alert-routing", "/alert-routing/catalogue",
 ];
-/** Only the owner: members and roles, backups, the installation's general settings. */
-const OWNER_PAGES = ["/backups", "/general", "/members"];
+/** Only the owner: members and roles, backups, the installation's general settings. And creating or editing an
+ * agent: the keeper saves whatever the console sends, so until it checks for itself an admin could use the form to
+ * give an agent more access or to speak to it as the owner (see OWNER_ACTIONS). An admin sees agents, not the form. */
+const OWNER_PAGES = ["/backups", "/general", "/members", "/agents/new", "/agents/[name]/edit"];
 
 /** Actions any signed-in member may call. Each acts on the caller's own things only. Unchanged by the admin role. */
 const MEMBER_ACTIONS = [
@@ -50,6 +52,21 @@ const MEMBER_ACTIONS = [
 const OWNER_ACTIONS: Record<string, string> = {
   "agent-access.adoptAgent": "decides who owns an agent",
   "agent-access.saveAgentAccess": "decides which people may use or edit an agent",
+  "autonomy.setAutonomy": "decides whether an agent asks before it acts, also on the owner's own mail and calendar",
+  "avatar.saveAvatar": "part of the agent form, which is the owner's",
+  // The keeper carries out every definition.* request without a check of its own.
+  "definition.createAgent": "a new agent's access and instructions are whatever is sent; the owner pays for it",
+  "definition.saveDefinition": "can give an agent more access, change how freely it acts and rewrite what it does with the owner's mail",
+  "definition.setDoorEnabled": "saves the agent's definition",
+  "definition.connectDoor": "whoever supplies a chat app's credentials can speak to the agent as the owner",
+  "definition.registerTelegram": "part of setting up a chat door",
+  "definition.verifyDoor": "part of setting up a chat door",
+  "definition.doorStatus": "part of the agent form, which is the owner's",
+  "definition.applyConnections": "starts or restarts an agent with what was saved",
+  "definition.retireAgent": "stops an agent for everyone",
+  "definition.listConversations": "lists the conversations people have with an agent",
+  "definition.agentRuntime": "part of the agent form, which is the owner's",
+  "definition.acceptOutsideDescriptions": "lets a tool whose description changed run again",
   "definition.acceptNotionSyncPreview": "an installation setting (Notion sync)",
   "definition.runNotionSyncPreview": "an installation setting (Notion sync)",
   "definition.setNotionSync": "an installation setting (Notion sync)",
@@ -60,6 +77,7 @@ const OWNER_ACTIONS: Record<string, string> = {
   "definition.startFreshConversation": "throws a conversation away",
   "definition.claimCode": "the keeper records whoever asks as the agent's owner address",
   "delivery.sendTestBrief": "sent to the owner and paid by the owner",
+  "delivery.testBriefStatus": "part of the agent form, which is the owner's",
   "inbox.markRead": "the owner's message inbox",
   "members.createInvitation": "members and roles",
   "members.removeMember": "members and roles",
@@ -78,7 +96,8 @@ const ROUTE_LEVELS: Record<string, "member" | "admin" | "owner"> = {
   "GET /api/agent-mailbox": "member", "POST /api/agent-mailbox": "member",
   "GET /api/chat/[name]/[...path]": "member", "POST /api/chat/[name]/[...path]": "member",
   "GET /api/agents/[name]/avatar": "admin",
-  "GET /api/clipping": "admin", "POST /api/clipping": "admin",
+  "GET /api/clipping": "admin",
+  "POST /api/clipping": "owner",
   "GET /api/notion-proposals": "admin",
   "POST /api/notion-proposals": "owner",
   "GET /api/credentials/notion": "owner", "POST /api/credentials/notion": "owner",
@@ -206,11 +225,11 @@ describe("console action inventory", () => {
     // An action follows the page it serves. These files are entirely the level named; a new action in one of them
     // at another level fails here until it is placed on purpose (the lists above then say why).
     const whole: Record<string, string> = {
-      "agent-access": "owner", inbox: "owner",
-      autonomy: "admin", avatar: "admin", deadlines: "admin", "meeting-series": "admin", proactivity: "admin", signals: "admin", taste: "admin", voice: "admin", waiting: "admin",
+      "agent-access": "owner", inbox: "owner", autonomy: "owner", avatar: "owner", definition: "owner",
+      deadlines: "admin", "meeting-series": "admin", proactivity: "admin", signals: "admin", taste: "admin", voice: "admin", waiting: "admin",
       accounts: "member", "outside-discovery": "member", "private-metadata": "member",
     };
-    const mixed = ["definition", "delivery", "members", "outside-connect", "outside-connectors"];
+    const mixed = ["delivery", "members", "outside-connect", "outside-connectors"];
     const files = new Set(inventory.actions.map(a => a.id.split(".")[0]!));
     expect([...files].sort(), "an action file is not placed at a level").toEqual([...Object.keys(whole), ...mixed].sort());
     for (const action of inventory.actions) {
@@ -242,7 +261,7 @@ describe("console action inventory", () => {
   it("marks where a page or action an admin or member passes holds something stricter inside", () => {
     // Not a gate by itself: it says where to look. The owner-only parts on admin pages are hidden by the page and refused by the action.
     const withOwnerParts = rows.filter(r => r.ownerExtras).map(r => r.id).sort();
-    expect(withOwnerParts).toEqual(["/agents/[name]", "/agents/[name]/edit", "/agents/new", "/integrations/[id]", "/outside-tools/[id]", "/reviews", "/sign-in", "/your-accounts", "GET /api/auth/[...route]", "accounts.removeAccount"].sort());
+    expect(withOwnerParts).toEqual(["/agents/[name]", "/integrations/[id]", "/outside-tools/[id]", "/reviews", "/sign-in", "/your-accounts", "GET /api/auth/[...route]", "accounts.removeAccount"].sort());
     expect(rows.filter(r => r.adminExtras).map(r => r.id)).toEqual([]);
   });
 

@@ -128,7 +128,7 @@ export interface TestBriefStatus {
 
 /** The newest test-brief request for the agent, as one status line. Read only. */
 export async function testBriefStatus(name: string): Promise<TestBriefStatus> {
-  const email = await actingAddress("admin");
+  const email = await actingAddress("owner");
   if (!email) throw new Error("unauthenticated");
   try {
     const [row, dnd] = await Promise.all([latestTestBrief(name), dndOn(ownerId(), name)]);

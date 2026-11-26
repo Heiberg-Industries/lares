@@ -6,7 +6,7 @@ import { MAX_AVATAR_BYTES, normalizeAvatar } from "../../lib/avatar-image";
 export async function saveAvatar(
   form: FormData,
 ): Promise<{ ok: boolean; message: string }> {
-  if (!(await actingAddress("admin")))
+  if (!(await actingAddress("owner")))
     return { ok: false, message: "Sign in again to change this image." };
   const name = form.get("name");
   if (typeof name !== "string" || !/^[a-z][a-z0-9-]{1,30}$/.test(name))

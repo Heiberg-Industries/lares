@@ -27,7 +27,7 @@ export default async function MembersPage() {
       description="Who can sign in to this installation, and the invitations that are still open."
       actions={<Button variant="outline" asChild><Link href="/your-membership">Your membership →</Link></Button>}
     />
-    <p className="lares-muted">A person you invite can chat with the agents shared with them, connect their own accounts and see their own membership page. A person you make an admin can also use the console's shared pages. Members and roles, backups and the general settings stay with the owner who set up this installation. No role gives access to another person's private data.</p>
+    <p className="lares-muted">A person you invite can chat with the agents shared with them, connect their own accounts and see their own membership page. A person you make an admin can also see the agents and use the console's shared pages. Creating and editing agents, members and roles, backups and the general settings stay with the owner who set up this installation. No role gives access to another person's private data.</p>
     <Card>
       <CardHeader>
         <CardTitle role="heading" aria-level={2}>Members</CardTitle>

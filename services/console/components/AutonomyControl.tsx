@@ -13,6 +13,9 @@ export function AutonomyControl(p: {
   capability: string;
   action?: string;
   level: AutonomyLevel;
+  /** True for the owner. How freely an agent acts is the owner's to change; anyone else sees the level and
+   * the buttons do nothing. The action refuses anyone else whatever this says. */
+  canChange: boolean;
 }) {
   const [level, setLevel] = useState(p.level);
   const [busy, setBusy] = useState(false);
@@ -56,7 +59,7 @@ export function AutonomyControl(p: {
             type="button"
             variant={level === o.level ? "secondary" : "outline"}
             size="sm"
-            disabled={busy || Boolean(error)}
+            disabled={!p.canChange || busy || Boolean(error)}
             aria-pressed={level === o.level}
             onClick={() => void pick(o.level)}
           >
@@ -64,6 +67,7 @@ export function AutonomyControl(p: {
           </Button>
         ))}
       </div>
+      {!p.canChange && <p className="lares-muted">Only the owner can change this.</p>}
       {busy && <span role="status">Saving permission…</span>}
       {error && <p role="alert">{error}</p>}
     </div>
