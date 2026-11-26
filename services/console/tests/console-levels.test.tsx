@@ -32,7 +32,8 @@ vi.mock("@lares/agent-kit/member-store", async (original) => ({
     revokeInvitation = async () => mocks.touch("members.revokeInvitation");
     signOutAll = async () => mocks.touch("members.signOutAll");
     setRole = async () => mocks.touch("members.setRole");
-    currentMember = async () => mocks.touch("members.currentMember");
+    // Admission itself reads the named owner's row, to place an admin in the owner's organisation. It is the check, not data.
+    currentMember = async (id: string) => (id === "owner-1" ? { id: "owner-1", organisationId: "org", role: "owner", status: "active", automationMode: "draft-and-ask" } : undefined);
   },
 }));
 vi.mock("../lib/db", () => ({

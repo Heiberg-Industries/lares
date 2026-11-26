@@ -6,7 +6,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 // Real lib/auth with the same stand-ins tests/auth.test.ts uses: used only to prove that the guards the
 // inventory relies on really refuse a person below the level written at the call.
 const mocks = vi.hoisted(() => ({ lookup: vi.fn(), query: vi.fn(), cookie: vi.fn() }));
-vi.mock("@lares/agent-kit/member-store", () => ({ PgMemberStore: class { sessionMember = mocks.lookup } }));
+vi.mock("@lares/agent-kit/member-store", () => ({ PgMemberStore: class { sessionMember = mocks.lookup; currentMember = async (id: string) => (id === "owner-1" ? { id: "owner-1", organisationId: "org", role: "owner", status: "active", automationMode: "draft-and-ask" } : undefined) } }));
 vi.mock("../../lib/db", () => ({ pool: { query: mocks.query } }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: mocks.cookie }) }));
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`redirect:${path}`); } }));

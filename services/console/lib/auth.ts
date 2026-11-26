@@ -37,7 +37,15 @@ export function consoleLevel(member: Member | null | undefined): ConsoleLevel | 
 }
 export async function sessionMember(raw: string | undefined): Promise<Member | null> {
   if (!raw) return null;
-  try { return await members.sessionMember(raw) ?? null; } catch { throw new ConsoleAdmissionUnavailableError(); }
+  try {
+    const member = await members.sessionMember(raw) ?? null;
+    // An admin is an admin of the named owner's organisation only. Anyone else holding that role (another organisation's
+    // row, or an owner id that names nobody) is a member here, so no admin page, action or route opens for them.
+    if (member?.role !== "admin") return member;
+    const designated = process.env.AGENT_OWNER_USER_ID?.trim();
+    const owner = designated ? await members.currentMember(designated) : undefined;
+    return owner && owner.organisationId === member.organisationId ? member : { ...member, role: "member" };
+  } catch { throw new ConsoleAdmissionUnavailableError(); }
 }
 export async function signedInMember(): Promise<Member | null> {
   return sessionMember((await cookies()).get("lares_session")?.value);

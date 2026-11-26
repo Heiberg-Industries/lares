@@ -14,7 +14,7 @@ const m = vi.hoisted(() => ({
 }));
 vi.mock("@lares/agent-kit/member-store", async (original) => ({
   ...(await original<typeof import("@lares/agent-kit/member-store")>()),
-  PgMemberStore: class { sessionMember = async () => m.person; listMembers = m.directory; },
+  PgMemberStore: class { sessionMember = async () => m.person; currentMember = async (id: string) => (id === "owner-1" ? { id: "owner-1", organisationId: "org", role: "owner", status: "active", automationMode: "draft-and-ask" } : undefined); listMembers = m.directory; },
 }));
 vi.mock("../lib/db", () => ({ pool: { query: async () => ({ rows: [{ primary_email: "person@example.test" }] }) } }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "s".repeat(43) }) }) }));

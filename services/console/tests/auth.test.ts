@@ -1,6 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ lookup: vi.fn(), query: vi.fn(), cookie: vi.fn(), keeper: vi.fn() }));
-vi.mock("@lares/agent-kit/member-store", () => ({ PgMemberStore: class { sessionMember = mocks.lookup } }));
+const mocks = vi.hoisted(() => ({ lookup: vi.fn(), query: vi.fn(), cookie: vi.fn(), keeper: vi.fn(),
+  ownerRow: vi.fn((id: string): unknown => (id === "owner-1" ? { id: "owner-1", organisationId: "org", role: "owner", status: "active", automationMode: "draft-and-ask" } : undefined)) }));
+vi.mock("@lares/agent-kit/member-store", () => ({ PgMemberStore: class { sessionMember = mocks.lookup; currentMember = async (id: string) => mocks.ownerRow(id) } }));
 vi.mock("../lib/db", () => ({ pool: { query: mocks.query } }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: mocks.cookie }) }));
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`redirect:${path}`); } }));
@@ -183,5 +184,30 @@ describe("current database member and session admission", () => {
     mocks.cookie.mockReturnValue({ value: "legacy-email.signature" });
     for (const level of LEVELS) expect(await actingAddress(level)).toBeNull();
     expect(mocks.query).not.toHaveBeenCalled();
+  });
+});
+
+describe("an admin is an admin of the named owner's organisation only", () => {
+  it("keeps the admin level inside the owner's organisation", async () => {
+    mocks.lookup.mockResolvedValueOnce(admin);
+    expect(consoleLevel(await sessionMember("opaque"))).toBe("admin");
+  });
+  it("reads an admin of another organisation, or with an owner id that names nobody, as a member", async () => {
+    mocks.lookup.mockResolvedValueOnce({ ...admin, organisationId: "elsewhere" });
+    const outsider = await sessionMember("opaque");
+    expect(consoleLevel(outsider)).toBe("member");
+    expect(mayUse(outsider, "admin")).toBe(false);
+    vi.stubEnv("AGENT_OWNER_USER_ID", "nobody");
+    mocks.lookup.mockResolvedValueOnce(admin);
+    expect(consoleLevel(await sessionMember("opaque"))).toBe("member");
+  });
+  it("refuses everyone when the owner's row cannot be read, and does not read it at all for a member", async () => {
+    mocks.lookup.mockResolvedValueOnce(admin);
+    mocks.ownerRow.mockImplementationOnce(() => { throw new Error("database down"); });
+    await expect(sessionMember("opaque")).rejects.toThrow("storage is unavailable");
+    mocks.ownerRow.mockClear();
+    mocks.lookup.mockResolvedValueOnce(member);
+    expect(consoleLevel(await sessionMember("opaque"))).toBe("member");
+    expect(mocks.ownerRow).not.toHaveBeenCalled();
   });
 });
