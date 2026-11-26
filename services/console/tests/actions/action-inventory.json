@@ -205,14 +205,7 @@
       "act": "owner",
       "guards": ["requireConsolePage"],
       "source": "derived",
-      "actions": [
-        "definition.acceptNotionSyncPreview",
-        "definition.runNotionSyncPreview",
-        "definition.setAgentLimit",
-        "definition.setAgentSetting",
-        "definition.setMeetingsSource",
-        "definition.setNotionSync"
-      ],
+      "actions": ["definition.setAgentLimit", "definition.setAgentSetting"],
       "routes": []
     },
     {
@@ -234,7 +227,13 @@
       "act": "owner",
       "guards": ["requireConsolePage"],
       "source": "derived",
-      "actions": ["autonomy.setAutonomy"],
+      "actions": [
+        "autonomy.setAutonomy",
+        "definition.acceptNotionSyncPreview",
+        "definition.runNotionSyncPreview",
+        "definition.setMeetingsSource",
+        "definition.setNotionSync"
+      ],
       "routes": [
         "GET /api/clipping",
         "GET /api/credentials/notion",
@@ -626,7 +625,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/general"],
+      "usedBy": ["/integrations/[id]"],
       "see": "owner"
     },
     {
@@ -746,7 +745,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/general"],
+      "usedBy": ["/integrations/[id]"],
       "see": "owner"
     },
     {
@@ -796,7 +795,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/general"],
+      "usedBy": ["/integrations/[id]"],
       "see": "owner"
     },
     {
@@ -806,7 +805,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/general"],
+      "usedBy": ["/integrations/[id]"],
       "see": "owner"
     },
     {

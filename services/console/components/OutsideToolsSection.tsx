@@ -1,7 +1,7 @@
 "use client";
 import { useRef, useState } from "react";
 import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
-import { StatusBadge, ToolList, ToolRow } from "@lares/ui/patterns";
+import { Notice, StatusBadge, ToolList, ToolRow } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { acceptOutsideDescriptions } from "../app/actions/definition";
 import type { DescribedTool, OutsideToolEvidence, OutsideToolLock } from "../lib/outside-tools";
@@ -88,14 +88,16 @@ function AcceptDescriptions({ agent, tool, lock }: { agent: string; tool: string
     }
   }
   if (state === "done") {
-    return <p role="status">Accepted. The agent uses this tool again from its next conversation.</p>;
+    return <Notice tone="success">Accepted. The agent uses this tool again from its next conversation.</Notice>;
   }
   return (
-    <div className="lares-actions">
-      <Button type="button" variant="outline" size="sm" disabled={state === "busy"} onClick={accept}>
-        Accept new tool descriptions
-      </Button>
-      {error && <p role="alert">{error}</p>}
+    <div className="lares-stack">
+      <div className="lares-actions">
+        <Button type="button" variant="outline" size="sm" disabled={state === "busy"} onClick={accept}>
+          Accept new tool descriptions
+        </Button>
+      </div>
+      {error && <Notice tone="error">{error}</Notice>}
     </div>
   );
 }
@@ -133,9 +135,9 @@ export function OutsideToolsSection({
         </p>
       )}
       {locks && !locks.available && (
-        <p className="lares-muted" role="status">
+        <Notice tone="needs-you">
           Description checks unavailable. The record of what each server said about its tools could not be read.
-        </p>
+        </Notice>
       )}
       <ul className="lares-data-list">
         {tools.map((t) => {

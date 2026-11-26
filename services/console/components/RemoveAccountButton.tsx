@@ -1,5 +1,6 @@
 "use client";
 import { useState, useTransition } from "react";
+import { Notice } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { removeAccount } from "../app/actions/accounts";
 
@@ -7,7 +8,7 @@ export function RemoveAccountButton(p: { email: string; accountId?: string; gene
   const [pending, start] = useTransition();
   const [err, setErr] = useState("");
   return (
-    <span className="lares-actions">
+    <div className="lares-actions">
       <Button
         type="button"
         variant="outline"
@@ -28,7 +29,7 @@ export function RemoveAccountButton(p: { email: string; accountId?: string; gene
       >
         {pending ? "…" : "Remove"}
       </Button>
-      {err && <span title={err} className="lares-form-error">!</span>}
-    </span>
+      {err && <Notice tone="error">{err}</Notice>}
+    </div>
   );
 }

@@ -69,7 +69,7 @@ it("shows the keeper's refusal word for word, and is read-only for anyone but th
   vi.mocked(runNotionSyncPreview).mockResolvedValue({ ok: false, error: { message: refusal, outcomeMayBeUnknown: false } } as any);
   render(<NotionSyncControl initial={on()} />);
   await userEvent.click(screen.getByRole("button", { name: "Run preview" }));
-  await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(refusal));
+  await waitFor(() => expect(screen.getByRole("alert").querySelector(".lares-notice-body")!.textContent).toBe(refusal));
   cleanup();
   render(<NotionSyncControl initial={on({ canChange: false })} />);
   expect(screen.queryByRole("button")).toBeNull();

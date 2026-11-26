@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { EmptyState, Notice, Page, PageHeader, StatusBadge } from "@lares/ui/patterns";
+import { EmptyState, Notice, Page, PageHeader, Row, Rows, StatusBadge } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
+import { Card } from "@lares/ui/primitives/card";
 import { requireConsolePage } from "../../lib/auth";
 import { listConnectors } from "../actions/outside-connectors";
 import { agentUsesByConnector } from "../../lib/outside-connector-view";
@@ -14,25 +15,22 @@ export default async function OutsideToolsDirectoryPage() {
   const [result, uses] = await Promise.all([listConnectors(), agentUsesByConnector()]);
   const add = <Button asChild><Link href="/outside-tools/new">Add custom connector</Link></Button>;
   return <Page className="lares-stack">
-    <Link href="/integrations">← Integrations</Link>
     <PageHeader title="Outside tools" description="Tools from servers outside Lares. Choose which agents may use each one." actions={add} />
     {!result.ok && <Notice tone="error">{result.message}</Notice>}
     {uses === null && <Notice tone="needs-you">Which agents use each connector could not be read. Reload the page to try again.</Notice>}
     {result.ok && result.value.length === 0 && <EmptyState title="No outside tools yet">Add a connector with the address of its server.</EmptyState>}
-    {result.ok && result.value.length > 0 && <ul className="lares-data-list">
+    {result.ok && result.value.length > 0 && <Card><Rows label="Outside tools">
       {result.value.map(c => {
         const agents = uses?.[c.slug] ?? [];
         const tools = c.toolCount ?? (agents.length ? new Set(agents.flatMap(a => a.tools.map(t => t.name))).size : null);
-        return <li key={c.id} className="lares-stack">
-          <div className="lares-actions">
-            <strong><Link href={`/outside-tools/${c.id}`}>{c.displayName}</Link></strong>
+        return <Row key={c.id} title={c.displayName}
+          description={<>{authWords(c.authKind)} · {tools === null ? "tools not read yet" : `${tools} tool${tools === 1 ? "" : "s"}`} · {agents.length ? agents.map(a => a.displayName).join(", ") : "no agents"}</>}
+          control={<>
             <StatusBadge tone={stateTone(c.state, c.authKind, agents.length)}>{stateWords(c.state, c.authKind, agents.length)}</StatusBadge>
             {dangerCount(agents) > 0 && <StatusBadge tone="error">{DANGER_BADGE}</StatusBadge>}
-          </div>
-          <p className="lares-muted">{authWords(c.authKind)} · {tools === null ? "tools not read yet" : `${tools} tool${tools === 1 ? "" : "s"}`} · {agents.length ? agents.map(a => a.displayName).join(", ") : "no agents"}</p>
-          <p><Link href={`/outside-tools/${c.id}`}>{nextActionWords(c.state, c.authKind, agents.length)} →</Link></p>
-        </li>;
+            <Button variant="outline" size="sm" asChild><Link href={`/outside-tools/${c.id}`} aria-label={`${nextActionWords(c.state, c.authKind, agents.length)}: ${c.displayName}`}>{nextActionWords(c.state, c.authKind, agents.length)}</Link></Button>
+          </>} />;
       })}
-    </ul>}
+    </Rows></Card>}
   </Page>;
 }

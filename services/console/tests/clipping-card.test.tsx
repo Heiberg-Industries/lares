@@ -427,7 +427,7 @@ describe('the switch confirms before restarting anything', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ ok: false, code: 'request-refused' }, 409)));
     render(<ClippingCard initial={saved} credential={cred(granted)} />);
     fireEvent.click(screen.getByText('Switch clipping off')); fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(screen.getByText('Confirm switch off'));
-    await waitFor(() => expect(screen.getByText(/The keeper refused this request/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/The Lares server helper refused this request/)).toBeTruthy());
     expect(screen.getByText(/Clipping is switched on/)).toBeTruthy();
     cleanup();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ ok: false, code: 'outcome-unknown' }, 503)));
