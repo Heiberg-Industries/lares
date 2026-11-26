@@ -126,7 +126,16 @@ it('keeps a token connector a token connector when the owner said so, whatever a
   answer = { status: 401, wwwAuthenticate: 'Bearer resource_metadata="https://tools.example.org/.well-known/oauth-protected-resource"', mcp: false };
   // A server that offers a sign-in page and also takes a token: the owner's Token stands.
   expect(await asOwner('outside.connector-probe', { id: connector.id, expectToken: true })).toMatchObject({ authKind: 'token', usable: true, connector: { authKind: 'token' } });
-  // Without the owner's word, the same answer is still recorded as a sign-in server.
+  // Once it is a token connector, a later check (no owner's word) that sees the sign-in page keeps it a token connector.
+  expect(await asOwner('outside.connector-probe', { id: connector.id })).toMatchObject({ authKind: 'token', usable: true, connector: { authKind: 'token' } });
+  // A check can still see that it needs no login at all.
+  answer = { status: 200, wwwAuthenticate: null, mcp: true };
+  expect(await asOwner('outside.connector-probe', { id: connector.id })).toMatchObject({ authKind: 'none' });
+});
+
+it('records a sign-in server as one when the owner did not say Token', async () => {
+  const { connector } = await create();
+  answer = { status: 401, wwwAuthenticate: 'Bearer resource_metadata="https://tools.example.org/.well-known/oauth-protected-resource"', mcp: false };
   expect(await asOwner('outside.connector-probe', { id: connector.id })).toMatchObject({ authKind: 'signin', usable: false });
 });
 
