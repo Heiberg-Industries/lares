@@ -4,7 +4,7 @@ Each folder here holds one `integration.json`: the single source of truth for wh
 integration is allowed to touch — which capabilities it backs, which hosts it may reach, which
 secrets it reads, and how it is credentialed (see `docs/decisions/0019-integrations.md` for the
 full field-by-field reasoning). `packages/agent-kit/src/connections.ts`, the capability docs'
-vendor/region fields, the console's Connections rows and the outbound proxy allow-list are meant
+vendor/region fields, the console's Integrations list and the outbound proxy allow-list are meant
 to be generated from these manifests, not hand-edited. A folder whose name starts with `_` (for
 example `_fixtures/`) is a test fixture the runtime never loads and the manifest loader always
 skips — it exists only to prove the manifest shape can describe an integration before any code

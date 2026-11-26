@@ -386,7 +386,7 @@ not stop the others, and the summary at the end says which were created and why 
 
 What to know first:
 
-- **The agent limit.** Before importing, raise the agent limit in Settings → Agents to the
+- **The agent limit.** Before importing, raise the agent limit on **General** (the **Agents** card) to the
   number of agents you will import (plus any this server already has). The command checks the
   limit for the whole batch before it creates anything; if the limit is too low it says which
   number to set and imports nothing.
@@ -464,7 +464,7 @@ The backup, the export and the restore drill include `/srv/lares/installation` w
 The installer also gives your chief-of-staff agent the same file when it exists, read-only, and
 tells the agent where to find it. A chief of staff created after the re-run has it from the
 start. One that already runs gets it the next time the keeper restarts it; saving its
-definition does not restart it. To restart it now, open **Settings** in the console, and under
+definition does not restart it. To restart it now, open **General** in the console, and under
 **Console address** enter the address you open the console at and press **Save**. Every
 running chief of staff restarts, which takes about a minute, and the page names the agents it
 restarted. An agent with changes waiting is not restarted then: press **Apply connection
@@ -605,7 +605,7 @@ routing, the digest and reminders. On the agent's page, **Schedules** tab, **Whe
 is a grid: a row per kind of message, a column per door (web chat, Slack, Telegram). Number the
 doors 1st, 2nd and 3rd per row. The message tries them in order and skips doors that are not
 connected. **Web chat is always the last resort**, so a message is never dropped: if nothing you
-chose is connected, it lands in web chat and the Proactivity page records why ("Morning brief went
+chose is connected, it lands in web chat and the **Quiet hours and delivery** page records why ("Morning brief went
 to web chat: Telegram is not connected"). A chief of staff made in the console starts with every
 row on web chat; when you connect its first chat app, every row switches to that app first, then
 web chat, and the "Connect doors" section says so. A second app changes nothing; number it in the
@@ -617,7 +617,7 @@ door's quiet hours is refused, with the fix in the message.
 
 Messages that land in web chat appear above the chat, with **Reply** and **Mark as read**; a dot
 by "Chat" in the sidebar shows unread ones. Anything that needs your yes arrives as an approval
-card, in the chat you replied from and under **Waiting on you**, where you can decide it from any
+card, in the chat you replied from and under **Reviews**, where you can decide it from any
 conversation. Sending mail or changing something outside the server goes through such a card unless you
 have deliberately let that agent act on its own for it. Web chat can approve on a fresh installation that has no other door yet: when no chat door
 or e-mail address has been connected, the signed-in owner (the administrator of the installation)
@@ -627,15 +627,15 @@ Approve and Reject buttons on proposals stay Telegram-only; Slack and web chat g
 ### Meeting follow-ups and Notion
 
 The meeting follow-up schedule reads your meeting notes from a Notion database and has no built-in
-default. It needs the id of your Meetings data source and a Notion key (Connections page, Notion
-key). Set the id in the console under Settings, Notion, Meetings database: paste the id (with or
+default. It needs the id of your Meetings data source and a Notion key (**Integrations**, Notion, Notion
+key). Set the id in the console under **Integrations**, Notion, Meetings database: paste the id (with or
 without dashes) and Save. Only the installation's owner can change it. Saving restarts the agents
 that read it, so a conversation in progress is interrupted for a moment; an agent with other
 changes waiting is left alone and picks the id up when you apply them. Leave the field empty and
 Save to clear it. Until it is set, the follow-up schedule stops with "NOTION_MEETINGS_DATA_SOURCE_ID is not set"
 each time it runs, and nothing else is affected.
 
-**The Notion key itself.** On the Connections page, Notion key, you paste the key, choose **Test**,
+**The Notion key itself.** On the Notion page under **Integrations**, in the Notion key card, you paste the key, choose **Test**,
 then **Apply**. The installer makes the page ready for this on every run, so a new installation has
 the key field from the start, and an installation that was set up before this was possible gets it
 after the next `lares update`. If the page still says it is not ready to store a key, the earlier
@@ -654,11 +654,12 @@ the console instead.
 The Notion sync keeps two things in Notion up to date once an hour: the **Attendees** of your
 meetings (read from the Google calendar) and your **People** records (read from the contacts
 connection). It is off on every new installation and it needs no file edits. You set it up in the
-console under Settings, Notion, Notion sync:
+console under **Integrations**, Notion, People sync:
 
-1. Set the Meetings database (above) and connect the Notion key (Connections page). Meeting
-   attendees also need a connected Google calendar; People records need the contacts connection and
-   a People database id, which you paste into the field there and Save. The card lists, in plain
+1. Set the Meetings database (above) and connect the Notion key (both on the Notion page under
+   **Integrations**). Meeting attendees also need a connected Google calendar; People records need
+   the contacts connection and a People database id, which you paste into the field there and
+   Save. The card lists, in plain
    words, whatever is still missing.
 2. Choose **Switch on**. Nothing runs yet.
 3. Choose **Run preview**. The server reads Notion and your calendar once and writes nothing; it
@@ -670,7 +671,7 @@ The acceptance belongs to the exact settings you previewed. If you change the Me
 the People database, or the installation changes, the sync stops until you run and accept a new
 preview. **Switch off** stops it and forgets the acceptance. The card shows when it last ran.
 
-Changing the Notion key (apply, replace or disconnect it on the Connections page) stops the sync,
+Changing the Notion key (apply, replace or disconnect it on the Notion page under **Integrations**) stops the sync,
 moves the key and starts it again, the same way it restarts agents. A restored installation never
 starts syncing by itself: a restore removes the sync, switches it off and forgets the acceptance, so
 you run and accept a new preview. This release syncs only attendees and People records; pages and
@@ -678,10 +679,10 @@ transcripts between your Vault and Notion are not part of it yet.
 
 ### Business data and other agent settings
 
-A few chief-of-staff settings are set in the console under **Settings**, one block per area, not by
+A few chief-of-staff settings are set in the console under **General**, one block per area, not by
 editing `/etc/lares/keeper.json`:
 
-| Settings block | What you set |
+| Block on General | What you set |
 | --- | --- |
 | Business data | CRM tracks, commercial brands, authority sender domains (each a short list; the form shows the shape) |
 | CRM | The name of the company field that holds the organisation number |
@@ -777,7 +778,7 @@ check once more; add `--skip-first-run` if you do not want that.
 At the end it runs a backup, a restore rehearsal and the daily check once, and prints
 **Protected** only if all three passed. Protected means: a snapshot exists, a restore from it
 worked, and the check read it back and reached your uptime address. If one fails it names which
-and where to read why (`journalctl -u <unit>`). The console's Backup page shows the same state.
+and where to read why (`journalctl -u <unit>`). The console's **Backups** page shows the same state.
 
 What the command does, for those who want to know:
 
@@ -898,8 +899,8 @@ Ubuntu server with the tools from section 1, plus `restic` (`apt-get install -y 
       Telegram webhook" once. (A new connection registers it by itself; a restore is the one case
       where you press it.)
    8. Only when `backup.env` names retained file volumes: copying those back is still a manual job.
-   9. Check: sign in, send one chat message to an agent and read the reply, and open the Backup
-      page to confirm the next backup is scheduled (run `lares backups` again if it is not).
+   9. Check: sign in, send one chat message to an agent and read the reply, and open the
+      **Backups** page to confirm the next backup is scheduled (run `lares backups` again if it is not).
 
 The agents' model keys come back with the token folder, so the old key-repair helper is only
 printed for an agent whose key file is missing. If a step fails after the restore has begun, the
