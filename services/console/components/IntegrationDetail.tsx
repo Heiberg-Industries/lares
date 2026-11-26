@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { Notice, PageHeader, Row, Rows } from "@lares/ui/patterns";
 import { Badge } from "@lares/ui/primitives/badge";
-import { Button } from "@lares/ui/primitives/button";
 import { Card, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import type { BoardRowDTO, ConnectionRowDTO } from "../lib/contracts";
 import { STATUS_BADGE, STATUS_TEXT, type IntegrationCard } from "../lib/integrations-grid";
@@ -33,7 +32,7 @@ export function IntegrationDetail({ card, rows, board }: { card: IntegrationCard
   const permissions = board ? boardRowsFor(card.id, board) : [];
   return (
     <>
-      <IntegrationHeader card={card} actions={card.id === "notion" ? <Button variant="outline" asChild><Link href="/meeting-follow-ups">Meetings</Link></Button> : undefined} />
+      <IntegrationHeader card={card} />
       {rows.some((r) => r.usageUnavailable) && <Notice tone="needs-you">Usage unavailable. Recorded connection activity could not be read.</Notice>}
       {rows.map((r) => (
         <Card key={r.instanceId} role={several ? "group" : undefined} aria-label={several ? r.label : undefined}>

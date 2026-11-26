@@ -135,7 +135,7 @@ it("holds every Notion setting on the Notion page, in order: key, meetings datab
   const order = ["NOTION-CREDENTIAL", "MEETINGS-DATABASE", "PEOPLE-SYNC", "CLIPPING-CARD", "7 synced", "NOTION-PROPOSALS"].map(mark => html.indexOf(mark));
   expect(order.every(at => at >= 0)).toBe(true);
   expect(order).toEqual([...order].sort((a, b) => a - b));
-  expect(html).toContain('href="/meeting-follow-ups"');
+  expect(html).not.toContain('href="/meeting-follow-ups"');
   expect(html).not.toContain("<details");
   expect(html).not.toContain("lares-operational");
   for (const mark of ["NOTION-CREDENTIAL", "MEETINGS-DATABASE", "PEOPLE-SYNC", "NOTION-PROPOSALS"]) expect(await show("twenty")).not.toContain(mark);
