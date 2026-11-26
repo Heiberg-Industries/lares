@@ -4,7 +4,7 @@ import { resolveOutsideTools, type AcceptedOutsideTool } from '@lares/agent-kit/
 import { outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
 import { verifyPrivateConsoleSession } from '@lares/agent-kit/private-console-surface';
 import { hasConsoleTurnAuthorityTag } from '@lares/agent-kit/console-turn-authority';
-import { thisAgent } from '../../lib/definition.js';
+import { thisAgent, withSwitchesNow } from '../../lib/definition.js';
 import { doorVaultRoute } from '@lares/agent-kit/door-vault-turn';
 import { acceptedOutsideTools, acceptedOutsideToolsOnDoor, runOutsideTool, runTrustedOutsideTool, runTrustedOutsideToolOnDoor, requestOutsideApproval, respondOutsideApproval } from '../../lib/outside-tools.js';
 
@@ -20,16 +20,19 @@ export default defineDynamic(async (ctx) => {
  const onDoor=!privateSession&&doorVaultRoute(ctx)!==undefined;
  if(!privateSession&&!onDoor)return null;
  const {loaded}=await thisAgent(ctx.session.id);
+ // The conversation's own definition, with the owner's "run without asking" switches as they are now: this runs before
+ // every model call, so a switch flipped in the console reaches an open conversation at its next step.
+ const definition=await withSwitchesNow(loaded);
  const catalog=new Map<string,AcceptedOutsideTool[]>();
- for(const entry of outsideToolsInEffect(loaded.definition)){
+ for(const entry of outsideToolsInEffect(definition)){
   try{catalog.set(entry.name,await ctx.memo(['outside-tools',ctx.session.id,entry.name,...(onDoor?['door']:[])],()=>onDoor?acceptedOutsideToolsOnDoor(ctx as never,entry.name):acceptedOutsideTools(ctx as never,entry.name)));}catch{/* left out */}
  }
- if(onDoor)return resolveOutsideTools(loaded.definition,{
+ if(onDoor)return resolveOutsideTools(definition,{
   surface:'private-door-chat',
   acceptedTools:async connection=>{const tools=catalog.get(connection);if(tools===undefined)throw new Error('Outside connection unavailable');return tools;},
   executor:(connectionName,toolName)=>async (input,toolCtx)=>runTrustedOutsideToolOnDoor(connectionName,toolName,input,toolCtx as never),
  });
- return resolveOutsideTools(loaded.definition,{
+ return resolveOutsideTools(definition,{
   acceptedTools:async connection=>{const tools=catalog.get(connection);if(tools===undefined)throw new Error('Outside connection unavailable');return tools;},
   approval:(connectionName,toolName)=>({
    request:async approvalCtx=>requestOutsideApproval(connectionName,toolName,approvalCtx) as never,

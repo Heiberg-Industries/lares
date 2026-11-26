@@ -105,6 +105,21 @@ export function runsWithoutAsking(entry: Pick<OutsideToolDeclaration, "tools">, 
   return isTrustedRead(entry, bareTool, currentPin) || isDangerRun(entry, bareTool, currentPin);
 }
 
+/** A conversation's definition with the owner's "run without asking" switches (`trusted`, `danger`) as they are NOW.
+ *  A conversation keeps the definition it started on, but those switches are not part of that identity (`hashOf` leaves
+ *  them out), so without this a switch flipped mid-conversation only reached the next one: a tool just switched on stayed
+ *  behind its card, and a tool just switched off kept skipping the card and was then refused by Keeper. The caller passes
+ *  `current` only when it is the SAME definition (equal `hashOf`), so nothing else about the conversation moves. Entries are
+ *  matched by name; `trustGrantFor` and `dangerGrantFor` still hold each switch to the entry's own `allow` and `read`. */
+export function withSwitchesFrom<D extends Pick<AgentDefinition, "outsideTools">>(pinned: D, current: Pick<AgentDefinition, "outsideTools">): D {
+  if (pinned.outsideTools === undefined) return pinned;
+  return { ...pinned, outsideTools: pinned.outsideTools.map((entry) => {
+    const { trusted: _trusted, danger: _danger, ...tools } = entry.tools;
+    const now = current.outsideTools?.find((e) => e.name === entry.name)?.tools;
+    return { ...entry, tools: { ...tools, ...(now?.trusted ? { trusted: now.trusted } : {}), ...(now?.danger ? { danger: now.danger } : {}) } };
+  }) };
+}
+
 /** Where a conversation happens, for the one question "may this outside tool be offered here?".
  *  `web-chat`: the console's own verified session, where every allowed tool is offered and a card asks first.
  *  `private-door-chat`: the claimed person in a private chat on a door (Slack, Telegram, ...). A door has no
