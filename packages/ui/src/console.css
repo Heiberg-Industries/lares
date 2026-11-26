@@ -1,8 +1,12 @@
-/* Shared patterns and shadcn appearance. Utilities own layout, these tokens own control geometry. */
+/* Shared patterns and shadcn appearance for the console. Utilities own layout; the values in
+   console-theme.css own colour, type and control geometry. Nothing here states a value of its own. */
+@import "./console-theme.css";
+
 .lares-button,
 [data-slot="input"],
 [data-slot="select-trigger"] {
   box-sizing: border-box;
+  height: var(--lares-control-height);
   min-height: var(--lares-control-height);
   border-radius: var(--lares-control-radius);
   font: var(--text-label);
@@ -10,13 +14,32 @@
 }
 .lares-button {
   border: 1px solid transparent;
+  padding-inline: var(--space-3);
+  box-shadow: none;
   cursor: pointer;
+}
+.lares-button[data-size="sm"],
+.lares-button[data-size="xs"],
+.lares-button[data-size="icon-sm"],
+.lares-button[data-size="icon-xs"] {
+  height: var(--lares-control-height-sm);
+  min-height: var(--lares-control-height-sm);
+}
+.lares-button[data-size="icon-sm"],
+.lares-button[data-size="icon-xs"] {
+  width: var(--lares-control-height-sm);
+  padding: 0;
 }
 .lares-button:hover {
   text-decoration: none;
 }
+.lares-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  box-shadow: none;
+}
 .lares-button[data-variant="outline"] {
-  border-color: var(--border);
+  border-color: var(--input);
   background: var(--card);
 }
 .lares-button[data-variant="destructive"] {
@@ -28,26 +51,82 @@
   border: 1px solid var(--input);
   background: var(--card);
   color: var(--foreground);
-  padding: var(--space-3);
+  padding: 0 var(--space-3);
+  box-shadow: none;
   font: var(--text-body);
+  font-size: var(--lares-control-text);
+}
+[data-slot="textarea"] {
+  padding: var(--space-2) var(--space-3);
+}
+[data-slot="input"]::placeholder,
+[data-slot="textarea"]::placeholder {
+  color: var(--lares-text-faint);
+}
+/* One focus look for every field: the accent border and a soft ring. */
+[data-slot="input"]:focus-visible,
+[data-slot="select"]:focus-visible,
+[data-slot="textarea"]:focus-visible,
+.lares-field:focus-visible {
+  outline: none;
+  border-color: var(--lares-accent);
+  box-shadow: var(--lares-focus-ring);
 }
 [data-slot="dialog-content"] {
   max-width: min(var(--lares-dialog-width), calc(100vw - var(--space-8)));
   max-height: calc(100dvh - var(--space-8));
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: var(--lares-surface-radius);
-  box-shadow: var(--shadow-dialog);
+  border-radius: var(--lares-dialog-radius);
+  background: var(--card);
+  box-shadow: var(--lares-shadow-overlay);
 }
-[data-slot="dialog-overlay"] {
+[data-slot="dialog-overlay"],
+[data-slot="sheet-overlay"] {
   background: var(--lares-overlay);
 }
-.lares-page {
+
+/* The page grid. Page lays its children on twelve columns (four on a phone) with one gutter.
+   A child spans every column unless it carries a lares-col-* class. Pages set no widths of their own. */
+.lares-page,
+.lares-page.lares-stack {
+  display: grid;
+  grid-template-columns: repeat(var(--lares-grid-columns), minmax(0, 1fr));
+  column-gap: var(--lares-gutter);
+  align-content: start;
+  width: 100%;
   max-width: var(--lares-page-width);
   margin-inline: auto;
 }
+.lares-page {
+  row-gap: var(--lares-gutter);
+}
+.lares-page.lares-stack {
+  row-gap: var(--space-4);
+}
+/* The grid's gap is the space between blocks, so a block directly on the page adds none of its own. */
+.lares-page > .lares-page-header,
+.lares-page > .lares-notice {
+  margin-block: 0;
+}
 .lares-page[data-width="narrow"] {
   max-width: var(--lares-page-width-narrow);
+}
+.lares-page > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+.lares-page > .lares-col-12 { grid-column: span 12; }
+.lares-page > .lares-col-8 { grid-column: span 8; }
+.lares-page > .lares-col-6 { grid-column: span 6; }
+.lares-page > .lares-col-4 { grid-column: span 4; }
+.lares-page > .lares-col-3 { grid-column: span 3; }
+@media (max-width: 760px) {
+  .lares-page > .lares-col-12,
+  .lares-page > .lares-col-8,
+  .lares-page > .lares-col-6,
+  .lares-page > .lares-col-4 { grid-column: span 4; }
+  .lares-page > .lares-col-3 { grid-column: span 2; }
 }
 .lares-page-header {
   display: flex;
@@ -58,8 +137,8 @@
 }
 .lares-page-header h1 {
   margin: 0;
-  font: var(--text-h1);
-  letter-spacing: var(--tracking-heading);
+  font: var(--lares-type-title);
+  letter-spacing: var(--lares-tracking-title);
 }
 .lares-page-header p {
   margin: var(--space-2) 0 0;
@@ -76,7 +155,7 @@
 .lares-empty {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: var(--lares-surface-radius);
+  border-radius: var(--lares-card-radius);
   padding: var(--space-6);
   min-width: 0;
 }
@@ -87,8 +166,7 @@
   margin-bottom: var(--space-2);
 }
 .lares-small {
-  font-size: 13px;
-  line-height: 1.5;
+  font: var(--lares-type-secondary);
 }
 .lares-note {
   margin: var(--space-1) 0 0;
@@ -129,40 +207,69 @@
 .lares-empty p {
   margin: 0 0 var(--space-5);
 }
-.lares-notice {
-  --notice-color: var(--muted-foreground);
+/* Messages. One look per meaning: a line, card corners and a round icon in the status colour.
+   Warning is amber with "!", error is red with "×", info is blue. The alert part and Notice share it. */
+.lares-notice,
+[data-slot="alert"] {
+  --notice-color: var(--lares-info-text);
+  --notice-bg: var(--lares-info-bg);
+  --notice-line: var(--lares-line);
   display: flex;
+  align-items: flex-start;
   gap: var(--space-3);
-  padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--notice-color);
-  border-radius: var(--lares-control-radius);
-  background: var(--muted);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--notice-line);
+  border-radius: var(--lares-card-radius);
+  background: var(--notice-bg);
+  color: var(--lares-text);
+  font: var(--lares-type-body);
   margin-block: var(--space-4);
 }
 .lares-notice[data-tone="working"] {
-  --notice-color: var(--foreground);
+  --notice-color: var(--lares-text-muted);
+  --notice-bg: var(--lares-sunken);
 }
-.lares-notice[data-tone="success"] {
-  --notice-color: var(--lares-status-success);
+.lares-notice[data-tone="success"],
+[data-slot="alert"][data-variant="success"] {
+  --notice-color: var(--lares-success-text);
+  --notice-bg: var(--lares-success-bg);
 }
-.lares-notice[data-tone="needs-you"] {
-  --notice-color: var(--accent);
+.lares-notice[data-tone="needs-you"],
+[data-slot="alert"][data-variant="warning"] {
+  --notice-color: var(--lares-warning-text);
+  --notice-bg: var(--lares-warning-bg);
+  --notice-line: var(--lares-warning-line);
 }
-.lares-notice[data-tone="error"] {
-  --notice-color: var(--destructive);
-  border-color: var(--destructive);
+.lares-notice[data-tone="error"],
+[data-slot="alert"][data-variant="destructive"] {
+  --notice-color: var(--lares-error-text);
+  --notice-bg: var(--lares-error-bg);
+  --notice-line: var(--lares-error-line);
 }
 .lares-notice-icon {
   display: inline-flex;
   flex: none;
-  color: var(--notice-color);
+  align-items: center;
+  justify-content: center;
+  width: var(--lares-notice-icon);
+  height: var(--lares-notice-icon);
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--notice-color);
+  color: var(--notice-bg);
+  font: 700 12px/1 var(--font-sans);
 }
 .lares-notice-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 12px;
+  height: 12px;
+}
+.lares-notice[data-tone="working"] .lares-notice-icon {
+  background: transparent;
+  color: var(--notice-color);
 }
 .lares-notice[data-tone="working"] .lares-notice-icon svg {
+  width: var(--lares-notice-icon);
+  height: var(--lares-notice-icon);
   animation: lares-spin 1.2s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -174,6 +281,65 @@
   to {
     transform: rotate(360deg);
   }
+}
+[data-slot="alert-title"] {
+  font: var(--lares-type-section);
+}
+[data-slot="alert-description"] {
+  color: var(--lares-text-muted);
+}
+/* The older hand-made message classes take the same two looks until their pages move to Notice.
+   As a paragraph or a block they are the full message; inside a line or a table cell they are
+   only the status colour, so a sentence or a table is not broken up. */
+.lares-form-error,
+.lares-operational-error,
+.lares-status-error {
+  color: var(--lares-error-text);
+}
+.lares-form-success {
+  color: var(--lares-success-text);
+}
+p.lares-form-error,
+p.lares-operational-error,
+div.lares-operational-error,
+p.lares-status-error:not(.lares-small),
+p.lares-form-success {
+  --notice-color: var(--lares-error-text);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--lares-error-line);
+  border-radius: var(--lares-card-radius);
+  background: var(--lares-error-bg);
+  color: var(--lares-text);
+  font: var(--lares-type-body);
+}
+p.lares-form-success {
+  --notice-color: var(--lares-success-text);
+  border-color: var(--lares-line);
+  background: var(--lares-success-bg);
+}
+p.lares-form-error::before,
+p.lares-operational-error::before,
+div.lares-operational-error::before,
+p.lares-status-error:not(.lares-small)::before,
+p.lares-form-success::before {
+  content: "×";
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--lares-notice-icon);
+  height: var(--lares-notice-icon);
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--notice-color);
+  color: var(--lares-surface);
+  font: 700 12px/1 var(--font-sans);
+}
+p.lares-form-success::before {
+  content: "✓";
 }
 .lares-notice-body {
   min-width: 0;
@@ -196,6 +362,8 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-4);
+  min-height: var(--lares-row-height);
+  box-sizing: border-box;
   padding-block: var(--space-3);
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
@@ -237,25 +405,64 @@
   align-items: center;
   padding-top: var(--space-1);
 }
-.lares-kind-badge {
-  display: inline-block;
-  padding: 1px var(--space-2);
-  border: 1px solid var(--border);
+/* Badges: a pill with a dot, in the status text colour on its status background. */
+.lares-kind-badge,
+.lares-status,
+[data-slot="badge"] {
+  --badge-color: var(--lares-text-muted);
+  --badge-bg: var(--lares-sunken);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--space-2);
+  border: 0;
   border-radius: 999px;
-  font: var(--text-body-sm);
-  color: var(--muted-foreground);
+  background: var(--badge-bg);
+  color: var(--badge-color);
+  font: var(--lares-type-badge);
+  white-space: nowrap;
 }
-.lares-kind-badge[data-kind="change"] {
-  border-color: var(--accent);
-  color: var(--accent);
+.lares-kind-badge::before,
+.lares-status > span:first-child,
+[data-slot="badge-dot"] {
+  content: "";
+  flex: none;
+  width: var(--lares-badge-dot);
+  height: var(--lares-badge-dot);
+  border-radius: 50%;
+  background: currentColor;
+}
+.lares-kind-badge[data-kind="change"],
+.lares-status[data-tone="attention"],
+[data-slot="badge"][data-variant="warning"] {
+  --badge-color: var(--lares-warning-text);
+  --badge-bg: var(--lares-warning-bg);
+}
+.lares-status[data-tone="success"],
+[data-slot="badge"][data-variant="success"] {
+  --badge-color: var(--lares-success-text);
+  --badge-bg: var(--lares-success-bg);
+}
+.lares-status[data-tone="error"],
+[data-slot="badge"][data-variant="error"] {
+  --badge-color: var(--lares-error-text);
+  --badge-bg: var(--lares-error-bg);
+}
+[data-slot="badge"][data-variant="info"] {
+  --badge-color: var(--lares-info-text);
+  --badge-bg: var(--lares-info-bg);
+}
+[data-slot="badge"][data-variant="accent"] {
+  --badge-color: var(--lares-accent);
+  --badge-bg: var(--lares-accent-soft);
 }
 .lares-switch {
   display: inline-flex;
   flex: none;
   align-items: center;
   box-sizing: border-box;
-  width: 36px;
-  height: 20px;
+  width: var(--lares-switch-width);
+  height: var(--lares-switch-height);
   padding: 2px;
   border: 0;
   border-radius: 999px;
@@ -264,7 +471,7 @@
   transition: background-color 120ms;
 }
 .lares-switch[data-state="checked"] {
-  background: var(--primary);
+  background: var(--lares-accent);
 }
 .lares-switch:focus-visible {
   outline: 2px solid var(--ring);
@@ -279,11 +486,17 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--background);
+  background: var(--lares-surface);
   transition: transform 120ms;
 }
 .lares-switch[data-state="checked"] .lares-switch-thumb {
-  transform: translateX(16px);
+  transform: translateX(calc(var(--lares-switch-width) - var(--lares-switch-height)));
+}
+.dark .lares-switch-thumb {
+  background: var(--lares-text);
+}
+.dark .lares-switch[data-state="checked"] .lares-switch-thumb {
+  background: var(--lares-on-accent);
 }
 .lares-avatar {
   display: inline-flex;
@@ -297,29 +510,6 @@
 .lares-avatar svg {
   width: 100%;
   height: 100%;
-}
-.lares-status {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font: var(--text-body-sm);
-  color: var(--muted-foreground);
-}
-.lares-status > span {
-  width: var(--space-2);
-  height: var(--space-2);
-  border-radius: 50%;
-  background: currentColor;
-  flex: none;
-}
-.lares-status[data-tone="attention"] {
-  color: var(--accent);
-}
-.lares-status[data-tone="success"] {
-  color: var(--lares-status-success);
-}
-.lares-status[data-tone="error"] {
-  color: var(--destructive);
 }
 .lares-stack {
   display: grid;
@@ -341,8 +531,9 @@
   border-radius: var(--lares-control-radius);
   background: var(--card);
   color: var(--foreground);
-  padding: var(--space-2) var(--space-3);
-  font: var(--text-body-sm);
+  padding: 0 var(--space-3);
+  font: var(--text-body);
+  font-size: var(--lares-control-text);
 }
 .lares-field-label {
   display: grid;
@@ -361,12 +552,18 @@
   min-width: 0;
   border-radius: var(--lares-control-radius);
   font: var(--text-body);
+  font-size: var(--lares-control-text);
 }
 [data-slot="select"] {
+  height: var(--lares-control-height);
   min-height: var(--lares-control-height);
   border: 1px solid var(--input);
   background-color: var(--card);
   color: var(--foreground);
+  padding: 0 var(--space-3);
+}
+[data-slot="select"][multiple] {
+  height: auto;
   padding: var(--space-2) var(--space-3);
 }
 /* The browser's own dropdown, so keyboard, phone pickers and form posts stay as they are. */
@@ -391,17 +588,13 @@
   opacity: .5;
   cursor: not-allowed;
 }
-[data-slot="select"]:focus-visible,
-[data-slot="textarea"]:focus-visible {
-  border-color: var(--ring);
-}
 [data-slot="checkbox"],
 [data-slot="radio"] {
   flex: none;
   width: var(--space-4);
   height: var(--space-4);
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--lares-accent);
 }
 .lares-field-label > [data-slot="input"],
 .lares-field-label > [data-slot="select"] {
@@ -439,9 +632,6 @@
   opacity: .5;
   cursor: not-allowed;
 }
-.lares-field:focus-visible {
-  border-color: var(--ring);
-}
 .lares-inline-form {
   display: flex;
   flex-wrap: wrap;
@@ -474,6 +664,8 @@
   list-style: none;
 }
 .lares-data-list > li {
+  min-height: var(--lares-row-height);
+  box-sizing: border-box;
   padding-block: var(--space-3);
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
@@ -514,10 +706,11 @@
   cursor: pointer;
 }
 .lares-button[data-variant="outline"]:hover:not(:disabled) {
-  background: var(--muted);
+  background: var(--lares-hover);
 }
+.lares-button[data-variant="secondary"] { background: var(--lares-selected); }
 .lares-button[data-variant="ghost"], .lares-button[data-variant="link"] { background: transparent; }
-.lares-button[data-variant="ghost"]:hover:not(:disabled) { background: var(--muted); }
+.lares-button[data-variant="ghost"]:hover:not(:disabled) { background: var(--lares-hover); }
 .lares-button[data-size="icon"] { width: var(--lares-control-height); padding: 0; }
 
 /* Menus (dropdown), service rows and cards: the connections pages. */
@@ -529,7 +722,7 @@
   color: var(--popover-foreground);
   border: 1px solid var(--border);
   border-radius: var(--lares-control-radius);
-  box-shadow: 0 8px 24px oklch(0.2 0.03 185 / 0.12);
+  box-shadow: var(--lares-shadow-overlay);
 }
 .lares-menu-label {
   padding: var(--space-2) var(--space-3);
@@ -547,13 +740,14 @@
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
-  border-radius: calc(var(--lares-control-radius) - 4px);
-  font: var(--text-body-sm);
+  min-height: var(--lares-menu-item-height);
+  border-radius: calc(var(--lares-control-radius) - 2px);
+  font: var(--lares-type-body);
   cursor: pointer;
   outline: none;
 }
 .lares-menu-item[data-highlighted] {
-  background: var(--secondary);
+  background: var(--lares-hover);
 }
 .lares-service-list {
   border: 1px solid var(--border);
@@ -561,10 +755,6 @@
   background: var(--card);
 }
 .lares-service-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-4);
   border-top: 1px solid var(--border);
 }
 .lares-service-row:first-child {
@@ -590,7 +780,7 @@
   width: 40px;
   height: 40px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--lares-card-radius);
   background: var(--secondary);
   color: var(--foreground);
   font-weight: 600;
@@ -639,4 +829,339 @@
 }
 .lares-card-status[data-enabled="true"] {
   color: var(--lares-status-success);
+}
+
+/* Rows: plain lines inside a card, one line between them. */
+.lares-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lares-row,
+.lares-service-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  min-height: var(--lares-row-height);
+  box-sizing: border-box;
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--lares-line);
+}
+.lares-row:first-child {
+  border-top: 0;
+}
+.lares-row-main {
+  display: grid;
+  gap: 2px;
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.lares-row-title {
+  font: var(--lares-type-label);
+}
+.lares-row-description {
+  margin: 0;
+  color: var(--lares-text-muted);
+  font: var(--lares-type-secondary);
+}
+.lares-row-control {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Card: a flat surface with a line and card corners. */
+[data-slot="card"] {
+  min-width: 0;
+  border: 1px solid var(--lares-line);
+  border-radius: var(--lares-card-radius);
+  background: var(--lares-surface);
+  color: var(--lares-text);
+}
+[data-slot="card-header"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 2px var(--space-4);
+  padding: var(--space-4);
+}
+[data-slot="card-header"] + [data-slot="card-content"],
+[data-slot="card-header"] + .lares-rows,
+[data-slot="card-content"] + [data-slot="card-footer"],
+.lares-rows + [data-slot="card-footer"] {
+  border-top: 1px solid var(--lares-line);
+}
+[data-slot="card-title"] {
+  grid-column: 1;
+  font: var(--lares-type-section);
+}
+[data-slot="card-description"] {
+  grid-column: 1;
+  color: var(--lares-text-muted);
+  font: var(--lares-type-secondary);
+}
+[data-slot="card-action"] {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+[data-slot="card-content"] {
+  padding: var(--space-4);
+}
+[data-slot="card-footer"] {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+}
+
+/* Tooltip: floats, so it takes the overlay shadow. */
+.lares-tooltip {
+  z-index: 70;
+  max-width: 18rem;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--lares-control-radius);
+  background: var(--lares-text);
+  color: var(--lares-bg);
+  font: var(--lares-type-secondary);
+  box-shadow: var(--lares-shadow-overlay);
+}
+.lares-tooltip-arrow {
+  fill: var(--lares-text);
+}
+
+/* Sheet: a panel from an edge, over a dimmed page. */
+.lares-sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  animation: lares-fade-in 160ms var(--lares-ease);
+}
+.lares-sheet {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: var(--lares-surface);
+  color: var(--lares-text);
+  box-shadow: var(--lares-shadow-overlay);
+  outline: none;
+  overflow-y: auto;
+}
+.lares-sheet[data-side="left"],
+.lares-sheet[data-side="right"] {
+  top: 0;
+  bottom: 0;
+  width: min(20rem, calc(100vw - var(--space-12)));
+}
+.lares-sheet[data-side="left"] {
+  left: 0;
+  border-right: 1px solid var(--lares-line);
+  animation: lares-sheet-left 200ms var(--lares-ease);
+}
+.lares-sheet[data-side="right"] {
+  right: 0;
+  border-left: 1px solid var(--lares-line);
+  animation: lares-sheet-right 200ms var(--lares-ease);
+}
+.lares-sheet[data-side="top"],
+.lares-sheet[data-side="bottom"] {
+  left: 0;
+  right: 0;
+  max-height: calc(100dvh - var(--space-12));
+}
+.lares-sheet[data-side="top"] {
+  top: 0;
+  border-bottom: 1px solid var(--lares-line);
+}
+.lares-sheet[data-side="bottom"] {
+  bottom: 0;
+  border-top: 1px solid var(--lares-line);
+}
+.lares-sheet-close {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--lares-control-height);
+  height: var(--lares-control-height);
+  border: 0;
+  border-radius: var(--lares-control-radius);
+  background: transparent;
+  color: var(--lares-text-muted);
+  cursor: pointer;
+}
+.lares-sheet-close:hover {
+  background: var(--lares-hover);
+  color: var(--lares-text);
+}
+.lares-sheet-close svg {
+  width: 16px;
+  height: 16px;
+}
+.lares-sheet-header,
+.lares-sheet-footer {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+}
+.lares-sheet-footer {
+  margin-top: auto;
+}
+.lares-sheet-title {
+  margin: 0;
+  font: var(--lares-type-section);
+}
+.lares-sheet-description {
+  margin: 0;
+  color: var(--lares-text-muted);
+  font: var(--lares-type-secondary);
+}
+@keyframes lares-fade-in { from { opacity: 0; } }
+@keyframes lares-sheet-left { from { transform: translateX(-100%); } }
+@keyframes lares-sheet-right { from { transform: translateX(100%); } }
+
+/* Sidebar: the menu column, and the same contents inside the phone sheet. */
+.lares-sidebar {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: var(--lares-sidebar-bg);
+  color: var(--lares-text);
+  font: var(--lares-type-body);
+}
+aside.lares-sidebar {
+  position: sticky;
+  top: 0;
+  flex: none;
+  width: var(--lares-sidebar-width);
+  height: 100dvh;
+  border-right: 1px solid var(--lares-line);
+}
+.lares-sidebar-header {
+  display: flex;
+  align-items: center;
+  min-height: var(--space-12);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+.lares-sidebar-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-4);
+}
+.lares-sidebar-footer {
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--lares-line);
+}
+.lares-sidebar-separator {
+  height: 1px;
+  margin: 0;
+  border: 0;
+  background: var(--lares-line);
+}
+.lares-sidebar-group {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.lares-sidebar-group-label {
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-1);
+  color: var(--lares-text-faint);
+  font: var(--lares-type-menu-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lares-sidebar-menu {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lares-sidebar-menu-item {
+  position: relative;
+  min-width: 0;
+}
+.lares-sidebar-menu-button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--lares-menu-item-height);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--lares-control-radius);
+  background: transparent;
+  color: var(--lares-text);
+  font: var(--lares-type-body);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.lares-sidebar-menu-button svg {
+  flex: none;
+  width: var(--lares-menu-icon);
+  height: var(--lares-menu-icon);
+  color: var(--lares-text-muted);
+}
+.lares-sidebar-menu-button:hover {
+  background: var(--lares-hover);
+  text-decoration: none;
+}
+.lares-sidebar-menu-button:focus-visible {
+  outline: 2px solid var(--lares-accent);
+  outline-offset: -2px;
+}
+.lares-sidebar-menu-button[data-active] {
+  background: var(--lares-selected);
+  font-weight: 500;
+}
+.lares-sidebar-menu-button[data-active] svg {
+  color: var(--lares-text);
+}
+.lares-sidebar-menu-button[data-disabled] {
+  color: var(--lares-text-faint);
+  cursor: default;
+}
+.lares-sidebar-menu-button[data-disabled]:hover {
+  background: transparent;
+}
+.lares-sidebar-menu-button[data-disabled] svg {
+  color: var(--lares-text-faint);
+}
+.lares-sidebar-menu-badge {
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--lares-line);
+  border-radius: 999px;
+  color: var(--lares-text-faint);
+  font: var(--lares-type-menu-label);
+}
+.lares-sidebar-inset {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 760px) {
+  aside.lares-sidebar {
+    display: none;
+  }
+  .lares-sidebar-menu-button {
+    min-height: var(--lares-control-height);
+  }
 }

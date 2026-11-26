@@ -25,7 +25,7 @@ export async function saveCard(input: { id: string; core: string; notesEn: strin
     `UPDATE voice_profile SET core = $1, notes_en = $2, notes_no = $3, updated_by = $4, updated_at = now() WHERE id = $5`,
     [input.core, input.notesEn, input.notesNo, email, await requireCardId(input.id)],
   );
-  revalidatePath("/voice");
+  revalidatePath("/writing-style");
 }
 
 export async function saveSettings(input: { lookbackDays: number; cap: number }): Promise<void> {
@@ -38,7 +38,7 @@ export async function saveSettings(input: { lookbackDays: number; cap: number })
             updated_by = $3, updated_at = now() WHERE id = 'default'`,
     [input.lookbackDays, input.cap, email],
   );
-  revalidatePath("/voice");
+  revalidatePath("/writing-style");
 }
 
 export async function acceptProposed(input: { id: string }): Promise<void> {
@@ -49,23 +49,23 @@ export async function acceptProposed(input: { id: string }): Promise<void> {
      WHERE id = $2 AND proposed IS NOT NULL`,
     [email, await requireCardId(input.id)],
   );
-  revalidatePath("/voice");
+  revalidatePath("/writing-style");
 }
 
 export async function dismissProposed(input: { id: string }): Promise<void> {
   await requireUser();
   await pool.query(`UPDATE voice_profile SET proposed = NULL WHERE id = $1`, [await requireCardId(input.id)]);
-  revalidatePath("/voice");
+  revalidatePath("/writing-style");
 }
 
 export async function setExampleIncluded(input: { id: string; included: boolean }): Promise<void> {
   await requireUser();
   await pool.query(`UPDATE voice_exemplar SET included = $2 WHERE id = $1`, [input.id, input.included]);
-  revalidatePath("/voice");
+  revalidatePath("/writing-style");
 }
 
 export async function requestRelearn(): Promise<void> {
   await requireUser();
   await pool.query(`UPDATE voice_profile SET relearn_requested_at = now() WHERE id = 'default'`);
-  revalidatePath("/voice");
+  revalidatePath("/writing-style");
 }

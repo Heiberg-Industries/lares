@@ -14,29 +14,6 @@
       "routes": ["GET /api/agents/[name]/avatar"]
     },
     {
-      "id": "/accounts",
-      "kind": "page",
-      "file": "app/accounts/page.tsx",
-      "see": "member",
-      "act": "member",
-      "guards": ["isConsoleOwner", "requireMember"],
-      "source": "derived",
-      "ownerExtras": true,
-      "actions": ["accounts.removeAccount"],
-      "routes": ["POST /api/accounts/google/start", "POST /api/accounts/microsoft/start"]
-    },
-    {
-      "id": "/activity",
-      "kind": "page",
-      "file": "app/activity/page.tsx",
-      "see": "owner",
-      "act": "none",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": [],
-      "routes": []
-    },
-    {
       "id": "/agents",
       "kind": "page",
       "file": "app/agents/page.tsx",
@@ -131,9 +108,42 @@
       "routes": ["GET /api/agents/[name]/avatar"]
     },
     {
-      "id": "/backup",
+      "id": "/alert-routing",
       "kind": "page",
-      "file": "app/backup/page.tsx",
+      "file": "app/alert-routing/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": ["signals.saveConsumers", "signals.saveRules"],
+      "routes": []
+    },
+    {
+      "id": "/alert-routing/catalogue",
+      "kind": "page",
+      "file": "app/alert-routing/catalogue/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": ["signals.saveCatalogue"],
+      "routes": []
+    },
+    {
+      "id": "/alerts",
+      "kind": "page",
+      "file": "app/alerts/page.tsx",
+      "see": "owner",
+      "act": "none",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": [],
+      "routes": []
+    },
+    {
+      "id": "/backups",
+      "kind": "page",
+      "file": "app/backups/page.tsx",
       "see": "owner",
       "act": "none",
       "guards": ["requireConsolePage"],
@@ -188,6 +198,24 @@
       "routes": []
     },
     {
+      "id": "/general",
+      "kind": "page",
+      "file": "app/general/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": [
+        "definition.acceptNotionSyncPreview",
+        "definition.runNotionSyncPreview",
+        "definition.setAgentLimit",
+        "definition.setAgentSetting",
+        "definition.setMeetingsSource",
+        "definition.setNotionSync"
+      ],
+      "routes": []
+    },
+    {
       "id": "/integrations",
       "kind": "page",
       "file": "app/integrations/page.tsx",
@@ -217,54 +245,6 @@
       ]
     },
     {
-      "id": "/integrations/outside",
-      "kind": "page",
-      "file": "app/integrations/outside/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
-      "source": "derived",
-      "actions": ["outside-connectors.listConnectors"],
-      "routes": []
-    },
-    {
-      "id": "/integrations/outside/[id]",
-      "kind": "page",
-      "file": "app/integrations/outside/[id]/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
-      "source": "derived",
-      "actions": [
-        "outside-connect.connectActivateCredential",
-        "outside-connect.connectApplyAgent",
-        "outside-connect.connectDeclare",
-        "outside-connect.connectLookUpTools",
-        "outside-connect.connectReviewAndStage",
-        "outside-connect.connectSetDanger",
-        "outside-connect.connectSetTools",
-        "outside-connect.connectSwitchOnTrust",
-        "outside-connectors.checkConnector",
-        "outside-connectors.listConnectors",
-        "outside-connectors.removeConnector",
-        "outside-connectors.removeFromAgent",
-        "outside-connectors.renameConnector",
-        "outside-connectors.switchConnectorToToken"
-      ],
-      "routes": []
-    },
-    {
-      "id": "/integrations/outside/new",
-      "kind": "page",
-      "file": "app/integrations/outside/new/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": ["outside-connectors.addConnector"],
-      "routes": []
-    },
-    {
       "id": "/invite",
       "kind": "page",
       "file": "app/invite/page.tsx",
@@ -277,9 +257,9 @@
       "reason": "Explains a bearer invitation to a person who has no account yet; it reads no data."
     },
     {
-      "id": "/meetings",
+      "id": "/meeting-follow-ups",
       "kind": "page",
-      "file": "app/meetings/page.tsx",
+      "file": "app/meeting-follow-ups/page.tsx",
       "see": "owner",
       "act": "owner",
       "guards": ["requireConsolePage"],
@@ -305,9 +285,158 @@
       "routes": []
     },
     {
-      "id": "/membership",
+      "id": "/outside-tools",
       "kind": "page",
-      "file": "app/membership/page.tsx",
+      "file": "app/outside-tools/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
+      "source": "derived",
+      "actions": ["outside-connectors.listConnectors"],
+      "routes": []
+    },
+    {
+      "id": "/outside-tools/[id]",
+      "kind": "page",
+      "file": "app/outside-tools/[id]/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
+      "source": "derived",
+      "actions": [
+        "outside-connect.connectActivateCredential",
+        "outside-connect.connectApplyAgent",
+        "outside-connect.connectDeclare",
+        "outside-connect.connectLookUpTools",
+        "outside-connect.connectReviewAndStage",
+        "outside-connect.connectSetDanger",
+        "outside-connect.connectSetTools",
+        "outside-connect.connectSwitchOnTrust",
+        "outside-connectors.checkConnector",
+        "outside-connectors.listConnectors",
+        "outside-connectors.removeConnector",
+        "outside-connectors.removeFromAgent",
+        "outside-connectors.renameConnector",
+        "outside-connectors.switchConnectorToToken"
+      ],
+      "routes": []
+    },
+    {
+      "id": "/outside-tools/new",
+      "kind": "page",
+      "file": "app/outside-tools/new/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": ["outside-connectors.addConnector"],
+      "routes": []
+    },
+    {
+      "id": "/permission-checks",
+      "kind": "page",
+      "file": "app/permission-checks/page.tsx",
+      "see": "owner",
+      "act": "none",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": [],
+      "routes": []
+    },
+    {
+      "id": "/quiet-hours-and-delivery",
+      "kind": "page",
+      "file": "app/quiet-hours-and-delivery/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": [
+        "proactivity.saveBriefLanguage",
+        "proactivity.saveCeilings",
+        "proactivity.saveDnd",
+        "proactivity.saveQuietHours",
+        "proactivity.saveScheduleHours"
+      ],
+      "routes": []
+    },
+    {
+      "id": "/reviews",
+      "kind": "page",
+      "file": "app/reviews/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage", "verify"],
+      "source": "derived",
+      "actions": ["waiting.decide"],
+      "routes": []
+    },
+    {
+      "id": "/saved-preferences",
+      "kind": "page",
+      "file": "app/saved-preferences/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": [
+        "taste.commitPaste",
+        "taste.commitTakeout",
+        "taste.deriveMissingPlaceNames",
+        "taste.previewTakeout",
+        "taste.removeEntry",
+        "taste.repairContradictedPins",
+        "taste.setListCountry"
+      ],
+      "routes": []
+    },
+    {
+      "id": "/sign-in",
+      "kind": "page",
+      "file": "app/sign-in/page.tsx",
+      "see": "public",
+      "act": "none",
+      "guards": ["isConsoleOwner"],
+      "source": "override",
+      "ownerExtras": true,
+      "actions": [],
+      "routes": [],
+      "reason": "The sign-in page; it only sends someone who is already signed in to the right place."
+    },
+    {
+      "id": "/writing-style",
+      "kind": "page",
+      "file": "app/writing-style/page.tsx",
+      "see": "owner",
+      "act": "owner",
+      "guards": ["requireConsolePage"],
+      "source": "derived",
+      "actions": [
+        "voice.acceptProposed",
+        "voice.dismissProposed",
+        "voice.requestRelearn",
+        "voice.saveCard",
+        "voice.saveSettings",
+        "voice.setExampleIncluded"
+      ],
+      "routes": []
+    },
+    {
+      "id": "/your-accounts",
+      "kind": "page",
+      "file": "app/your-accounts/page.tsx",
+      "see": "member",
+      "act": "member",
+      "guards": ["isConsoleOwner", "requireMember"],
+      "source": "derived",
+      "ownerExtras": true,
+      "actions": ["accounts.removeAccount"],
+      "routes": ["POST /api/accounts/google/start", "POST /api/accounts/microsoft/start"]
+    },
+    {
+      "id": "/your-membership",
+      "kind": "page",
+      "file": "app/your-membership/page.tsx",
       "see": "member",
       "act": "member",
       "guards": ["isConsoleOwner", "requireMember"],
@@ -332,135 +461,6 @@
         "private-metadata.privateMetadataDeviceStatus",
         "private-metadata.revokePrivateMetadataDevice"
       ],
-      "routes": []
-    },
-    {
-      "id": "/proactivity",
-      "kind": "page",
-      "file": "app/proactivity/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": [
-        "proactivity.saveBriefLanguage",
-        "proactivity.saveCeilings",
-        "proactivity.saveDnd",
-        "proactivity.saveQuietHours",
-        "proactivity.saveScheduleHours"
-      ],
-      "routes": []
-    },
-    {
-      "id": "/settings",
-      "kind": "page",
-      "file": "app/settings/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": [
-        "definition.acceptNotionSyncPreview",
-        "definition.runNotionSyncPreview",
-        "definition.setAgentLimit",
-        "definition.setAgentSetting",
-        "definition.setMeetingsSource",
-        "definition.setNotionSync"
-      ],
-      "routes": []
-    },
-    {
-      "id": "/sign-in",
-      "kind": "page",
-      "file": "app/sign-in/page.tsx",
-      "see": "public",
-      "act": "none",
-      "guards": ["isConsoleOwner"],
-      "source": "override",
-      "ownerExtras": true,
-      "actions": [],
-      "routes": [],
-      "reason": "The sign-in page; it only sends someone who is already signed in to the right place."
-    },
-    {
-      "id": "/signals",
-      "kind": "page",
-      "file": "app/signals/page.tsx",
-      "see": "owner",
-      "act": "none",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": [],
-      "routes": []
-    },
-    {
-      "id": "/signals/catalogue",
-      "kind": "page",
-      "file": "app/signals/catalogue/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": ["signals.saveCatalogue"],
-      "routes": []
-    },
-    {
-      "id": "/signals/rules",
-      "kind": "page",
-      "file": "app/signals/rules/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": ["signals.saveConsumers", "signals.saveRules"],
-      "routes": []
-    },
-    {
-      "id": "/taste",
-      "kind": "page",
-      "file": "app/taste/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": [
-        "taste.commitPaste",
-        "taste.commitTakeout",
-        "taste.deriveMissingPlaceNames",
-        "taste.previewTakeout",
-        "taste.removeEntry",
-        "taste.repairContradictedPins",
-        "taste.setListCountry"
-      ],
-      "routes": []
-    },
-    {
-      "id": "/voice",
-      "kind": "page",
-      "file": "app/voice/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
-      "source": "derived",
-      "actions": [
-        "voice.acceptProposed",
-        "voice.dismissProposed",
-        "voice.requestRelearn",
-        "voice.saveCard",
-        "voice.saveSettings",
-        "voice.setExampleIncluded"
-      ],
-      "routes": []
-    },
-    {
-      "id": "/waiting",
-      "kind": "page",
-      "file": "app/waiting/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage", "verify"],
-      "source": "derived",
-      "actions": ["waiting.decide"],
       "routes": []
     },
     {
@@ -496,7 +496,7 @@
       "guards": ["isConsoleOwner", "sessionMember"],
       "source": "derived",
       "ownerExtras": true,
-      "usedBy": ["/accounts"],
+      "usedBy": ["/your-accounts"],
       "see": "member"
     },
     {
@@ -626,7 +626,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/settings"],
+      "usedBy": ["/general"],
       "see": "owner"
     },
     {
@@ -746,7 +746,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/settings"],
+      "usedBy": ["/general"],
       "see": "owner"
     },
     {
@@ -766,7 +766,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/settings"],
+      "usedBy": ["/general"],
       "see": "owner"
     },
     {
@@ -776,7 +776,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/settings"],
+      "usedBy": ["/general"],
       "see": "owner"
     },
     {
@@ -796,7 +796,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/settings"],
+      "usedBy": ["/general"],
       "see": "owner"
     },
     {
@@ -806,7 +806,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/settings"],
+      "usedBy": ["/general"],
       "see": "owner"
     },
     {
@@ -876,7 +876,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/meetings"],
+      "usedBy": ["/meeting-follow-ups"],
       "see": "owner"
     },
     {
@@ -926,7 +926,7 @@
       "act": "member",
       "guards": ["requireMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -946,7 +946,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -956,7 +956,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -966,7 +966,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -986,7 +986,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1006,7 +1006,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1016,7 +1016,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1026,7 +1026,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1036,7 +1036,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1046,7 +1046,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/new"],
+      "usedBy": ["/outside-tools/new"],
       "see": "owner"
     },
     {
@@ -1056,7 +1056,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1066,7 +1066,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside", "/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools", "/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1076,7 +1076,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1086,7 +1086,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1096,7 +1096,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1106,7 +1106,7 @@
       "act": "owner",
       "guards": ["requireConsoleMember", "sessionMember"],
       "source": "derived",
-      "usedBy": ["/integrations/outside/[id]"],
+      "usedBy": ["/outside-tools/[id]"],
       "see": "owner"
     },
     {
@@ -1116,7 +1116,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1126,7 +1126,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1136,7 +1136,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1146,7 +1146,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1156,7 +1156,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1166,7 +1166,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1176,7 +1176,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1186,7 +1186,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1196,7 +1196,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1206,7 +1206,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1216,7 +1216,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1226,7 +1226,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1236,7 +1236,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1246,7 +1246,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1256,7 +1256,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1266,7 +1266,7 @@
       "act": "member",
       "guards": ["sessionMember"],
       "source": "derived",
-      "usedBy": ["/membership"],
+      "usedBy": ["/your-membership"],
       "see": "member"
     },
     {
@@ -1276,7 +1276,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/proactivity"],
+      "usedBy": ["/quiet-hours-and-delivery"],
       "see": "owner"
     },
     {
@@ -1286,7 +1286,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/proactivity"],
+      "usedBy": ["/quiet-hours-and-delivery"],
       "see": "owner"
     },
     {
@@ -1296,7 +1296,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/proactivity"],
+      "usedBy": ["/quiet-hours-and-delivery"],
       "see": "owner"
     },
     {
@@ -1306,7 +1306,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/proactivity"],
+      "usedBy": ["/quiet-hours-and-delivery"],
       "see": "owner"
     },
     {
@@ -1316,7 +1316,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/proactivity"],
+      "usedBy": ["/quiet-hours-and-delivery"],
       "see": "owner"
     },
     {
@@ -1326,7 +1326,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/signals/catalogue"],
+      "usedBy": ["/alert-routing/catalogue"],
       "see": "owner"
     },
     {
@@ -1336,7 +1336,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/signals/rules"],
+      "usedBy": ["/alert-routing"],
       "see": "owner"
     },
     {
@@ -1346,7 +1346,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/signals/rules"],
+      "usedBy": ["/alert-routing"],
       "see": "owner"
     },
     {
@@ -1356,7 +1356,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/taste"],
+      "usedBy": ["/saved-preferences"],
       "see": "owner"
     },
     {
@@ -1366,7 +1366,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/taste"],
+      "usedBy": ["/saved-preferences"],
       "see": "owner"
     },
     {
@@ -1376,7 +1376,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/taste"],
+      "usedBy": ["/saved-preferences"],
       "see": "owner"
     },
     {
@@ -1386,7 +1386,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/taste"],
+      "usedBy": ["/saved-preferences"],
       "see": "owner"
     },
     {
@@ -1396,7 +1396,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/taste"],
+      "usedBy": ["/saved-preferences"],
       "see": "owner"
     },
     {
@@ -1406,7 +1406,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/taste"],
+      "usedBy": ["/saved-preferences"],
       "see": "owner"
     },
     {
@@ -1416,7 +1416,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/taste"],
+      "usedBy": ["/saved-preferences"],
       "see": "owner"
     },
     {
@@ -1426,7 +1426,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/voice"],
+      "usedBy": ["/writing-style"],
       "see": "owner"
     },
     {
@@ -1436,7 +1436,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/voice"],
+      "usedBy": ["/writing-style"],
       "see": "owner"
     },
     {
@@ -1446,7 +1446,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/voice"],
+      "usedBy": ["/writing-style"],
       "see": "owner"
     },
     {
@@ -1456,7 +1456,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/voice"],
+      "usedBy": ["/writing-style"],
       "see": "owner"
     },
     {
@@ -1466,7 +1466,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/voice"],
+      "usedBy": ["/writing-style"],
       "see": "owner"
     },
     {
@@ -1476,7 +1476,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/voice"],
+      "usedBy": ["/writing-style"],
       "see": "owner"
     },
     {
@@ -1486,7 +1486,7 @@
       "act": "owner",
       "guards": ["verify"],
       "source": "derived",
-      "usedBy": ["/waiting"],
+      "usedBy": ["/reviews"],
       "see": "owner"
     }
   ],
@@ -1612,7 +1612,7 @@
       "source": "derived",
       "methods": "POST",
       "changesState": true,
-      "usedBy": ["/accounts", "/agents/[name]"]
+      "usedBy": ["/agents/[name]", "/your-accounts"]
     },
     {
       "id": "POST /api/accounts/microsoft/start",
@@ -1623,7 +1623,7 @@
       "source": "derived",
       "methods": "POST",
       "changesState": true,
-      "usedBy": ["/accounts"]
+      "usedBy": ["/your-accounts"]
     },
     {
       "id": "POST /api/agent-mailbox",

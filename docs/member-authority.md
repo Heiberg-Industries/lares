@@ -65,7 +65,7 @@ The browser receives an opaque 256-bit session token. Its database hash, expiry,
 current active membership are checked in Node at every member entry point. Edge middleware
 checks mutation origins and offers navigation based on cookie syntax only; it cannot authorise
 a request. Old signed-email cookies are refused. Sign-out revokes the current server session;
-any active member can sign out all their own sessions from `/membership`. The designated
+any active member can sign out all their own sessions from `/your-membership`. The designated
 owner can revoke invitations, remove another member or revoke their sessions in `/members`.
 Owner-only directory reads return same-organisation member and invitation metadata, with no
 provider credentials, token values or hashes.
@@ -73,7 +73,7 @@ provider credentials, token values or hashes.
 **The existing console remains an unscoped owner surface.** Its global/private screens,
 server actions and APIs require an active session whose stable member id equals
 `AGENT_OWNER_USER_ID` and whose current role is `owner`. A different owner, member or restricted
-member receives only their own `/membership` view and sign-out controls. Giving a second
+member receives only their own `/your-membership` view and sign-out controls. Giving a second
 member the owner role does not open those screens. Removal or demotion takes effect on the
 next protected request. This is a staged admission boundary, not a claim that shared console,
 connected accounts, channel conversations or private-resource isolation are complete.

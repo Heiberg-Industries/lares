@@ -217,7 +217,7 @@ export async function commitTakeout(input: { lists: UploadedList[] }): Promise<C
     results.push({ ...applied, geocoded, approximate, unresolved });
   }
 
-  revalidatePath("/taste");
+  revalidatePath("/saved-preferences");
   return results;
 }
 
@@ -274,7 +274,7 @@ export async function commitPaste(input: {
       : [{ type: PASTE_TYPE[domain], name, items }];
 
   const result = writeEntries(entries);
-  revalidatePath("/taste");
+  revalidatePath("/saved-preferences");
   return result;
 }
 
@@ -319,14 +319,14 @@ export async function setListCountry(input: { listName: string; country: string 
     changed++;
   }
 
-  revalidatePath("/taste");
+  revalidatePath("/saved-preferences");
   return { listName, changed, alreadySet };
 }
 
 export async function removeEntry(input: { domain: string; file: string }): Promise<void> {
   await requireUser();
   deleteEntry(assertDomain(input.domain), input.file);
-  revalidatePath("/taste");
+  revalidatePath("/saved-preferences");
 }
 
 export interface PinRepairRow {
@@ -447,7 +447,7 @@ export async function repairContradictedPins(input?: { dryRun?: boolean }): Prom
       `${exact} re-matched exactly, ${kept} left untouched, ${searches} searches`,
   );
 
-  if (!dryRun) revalidatePath("/taste");
+  if (!dryRun) revalidatePath("/saved-preferences");
   return { found: suspects.length, exact, kept, searches, rows };
 }
 
@@ -502,6 +502,6 @@ export async function deriveMissingPlaceNames(): Promise<PlaceNameBackfill> {
   }
 
   console.log(`[taste] place names derived: ${named} named, ${alreadyNamed} already, ${noPin} without a pin`);
-  revalidatePath("/taste");
+  revalidatePath("/saved-preferences");
   return { named, alreadyNamed, noPin };
 }

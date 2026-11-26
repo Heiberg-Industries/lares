@@ -1,35 +1,192 @@
 // @vitest-environment jsdom
 import React from "react";
-import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 const path = vi.hoisted(() => ({ current: "/" }));
 vi.mock("next/navigation", () => ({ usePathname: () => path.current }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...p }: React.ComponentProps<"a">) => <a href={href} {...p}>{children}</a> }));
-vi.mock("../components/ThemeControl", () => ({ ThemeControl: () => null, useConsoleTheme: () => ({ theme: "system", onChange: () => {} }) }));
-vi.mock("../components/InboxDot", () => ({ InboxDot: () => null }));
-import { Nav } from "../components/Nav";
-afterEach(cleanup);
-const current = () => screen.getAllByRole("link").filter(a => a.getAttribute("aria-current") === "page").map(a => a.textContent);
+vi.mock("../components/ThemeControl", () => ({ ThemeControl: () => <div role="group" aria-label="Color theme" />, useConsoleTheme: () => ({ theme: "system", onChange: () => {} }) }));
+vi.mock("../components/InboxDot", () => ({ InboxDot: () => <span data-testid="unread-dot" /> }));
+import { COMING, Nav, currentHref, OWNER_MENU, MEMBERSHIP } from "../components/Nav";
+afterEach(() => { cleanup(); path.current = "/"; });
 
-it("shows the owner a Connections group with both pages between Activity and Members", () => {
-  render(<Nav owner={true} />);
-  const side = screen.getAllByRole("navigation")[0];
-  const text = [...side.querySelectorAll("a, p")].map(e => e.textContent);
-  expect(text.slice(text.indexOf("Activity"), text.indexOf("Members") + 1)).toEqual(["Activity", "Connections", "Your accounts", "Integrations", "Members"]);
-  expect(side.querySelector('a[href="/accounts"]')).toBeTruthy();
-  expect(side.querySelector('a[href="/integrations"]')).toBeTruthy();
+/** The sidebar as a person reads it: group labels, then each entry as "words -> address", or "words (coming)". */
+function menu(root: HTMLElement) {
+  return [...root.querySelectorAll("[data-slot=sidebar-group-label], [data-slot=sidebar-menu-button], [role=group]")].map((el) => {
+    if (el.matches("[data-slot=sidebar-group-label]")) return `# ${el.textContent}`;
+    if (el.matches("[role=group]")) return `Appearance: ${el.getAttribute("aria-label")}`;
+    const words = el.querySelector("span")?.textContent;
+    if (el.getAttribute("aria-disabled") === "true") return `${words} (coming)`;
+    return el.tagName === "A" ? `${words} -> ${el.getAttribute("href")}` : `${words} [button]`;
+  });
+}
+const sidebar = () => document.querySelector("aside[data-slot=sidebar]") as HTMLElement;
+const current = () => within(sidebar()).getAllByRole("link").filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.getAttribute("href"));
+
+describe("the owner's menu", () => {
+  it("is exactly the agreed list, in order, each address reading like its words", () => {
+    render(<Nav owner={true} person="Sam Example" />);
+    expect(menu(sidebar())).toEqual([
+      "Overview -> /",
+      "Reviews -> /reviews",
+      "Chat -> /chat",
+      "# Agents",
+      "Agents -> /agents",
+      "Writing style -> /writing-style",
+      "Skills (coming)",
+      "Profiles (coming)",
+      "# Connections",
+      "Your accounts -> /your-accounts",
+      "Integrations -> /integrations",
+      "Outside tools -> /outside-tools",
+      "Knowledge sources (coming)",
+      "# Tools",
+      "Deadlines -> /deadlines",
+      "Meeting follow-ups -> /meeting-follow-ups",
+      "Saved preferences -> /saved-preferences",
+      "# Activity",
+      "Permission checks -> /permission-checks",
+      "Alerts -> /alerts",
+      "# Organisation",
+      "Members -> /members",
+      "Brands (coming)",
+      "# Installation",
+      "General -> /general",
+      "Quiet hours and delivery -> /quiet-hours-and-delivery",
+      "Alert routing -> /alert-routing",
+      "Backups -> /backups",
+      "# Sam Example",
+      "Your membership -> /your-membership",
+      "Appearance: Color theme",
+      "Sign out [button]",
+    ]);
+  });
+
+  it("keeps the unread dot on Chat, and signs out by posting to the same address as before", () => {
+    render(<Nav owner={true} />);
+    const side = within(sidebar());
+    expect(within(side.getByRole("link", { name: "Chat" })).getByTestId("unread-dot")).toBeTruthy();
+    expect(side.getAllByTestId("unread-dot")).toHaveLength(1);
+    const form = side.getByRole("button", { name: "Sign out" }).closest("form")!;
+    expect([form.getAttribute("action"), form.getAttribute("method")]).toEqual(["/api/auth/logout", "post"]);
+  });
+
+  it("gives every entry an icon of its own", () => {
+    const icons = [...OWNER_MENU.flatMap((group) => group.pages), ...COMING, MEMBERSHIP].map((entry) => entry.Icon);
+    expect(new Set(icons).size).toBe(icons.length);
+  });
 });
 
-it("shows a member who is not the owner Your accounts and Membership, and no Integrations", () => {
-  render(<Nav owner={false} />);
-  expect(screen.getAllByRole("link", { name: "Your accounts" }).length).toBeGreaterThan(0);
-  expect(screen.getAllByRole("link", { name: "Membership" }).length).toBeGreaterThan(0);
-  expect(screen.queryByRole("link", { name: "Integrations" })).toBeNull();
+describe("pages that are coming", () => {
+  it("are the four agreed ones, greyed with a Coming tag", () => {
+    expect(COMING.map((item) => item.label)).toEqual(["Skills", "Profiles", "Knowledge sources", "Brands"]);
+    render(<Nav owner={true} />);
+    for (const { label } of COMING) {
+      const entry = within(sidebar()).getByText(label).closest("[data-slot=sidebar-menu-button]")!;
+      expect(entry.getAttribute("aria-disabled"), label).toBe("true");
+      expect(entry.textContent, label).toBe(`${label}Coming`);
+    }
+  });
+
+  it("are not links or buttons, cannot take focus, and lead nowhere", () => {
+    render(<Nav owner={true} />);
+    for (const { label } of COMING) {
+      const entry = within(sidebar()).getByText(label).closest("[data-slot=sidebar-menu-button]") as HTMLElement;
+      expect(entry.tagName, label).toBe("SPAN");
+      expect(entry.closest("a, button"), label).toBeNull();
+      expect(entry.querySelector("a, button, [href], [tabindex], [onclick]"), label).toBeNull();
+      expect(entry.hasAttribute("tabindex") || entry.hasAttribute("href"), label).toBe(false);
+      expect(within(sidebar()).queryByRole("link", { name: new RegExp(label) }), label).toBeNull();
+    }
+  });
 });
 
-it("marks the right page current, including an integration page and the pages that sit under Integrations", () => {
-  for (const [pathname, label] of [["/accounts", "Your accounts"], ["/integrations", "Integrations"], ["/integrations/notion", "Integrations"], ["/voice", "Integrations"], ["/meetings", "Integrations"]]) {
-    path.current = pathname; cleanup(); render(<Nav owner={true} />);
-    expect([...new Set(current())], pathname).toEqual([label]);
-  }
+describe("a member who is not the owner", () => {
+  it("sees only Chat, Your accounts and Your membership, with Appearance and Sign out", () => {
+    path.current = "/chat";
+    render(<Nav owner={false} person="Alex Example" />);
+    expect(menu(sidebar())).toEqual([
+      "Chat -> /chat",
+      "# Connections",
+      "Your accounts -> /your-accounts",
+      "# Alex Example",
+      "Your membership -> /your-membership",
+      "Appearance: Color theme",
+      "Sign out [button]",
+    ]);
+    expect(within(sidebar()).queryByTestId("unread-dot")).toBeNull();
+  });
+});
+
+describe("the current page", () => {
+  it("is exactly one entry: the one whose address is the longest match", () => {
+    for (const [pathname, href] of [
+      ["/", "/"],
+      ["/reviews", "/reviews"],
+      ["/chat/some-agent", "/chat"],
+      ["/agents", "/agents"],
+      ["/agents/some-agent/edit", "/agents"],
+      ["/integrations", "/integrations"],
+      ["/integrations/notion", "/integrations"],
+      ["/outside-tools", "/outside-tools"],
+      ["/outside-tools/new", "/outside-tools"],
+      ["/outside-tools/abc", "/outside-tools"],
+      ["/alerts", "/alerts"],
+      ["/alert-routing", "/alert-routing"],
+      ["/alert-routing/catalogue", "/alert-routing"],
+      ["/writing-style", "/writing-style"],
+      ["/meeting-follow-ups", "/meeting-follow-ups"],
+      ["/quiet-hours-and-delivery", "/quiet-hours-and-delivery"],
+      ["/backups", "/backups"],
+      ["/general", "/general"],
+      ["/your-accounts", "/your-accounts"],
+      ["/your-membership", "/your-membership"],
+    ] as const) {
+      path.current = pathname; cleanup(); render(<Nav owner={true} />);
+      expect(current(), pathname).toEqual([href]);
+      expect([...sidebar().querySelectorAll("[data-active]")].map((el) => el.getAttribute("href")), pathname).toEqual([href]);
+    }
+  });
+
+  it("is none of them on an address the menu does not have", () => {
+    path.current = "/somewhere-else"; render(<Nav owner={true} />);
+    expect(current()).toEqual([]);
+  });
+
+  it("prefers the longer address when two entries match", () => {
+    const pages = [{ href: "/a", label: "A", Icon: () => null }, { href: "/a/b", label: "B", Icon: () => null }, { href: "/", label: "Home", Icon: () => null }];
+    expect(currentHref("/a/b/c", pages)).toBe("/a/b");
+    expect(currentHref("/a/x", pages)).toBe("/a");
+    expect(currentHref("/ab", pages)).toBeNull();
+    expect(currentHref("/", pages)).toBe("/");
+  });
+});
+
+describe("the menu on a phone", () => {
+  it("opens as a named sheet from a button that says whether it is open, closes on Escape and hands focus back", async () => {
+    const user = userEvent.setup();
+    render(<Nav owner={true} />);
+    const button = screen.getByRole("button", { name: "Open navigation" });
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.click(button);
+    const sheet = screen.getByRole("dialog", { name: "Console navigation" });
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(within(sheet).getByRole("link", { name: "Reviews" }).getAttribute("href")).toBe("/reviews");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("closes when a page is chosen", async () => {
+    const user = userEvent.setup();
+    render(<Nav owner={true} />);
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    const link = within(screen.getByRole("dialog")).getByRole("link", { name: "Deadlines" });
+    link.addEventListener("click", (event) => event.preventDefault());
+    await user.click(link);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
 });

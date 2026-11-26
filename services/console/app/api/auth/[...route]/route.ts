@@ -63,7 +63,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ rout
       }
     }
     const session = await members.createSession(proof, new Date(Date.now() + SESSION_MAX_AGE * 1000));
-    const destination = isConsoleOwner(session.member) ? safeNext(flow.next) : "/membership";
+    const destination = isConsoleOwner(session.member) ? safeNext(flow.next) : "/your-membership";
     const res = clearFlow(NextResponse.redirect(sameOriginTarget(destination, consoleRedirect())));
     res.cookies.set("lares_session", session.token, { ...cookieOptions(), maxAge: SESSION_MAX_AGE });
     return res;

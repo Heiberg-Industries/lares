@@ -27,7 +27,7 @@ describe("current database member and session admission", () => {
     expect(await requireMember()).toMatchObject({ id: "second" });
     expect(await verify("opaque")).toBeNull();
     await expect(requireConsoleMember()).rejects.toThrow("owner admission required");
-    await expect(requireConsolePage()).rejects.toThrow("redirect:/membership");
+    await expect(requireConsolePage()).rejects.toThrow("redirect:/your-membership");
     expect(mocks.query).not.toHaveBeenCalled();
   });
   it("derives a non-owner audit address from an active member row without making it authority",async()=>{

@@ -4,16 +4,16 @@
 
 Open **Integrations**, then **Outside tools**. The owner uses three screens; there is no step list.
 
-- **Directory** (`/integrations/outside`): one row per connector with its state, tool count, the agents that use it and
+- **Directory** (`/outside-tools`): one row per connector with its state, tool count, the agents that use it and
   the next action. **Add custom connector** starts a new one. Connections made before the directory existed appear here
   by themselves the first time the page is opened; nothing is migrated.
-- **Add** (`/integrations/outside/new`): Name, Server URL and Authentication (Automatic, or Token), then **Continue**.
+- **Add** (`/outside-tools/new`): Name, Server URL and Authentication (Automatic, or Token), then **Continue**.
   Lares saves the connector, asks the server one unauthenticated question and says in one sentence what it found: no
   login, a token, or a sign-in page. Choosing **Token** stands: the connector is a token connector even if the server
   also offers a sign-in page (many servers accept an API key as well). A server found to use only a sign-in page is saved
   but cannot be used yet; sign-in comes in a later release. Its page has **Use a token instead** for a server that also
   takes a token. A failure shows one message and **Try again**, which continues with the saved connector.
-- **Connector page** (`/integrations/outside/<id>`):
+- **Connector page** (`/outside-tools/<id>`):
   - **Who can use it**: each agent's tools as a list with the kind (looks things up, or changes something) and a
     **Run without asking** switch, saved with **Save tools**. A tool that changes something always asks, unless the
     owner put it in the **Danger zone** at the bottom of the page (see "The danger zone" below).

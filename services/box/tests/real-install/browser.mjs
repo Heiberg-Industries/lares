@@ -35,7 +35,7 @@ const steps = {
     const NAME = "Vendor lookups";
     const shot = (name, width = 1280) => page.setViewportSize({ width, height: 900 })
       .then(() => page.screenshot({ path: `${settings.screenshotDir}/outside-${name}-${width}.png`, fullPage: true })).catch(() => {});
-    await page.goto(`${origin}/integrations/outside`);
+    await page.goto(`${origin}/outside-tools`);
     // A retry finds the connector from an earlier attempt and carries on from its page.
     const existing = page.getByRole("link", { name: NAME });
     if (await existing.count()) {
@@ -67,7 +67,7 @@ const steps = {
     if ((await free.getAttribute("aria-checked")) !== "true") throw new Error("lookup-company does not run without asking on the connector page");
     console.log("the page shows the lookup runs without asking");
     await shot("connector"); await shot("connector", 390);
-    await page.goto(`${origin}/integrations/outside`);
+    await page.goto(`${origin}/outside-tools`);
     await page.getByRole("link", { name: NAME }).first().waitFor({ timeout: 30_000 });
     await shot("directory"); await shot("directory", 390);
     await page.setViewportSize({ width: 1280, height: 900 });

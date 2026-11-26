@@ -128,7 +128,7 @@ and applies the "one owner per incident" rule of an earlier incident-handling de
     computes its slot on this clock, and date and time always come off the *same* clock. On a day
     spent at home nothing changes.
 
-12. **What an installation may configure, on the console at `/proactivity`:** do-not-disturb globally
+12. **What an installation may configure, on the console at `/quiet-hours-and-delivery`:** do-not-disturb globally
     and per agent; quiet hours per **real door id** (`telegram:<chatId>`, `slack:<channelId>` — a row
     saved as the bare word `telegram` would match nothing and be a knob that does nothing); and the
     three ceilings, **lower only**. **What it may not:** raise a ceiling above the engine number,
@@ -143,7 +143,7 @@ and applies the "one owner per incident" rule of an earlier incident-handling de
 
 13. **Quiet is allowed; silent about being quiet is not.** The morning brief carries one line naming
     what the gate held back since the previous brief (`heldBackLine`, counted once per item per door),
-    and the console's `/proactivity` page shows today's decisions per door and the last fifty ledger
+    and the console's `/quiet-hours-and-delivery` page shows today's decisions per door and the last fifty ledger
     rows.
 
 14. **One owner per fact.** Where two agents can see the same fact, one owns telling the owner — the incident-handling rule applied to agents. This is a documentation rule today, enforced by nothing, because no two

@@ -4,9 +4,9 @@
   --rule: var(--border);
   --ink: var(--foreground);
   --mist: var(--muted-foreground);
-  --signal: var(--accent);
+  --signal: var(--lares-accent);
   --ok: var(--lares-status-success);
-  --warn: var(--accent);
+  --warn: var(--lares-warning-text);
   --bad: var(--destructive);
   --run: var(--muted-foreground);
 }
@@ -68,18 +68,8 @@ html.dark {
   color-scheme: dark;
 }
 
-/* Console-only geometry, matched to the approved console reference. */
-.lares-page {
-  margin-inline: 0;
-}
-.lares-page-header h1 {
-  font: var(--text-h2);
-}
-.lares-page-header {
-  margin-bottom: var(--space-6);
-}
 .lares-page.lares-stack > .lares-page-header {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 th {
   font: var(--text-body-sm);
@@ -276,18 +266,15 @@ th {
 .lares-operational-section > h2 { font: var(--text-h3); margin: 0 0 var(--space-2); }
 .lares-operational-table { margin-top: var(--space-2); }
 .lares-operational-table tbody tr + tr { border-top: 1px solid var(--rule); }
+/* The look of the older error and success message classes is in @lares/ui/console.css, beside Notice. */
 .lares-operational-error {
   margin-top: var(--space-3);
-  border-color: var(--destructive);
-  color: var(--destructive);
-  font: var(--text-body-sm);
 }
 .lares-operational-empty { margin-top: var(--space-4); color: var(--muted-foreground); font: var(--text-body-sm); }
 .lares-operational-nav { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-2); font: var(--text-body-sm); }
 .lares-operational-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-4); }
 .lares-status-success { color: var(--lares-status-success); }
-.lares-status-warning { color: var(--accent); }
-.lares-status-error { color: var(--destructive); }
+.lares-status-warning { color: var(--lares-warning-text); }
 .lares-status-muted { color: var(--muted-foreground); }
 .lares-operational-meta { font: var(--text-body-sm); }
 .lares-operational-nowrap { white-space: nowrap; }
@@ -374,8 +361,7 @@ th {
 .lares-inline-field { display: grid; gap: var(--space-1); min-width: min(100%, 12rem); font: var(--text-label); }
 .lares-state-pill { display: inline-flex; align-items: center; gap: var(--space-2); }
 .lares-state-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; flex: none; }
-.lares-form-success { color: var(--lares-status-success); font: var(--text-body-sm); }
-.lares-form-error { color: var(--destructive); font: var(--text-body-sm); }
+span.lares-form-success, span.lares-form-error { font: var(--text-body-sm); }
 
 .lares-connections {
   display: grid;

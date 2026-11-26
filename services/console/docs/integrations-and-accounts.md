@@ -1,6 +1,6 @@
 # Connections and accounts (console)
 
-The **Your membership** page (`/membership`) lets every admitted member connect, reconnect
+The **Your membership** page (`/your-membership`) lets every admitted member connect, reconnect
 and disconnect their own personal Google or Microsoft work accounts. The installation-wide **Connections** page
 (`/integrations`) remains owner-only. Its legacy mailbox list includes only the configured owner
 principal's unassociated credentials, never other members' associated personal accounts.

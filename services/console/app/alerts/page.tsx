@@ -18,9 +18,9 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
     <Page className="lares-operational">
       <PageHeader title="Signals" description="Recent recorded alerts, events and reports." />
       <nav className="lares-operational-nav" aria-label="Signals sections">
-        <Link href="/signals" aria-current="page">Recent</Link>
-        <Link href="/signals/rules">Routes</Link>
-        <Link href="/signals/catalogue">Catalogue</Link>
+        <Link href="/alerts" aria-current="page">Recent</Link>
+        <Link href="/alert-routing">Routes</Link>
+        <Link href="/alert-routing/catalogue">Catalogue</Link>
       </nav>
       {"unavailable" in r ? (
         <Notice error>Signals could not be loaded because the record service is unavailable. Check its service status, then reload this page. Routes and catalogue remain available above.</Notice>

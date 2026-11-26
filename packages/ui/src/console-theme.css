@@ -1,0 +1,162 @@
+/* The console's look-and-feel values, defined once, by name.
+   They apply only inside the console: every rule is scoped to the root element that carries
+   data-lares="console" (set in the console's root layout). theme.css is not changed, so the design
+   preview and the website keep their own values.
+   Colours in OKLCH, like theme.css; the approved hex value is in the comment beside each.
+   Dark mode is class-based: `.dark` on the same root element.
+   Pages never define values of their own. A value that is missing is added here. */
+
+html[data-lares="console"] {
+  /* surfaces */
+  --lares-bg: oklch(1 0 0);                          /* #ffffff  page background */
+  --lares-sidebar-bg: oklch(0.976 0.001 286);        /* #f7f7f8  the menu */
+  --lares-surface: oklch(1 0 0);                     /* #ffffff  cards, dialogs, menus */
+  --lares-sunken: oklch(0.968 0.003 286);            /* #f4f4f6  wells, table heads, code */
+  /* text */
+  --lares-text: oklch(0.244 0.006 271);              /* #1f2023 */
+  --lares-text-muted: oklch(0.541 0.012 262);        /* #6b6f76  secondary text */
+  --lares-text-faint: oklch(0.696 0.012 269);        /* #9a9da5  group labels, placeholders */
+  /* lines and states */
+  --lares-line: oklch(0.931 0.004 271);              /* #e7e8eb  card borders, row dividers */
+  --lares-line-input: oklch(0.873 0.007 269);        /* #d3d5da  borders of controls */
+  --lares-hover: oklch(0.953 0.003 286);             /* #efeff1 */
+  --lares-selected: oklch(0.928 0.004 271);          /* #e6e7ea  the current menu item */
+  /* the one accent */
+  --lares-accent: oklch(0.547 0.179 277.3);          /* #5b5fd6  indigo */
+  --lares-accent-soft: oklch(0.953 0.019 286);       /* #eeeefc  focus ring, soft fills */
+  --lares-on-accent: oklch(1 0 0);                   /* #ffffff */
+  /* the primary button */
+  --lares-primary: oklch(0.244 0.006 271);           /* #1f2023 */
+  --lares-on-primary: oklch(1 0 0);                  /* #ffffff */
+  /* status: text colour, its background, and (warning and error) its line */
+  --lares-warning-text: oklch(0.544 0.117 71);       /* #9a6200 */
+  --lares-warning-bg: oklch(0.974 0.03 88);          /* #fff6e0 */
+  --lares-warning-line: oklch(0.877 0.098 90);       /* #f0d48a */
+  --lares-error-text: oklch(0.517 0.164 28.6);       /* #b3352b */
+  --lares-error-bg: oklch(0.956 0.019 22);           /* #fdeceb */
+  --lares-error-line: oklch(0.834 0.068 24);         /* #f2b8b3 */
+  --lares-success-text: oklch(0.5203 0.0997 157.6);  /* #2c7a52 */
+  --lares-success-bg: oklch(0.962 0.017 163);        /* #e9f6ef */
+  --lares-info-text: oklch(0.52 0.17 262.4);         /* #2f62c9 */
+  --lares-info-bg: oklch(0.956 0.018 261);           /* #eaf1fd */
+  /* the only shadow: things that float over the page. Flat surfaces have none. */
+  --lares-shadow-overlay: 0 16px 48px oklch(0 0 0 / 0.16), 0 2px 6px oklch(0 0 0 / 0.08);
+  --lares-overlay: oklch(0 0 0 / 0.4);
+
+  /* sizes */
+  --lares-sidebar-width: 248px;
+  --lares-page-width: 960px;
+  --lares-page-width-narrow: var(--lares-page-width);
+  --lares-gutter: 24px;
+  --lares-grid-columns: 12;
+  --lares-control-radius: 6px;
+  --lares-card-radius: 10px;
+  --lares-dialog-radius: 12px;
+  --lares-control-height: 32px;
+  --lares-control-height-sm: 28px;
+  --lares-control-text: 13px;
+  --lares-switch-width: 34px;
+  --lares-switch-height: 20px;
+  --lares-row-height: 56px;
+  --lares-menu-item-height: 30px;
+  --lares-menu-icon: 15px;
+  --lares-notice-icon: 18px;
+  --lares-badge-dot: 6px;
+  --lares-focus-ring: 0 0 0 3px var(--lares-accent-soft);
+
+  /* type */
+  --lares-type-body: 400 13px/20px var(--font-sans);
+  --lares-type-title: 600 20px/28px var(--font-sans);
+  --lares-tracking-title: -0.01em;
+  --lares-type-section: 600 13px/20px var(--font-sans);
+  --lares-type-secondary: 400 12px/16px var(--font-sans);
+  --lares-type-label: 500 13px/20px var(--font-sans);
+  --lares-type-menu-label: 500 11.5px/16px var(--font-sans);
+  --lares-type-badge: 500 12px/20px var(--font-sans);
+
+  /* The shared vocabulary, pointed at the console values, so every existing part follows them. */
+  --background: var(--lares-bg);
+  --foreground: var(--lares-text);
+  --card: var(--lares-surface);
+  --card-foreground: var(--lares-text);
+  --popover: var(--lares-surface);
+  --popover-foreground: var(--lares-text);
+  --primary: var(--lares-primary);
+  --primary-foreground: var(--lares-on-primary);
+  --secondary: var(--lares-sunken);
+  --secondary-foreground: var(--lares-text);
+  --muted: var(--lares-sunken);
+  --muted-foreground: var(--lares-text-muted);
+  --accent: var(--lares-accent);
+  --accent-foreground: var(--lares-on-accent);
+  --destructive: var(--lares-error-text);
+  --border: var(--lares-line);
+  --input: var(--lares-line-input);
+  --ring: var(--lares-accent);
+  --sidebar: var(--lares-sidebar-bg);
+  --sidebar-foreground: var(--lares-text);
+  --sidebar-primary: var(--lares-primary);
+  --sidebar-primary-foreground: var(--lares-on-primary);
+  --sidebar-accent: var(--lares-selected);
+  --sidebar-accent-foreground: var(--lares-text);
+  --sidebar-border: var(--lares-line);
+  --sidebar-ring: var(--lares-accent);
+  --radius: var(--lares-control-radius);
+  --lares-surface-radius: var(--lares-card-radius);
+  --lares-attention: var(--lares-warning-text);
+  --lares-attention-foreground: var(--lares-warning-bg);
+  --lares-status-success: var(--lares-success-text);
+  --lares-ink-2: var(--lares-text-muted);
+  --shadow-popover: var(--lares-shadow-overlay);
+  --shadow-dialog: var(--lares-shadow-overlay);
+  --text-h1: var(--lares-type-title);
+  --text-h2: var(--lares-type-title);
+  --text-h3: var(--lares-type-section);
+  --text-body: var(--lares-type-body);
+  --text-body-sm: var(--lares-type-secondary);
+  --text-label: var(--lares-type-label);
+  --tracking-heading: var(--lares-tracking-title);
+}
+
+html[data-lares="console"].dark {
+  --lares-bg: oklch(0.209 0.004 264);                /* #17181a */
+  --lares-sidebar-bg: oklch(0.182 0.004 264);        /* #111214 */
+  --lares-surface: oklch(0.239 0.006 271);           /* #1e1f22 */
+  --lares-sunken: oklch(0.227 0.006 271);            /* #1b1c1f */
+  --lares-text: oklch(0.946 0.003 265);              /* #ecedef */
+  --lares-text-muted: oklch(0.696 0.012 269);        /* #9a9da5 */
+  --lares-text-faint: oklch(0.555 0.013 264);        /* #6f737b */
+  --lares-line: oklch(0.297 0.009 268);              /* #2b2d32 */
+  --lares-line-input: oklch(0.42 0.014 269);         /* #4a4d55 */
+  --lares-hover: oklch(0.268 0.008 264);             /* #24262a */
+  --lares-selected: oklch(0.301 0.009 268);          /* #2c2e33 */
+  --lares-accent: oklch(0.702 0.142 280);            /* #8f93f5 */
+  --lares-accent-soft: oklch(0.287 0.065 280);       /* #25264a */
+  --lares-on-accent: oklch(0.182 0.004 264);         /* #111214 */
+  --lares-primary: oklch(0.946 0.003 265);           /* #ecedef */
+  --lares-on-primary: oklch(0.209 0.004 264);        /* #17181a */
+  --lares-warning-text: oklch(0.814 0.115 86);       /* #e3bd66 */
+  --lares-warning-bg: oklch(0.275 0.032 89);         /* #2e2715 */
+  --lares-warning-line: oklch(0.416 0.064 89);       /* #5a4a1f */
+  --lares-error-text: oklch(0.773 0.107 25.5);       /* #f29a92 */
+  --lares-error-bg: oklch(0.254 0.039 25);           /* #331b19 */
+  --lares-error-line: oklch(0.385 0.086 27);         /* #6a2f2a */
+  --lares-success-text: oklch(0.795 0.094 159);      /* #86cfa6 */
+  --lares-success-bg: oklch(0.261 0.031 160);        /* #16291f */
+  --lares-info-text: oklch(0.764 0.104 263);         /* #8fb2f5 */
+  --lares-info-bg: oklch(0.257 0.043 263);           /* #182338 */
+  --lares-shadow-overlay: 0 16px 48px oklch(0 0 0 / 0.5);
+  --lares-overlay: oklch(0 0 0 / 0.6);
+}
+
+/* Phones: four columns, a narrower gutter, and controls big enough for a thumb.
+   Input text is 16px so the phone does not zoom the page when a field is tapped. */
+@media (max-width: 760px) {
+  html[data-lares="console"] {
+    --lares-gutter: 16px;
+    --lares-grid-columns: 4;
+    --lares-control-height: 44px;
+    --lares-control-height-sm: 44px;
+    --lares-control-text: 16px;
+  }
+}

@@ -16,7 +16,7 @@ import { isConsoleOwner, requireConsoleMember, requireConsolePage, requireMember
 
 const REGENERATE = "Run `pnpm -C services/console run actions:inventory`, read the diff, and commit it on purpose.";
 /** Owner decision: every page except chat and membership stays owner-only for now. */
-const RULE_OPEN_PAGES = ["/chat", "/chat/[name]", "/membership"];
+const RULE_OPEN_PAGES = ["/chat", "/chat/[name]", "/your-membership"];
 
 const overrides = JSON.parse(readFileSync(overridesPath, "utf8")) as Overrides;
 const inventory = generate();
@@ -155,7 +155,7 @@ describe("the owner guards the inventory relies on really refuse a non-owner", (
     it(`refuses ${who}`, async () => {
       mocks.lookup.mockResolvedValue(person);
       expect(isConsoleOwner(person as never)).toBe(false);
-      await expect(requireConsolePage()).rejects.toThrow("redirect:/membership");
+      await expect(requireConsolePage()).rejects.toThrow("redirect:/your-membership");
       await expect(requireConsoleMember()).rejects.toThrow("owner admission required");
       expect(await verify("opaque")).toBeNull();
     });

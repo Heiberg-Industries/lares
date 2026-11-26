@@ -95,10 +95,10 @@ describe("real changes against this repository", () => {
   const cases: { name: string; changed: string[]; rebuild: string[]; because?: Record<string, RegExp>; unknown?: boolean }[] = [
     {
       name: "a change only in the console rebuilds the console, and keeper, which copies every service",
-      changed: ["services/console/app/accounts/page.tsx"],
+      changed: ["services/console/app/your-accounts/page.tsx"],
       rebuild: ["console", "keeper"],
       because: {
-        console: /services\/console\/app\/accounts\/page\.tsx is in @lares\/console, which services\/console\/Dockerfile installs or builds/,
+        console: /services\/console\/app\/your-accounts\/page\.tsx is in @lares\/console, which services\/console\/Dockerfile installs or builds/,
         keeper: /copied into the image by services\/keeper\/Dockerfile \("COPY services\/ \.\/services\/"\)/,
       },
     },
@@ -234,7 +234,7 @@ describe("real changes against this repository", () => {
     { name: "a new directory under images/ that no Dockerfile copies rebuilds everything", changed: ["images/a-new-image/start.sh"], rebuild: ALL, unknown: true },
     {
       name: "one unknown path among known ones still rebuilds everything",
-      changed: ["services/console/app/accounts/page.tsx", "a-new-top-level-file.txt"],
+      changed: ["services/console/app/your-accounts/page.tsx", "a-new-top-level-file.txt"],
       rebuild: ALL,
       unknown: true,
     },
@@ -347,7 +347,7 @@ describe("real changes against this repository", () => {
       ),
     });
     const narrow = (changed: string[]): string[] => rebuilt(selectAffectedImages(changed, narrowed));
-    expect(narrow(["services/console/app/accounts/page.tsx"])).toEqual(["console"]);
+    expect(narrow(["services/console/app/your-accounts/page.tsx"])).toEqual(["console"]);
     expect(narrow(["docs/install.md"])).toEqual(WITH_DOCS);
     expect(narrow(["images/runtime-base/Dockerfile"])).toEqual(["runtime-base"]);
     expect(narrow(["README.md", ".github/workflows/tests.yml", "integrations/notion/integration.json"])).toEqual([]);

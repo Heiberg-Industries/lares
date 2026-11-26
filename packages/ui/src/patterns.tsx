@@ -1,5 +1,6 @@
 import React, { type ReactNode } from "react";
-import { CircleAlert, CircleCheck, Info, LoaderCircle, TriangleAlert } from "./icons";
+import { Check, LoaderCircle } from "./icons";
+import { Alert } from "./primitives/alert";
 
 export function Mark() {
   return (
@@ -100,7 +101,9 @@ export function AgentAvatar({ role, src }: { role: string; src?: string }) {
     </span>
   );
 }
-/** The one page frame: same left edge everywhere, wide for tables and lists, narrow for forms, settings and chat. */
+/** The one page frame and its grid: twelve columns with one gutter (four columns on a phone). A child spans
+    every column unless it is a Col, or carries a lares-col-* class. `width` is kept for the pages that pass it;
+    both widths are the one page width now, and a narrower block is a Col. */
 export function Page({
   width = "wide",
   className,
@@ -118,6 +121,20 @@ export function Page({
       {children}
     </div>
   );
+}
+/** How many of the twelve columns a block takes. On a phone every span fills the row, except 3, which takes half. */
+export type ColSpan = 12 | 8 | 6 | 4 | 3;
+/** A block on the page grid. Use it directly inside Page, instead of giving a section a width. */
+export function Col({
+  span,
+  className,
+  children,
+}: {
+  span: ColSpan;
+  className?: string;
+  children: ReactNode;
+}) {
+  return <div className={className ? `lares-col-${span} ${className}` : `lares-col-${span}`}>{children}</div>;
 }
 export function PageHeader({
   title,
@@ -158,15 +175,17 @@ export function EmptyState({
 /** What a notice is telling the person. Each tone has one colour and one icon, so a glance says which kind it is. */
 export type NoticeTone = "info" | "working" | "success" | "needs-you" | "error";
 
+// One round icon per tone. Warning ("needs-you") is "!", error is "×"; the stylesheet gives each its colour.
 const NOTICE_ICON: Record<NoticeTone, ReactNode> = {
-  info: <Info aria-hidden="true" />,
+  info: "i",
   working: <LoaderCircle aria-hidden="true" />,
-  success: <CircleCheck aria-hidden="true" />,
-  "needs-you": <TriangleAlert aria-hidden="true" />,
-  error: <CircleAlert aria-hidden="true" />,
+  success: <Check aria-hidden="true" />,
+  "needs-you": "!",
+  error: "×",
 };
 
-/** A message in one of five tones. `error` is shorthand for tone="error". Only an error is announced as an alert; the rest are quiet status text. */
+/** A message in one of five tones. `needs-you` is the one warning look (amber, "!") and `error` the one error
+    look (red, "×"). `error` is shorthand for tone="error". Only an error is announced as an alert; the rest are quiet status text. */
 export function Notice({
   children,
   tone,
@@ -178,15 +197,47 @@ export function Notice({
 }) {
   const kind: NoticeTone = tone ?? (error ? "error" : "info");
   return (
-    <div
+    <Alert
       className="lares-notice"
+      variant={kind === "error" ? "destructive" : kind === "needs-you" ? "warning" : kind === "success" ? "success" : "default"}
       data-tone={kind}
       data-error={kind === "error" || undefined}
       role={kind === "error" ? "alert" : "status"}
     >
-      <span className="lares-notice-icon">{NOTICE_ICON[kind]}</span>
+      <span className="lares-notice-icon" aria-hidden="true">{NOTICE_ICON[kind]}</span>
       <div className="lares-notice-body">{children}</div>
-    </div>
+    </Alert>
+  );
+}
+/** A list of plain rows. Put it straight inside a Card: each row is at least one row height, with a line between rows. */
+export function Rows({ label, children }: { label?: string; children: ReactNode }) {
+  return (
+    <ul className="lares-rows" aria-label={label}>
+      {children}
+    </ul>
+  );
+}
+/** One row: a title, an optional line of secondary text, and room on the right for a control or a badge. */
+export function Row({
+  title,
+  description,
+  control,
+  children,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  control?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <li className="lares-row">
+      <div className="lares-row-main">
+        <span className="lares-row-title">{title}</span>
+        {description && <p className="lares-row-description">{description}</p>}
+        {children}
+      </div>
+      {control && <div className="lares-row-control">{control}</div>}
+    </li>
   );
 }
 /** A list of tools an agent can use, one ToolRow each. */

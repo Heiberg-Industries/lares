@@ -164,8 +164,8 @@ describe("a shortened card (D-6)", () => {
 
   it("points to the places that show a card whole, in the order of the table, in words that are true of each", () => {
     expect(placesShowingWhole()).toEqual([{ where: "the Waiting on you page in the console", hasLink: true }]);
-    expect(shortenedCardSentence(placesShowingWhole(), "https://console.example/waiting?request=r"))
-      .toBe("The request above is shortened, so it cannot be approved here. Open it in the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: https://console.example/waiting?request=r\nDeny still works here.");
+    expect(shortenedCardSentence(placesShowingWhole(), "https://console.example/reviews?request=r"))
+      .toBe("The request above is shortened, so it cannot be approved here. Open it in the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: https://console.example/reviews?request=r\nDeny still works here.");
     // Without an address, the sentence still names the page and invents no link.
     expect(shortenedCardSentence(placesShowingWhole(), null)).not.toContain("http");
     expect(shortenedCardSentence(placesShowingWhole(), null)).toContain("Waiting on you page in the console");
@@ -190,9 +190,9 @@ describe("where a person is sent to read a card too long for its door", () => {
   });
 
   it.each([
-    ["Slack connected, console address set", { [SLACK_LIST]: "U_OWNER" }, "https://console.example/waiting?request=r"],
+    ["Slack connected, console address set", { [SLACK_LIST]: "U_OWNER" }, "https://console.example/reviews?request=r"],
     ["Slack connected, no console address", { [SLACK_LIST]: "U_OWNER" }, null],
-    ["Slack not connected, console address set", {}, "https://console.example/waiting?request=r"],
+    ["Slack not connected, console address set", {}, "https://console.example/reviews?request=r"],
     ["Slack not connected, no console address", {}, null],
   ] as const)("%s: names the page in the console, never Slack (the request is not on Slack), and a link only when there is one", (_name, env, link) => {
     const text = sentence(env, link);

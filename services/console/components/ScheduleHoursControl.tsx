@@ -1,6 +1,6 @@
 "use client";
 /**
- *  — "when do the agents speak", offered as its own section on `/proactivity`, after
+ *  — "when do the agents speak", offered as its own section on `/quiet-hours-and-delivery`, after
  * "Quiet hours".
  *
  * A new file, deliberately: this writes `schedule_settings`, a table the three proactivity knobs

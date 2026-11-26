@@ -1,9 +1,9 @@
-import { requireConsolePage } from "../../../lib/auth";
+import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
-import { getRules, getConsumers } from "../../../lib/signals";
-import { JsonEditor } from "../../../components/JsonEditor";
-import { ConsumerSwitches } from "../../../components/ConsumerSwitches";
-import { saveRules, saveConsumers } from "../../actions/signals";
+import { getRules, getConsumers } from "../../lib/signals";
+import { JsonEditor } from "../../components/JsonEditor";
+import { ConsumerSwitches } from "../../components/ConsumerSwitches";
+import { saveRules, saveConsumers } from "../actions/signals";
 import { PageHeader, Page } from "@lares/ui/patterns";
 export const dynamic = "force-dynamic";
 export default async function RulesPage() {
@@ -15,7 +15,7 @@ export default async function RulesPage() {
   return (
     <Page className="lares-operational">
       <PageHeader title="Signal routes" description="Delivery switches and ordered routing rules." />
-      <nav className="lares-operational-nav" aria-label="Signals sections"><Link href="/signals">Recent</Link><span aria-current="page">Routes</span><Link href="/signals/catalogue">Catalogue</Link></nav>
+      <nav className="lares-operational-nav" aria-label="Signals sections"><Link href="/alerts">Recent</Link><span aria-current="page">Routes</span><Link href="/alert-routing/catalogue">Catalogue</Link></nav>
       {"unavailable" in c ? <p className="lares-operational-error" role="alert">Delivery switches could not be loaded. Check the Signals service, then reload.</p> :
         <ConsumerSwitches initial={c.consumers} onSave={saveConsumers} />}
       {"unavailable" in r ? <p className="lares-operational-error" role="alert">Routing rules could not be loaded. Check the Signals service, then reload.</p> :

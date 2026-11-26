@@ -24,7 +24,7 @@ describe("Add", () => {
     fireEvent.change(screen.getByLabelText(/^Server URL/), { target: { value: "https://tools.example.org/mcp" } });
     expect(screen.getByLabelText(/^Authentication/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await vi.waitFor(() => expect(mocks.push).toHaveBeenCalledWith("/integrations/outside/abc?found=token"));
+    await vi.waitFor(() => expect(mocks.push).toHaveBeenCalledWith("/outside-tools/abc?found=token"));
     expect(mocks.add).toHaveBeenCalledWith({ name: "Rates", url: "https://tools.example.org/mcp", auth: "automatic" });
   });
   it("shows one message and Try again that continues with the saved connector", async () => {

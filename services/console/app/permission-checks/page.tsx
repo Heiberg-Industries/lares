@@ -22,11 +22,11 @@ export default async function ActivityPage({
         description="Permission decisions across your agents."
         actions={
           <Button variant="outline" asChild>
-            <Link href="/signals">Signals & events →</Link>
+            <Link href="/alerts">Signals & events →</Link>
           </Button>
         }
       />
-      <form className="lares-actions" action="/activity">
+      <form className="lares-actions" action="/permission-checks">
         <label>
           Filter by agent name
           <Input
@@ -38,7 +38,7 @@ export default async function ActivityPage({
         <Button variant="outline" type="submit">
           Filter
         </Button>
-        {agent && <Link href="/activity">Clear filter</Link>}
+        {agent && <Link href="/permission-checks">Clear filter</Link>}
       </form>
       <section>
         <PermissionEvents events={events} />
@@ -50,7 +50,7 @@ export default async function ActivityPage({
       {next && (
         <Button variant="outline" asChild>
           <Link
-            href={`/activity?${new URLSearchParams({ ...(agent ? { agent } : {}), before: next })}`}
+            href={`/permission-checks?${new URLSearchParams({ ...(agent ? { agent } : {}), before: next })}`}
           >
             Older checks →
           </Link>

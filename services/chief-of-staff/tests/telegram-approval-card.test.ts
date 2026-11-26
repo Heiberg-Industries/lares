@@ -480,7 +480,7 @@ describe("3. from card to outcome, through the real door", () => {
 // on you page for this request, from `LARES_CONSOLE_URL`.
 describe("4. a card that could not show everything points to the console", () => {
   const CONSOLE = "https://console.example.com";
-  const LINK = `${CONSOLE}/waiting?request=${ID}`;
+  const LINK = `${CONSOLE}/reviews?request=${ID}`;
 
   // Three ways a card ends up without Approve, each rendered by the installed, patched eve.
   const overTheLimit = { ...approvalRequest, prompt: `Send this reply: ${"word ".repeat(1200)}` };
@@ -523,9 +523,9 @@ describe("4. a card that could not show everything points to the console", () =>
 
   describe("the link", () => {
     it("goes to the Waiting on you page for this request, and only from an http(s) address", () => {
-      expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "https://console.example.com" })).toBe("https://console.example.com/waiting?request=req-1");
-      expect(waitingPageLink("req 1", { LARES_CONSOLE_URL: "https://console.example.com/lares/" })).toBe("https://console.example.com/lares/waiting?request=req+1");
-      expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "  https://console.example.com  " })).toBe("https://console.example.com/waiting?request=req-1");
+      expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "https://console.example.com" })).toBe("https://console.example.com/reviews?request=req-1");
+      expect(waitingPageLink("req 1", { LARES_CONSOLE_URL: "https://console.example.com/lares/" })).toBe("https://console.example.com/lares/reviews?request=req+1");
+      expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "  https://console.example.com  " })).toBe("https://console.example.com/reviews?request=req-1");
       expect(waitingPageLink("req-1", {})).toBeNull();
       expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "   " })).toBeNull();
       expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "javascript:alert(1)" })).toBeNull();

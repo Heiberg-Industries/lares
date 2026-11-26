@@ -125,7 +125,7 @@ function FilterBar({
       </div>
       <Button type="submit" variant="outline">Show</Button>
       {isFiltered(filters) && (
-        <Button variant="ghost" asChild><a href="/taste">Reset</a></Button>
+        <Button variant="ghost" asChild><a href="/saved-preferences">Reset</a></Button>
       )}
     </form>
   );

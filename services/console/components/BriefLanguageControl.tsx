@@ -1,6 +1,6 @@
 "use client";
 /**
- *  — the brief's language, offered next to the home-timezone line on `/proactivity`.
+ *  — the brief's language, offered next to the home-timezone line on `/quiet-hours-and-delivery`.
  *
  * A new file, deliberately: `ProactivityControls.tsx` is the gate's three knobs
  * (`proactivity_settings`), and this one knob writes a different table (`brief_settings`) and

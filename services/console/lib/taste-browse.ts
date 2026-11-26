@@ -1,7 +1,7 @@
 // services/console/lib/taste-browse.ts — what the Taste browse view SHOWS.
 //
 // With ~860 places across 25 lists, a flat table is a pile, not a tool. This file holds the
-// filtering, sorting and freshness rules; `app/taste/page.tsx` holds only the markup that renders
+// filtering, sorting and freshness rules; `app/saved-preferences/page.tsx` holds only the markup that renders
 // them. The split is so these rules can be tested at all — a server component that reads the
 // filesystem is not something a unit test can interrogate, and "the filter works" is exactly the
 // claim that has to be verified rather than assumed.

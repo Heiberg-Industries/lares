@@ -35,7 +35,7 @@ export function ConnectorActions({ id, displayName, authKind }: { id: string; di
     const r = await removeConnector(id).catch(() => ({ ok: false as const, message: "Lares could not confirm that. Press Remove again to continue." }));
     setBusy(false);
     if (!r.ok) { setMessage({ tone: "error", text: r.message }); return; }
-    router.push("/integrations/outside");
+    router.push("/outside-tools");
   }
 
   return <div className="lares-stack">

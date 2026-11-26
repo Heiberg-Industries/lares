@@ -970,7 +970,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
           `The agent's proposal watch is not running (apply the latest database update, and check that the agent's image carries the Notion tools). ` +
           `Decide meanwhile on the console /integrations card, or with: notion-sync approve|reject ${stale.vaultPath}`
         : `still awaiting your decision: ${stale.vaultPath} — proposed ${proposedOn}. ` +
-          `The agent asked and got no answer. Decide on the console's Waiting on you page (/waiting), ` +
+          `The agent asked and got no answer. Decide on the console's Waiting on you page (/reviews), ` +
           `which lists it even when the agent is down, or in the agent's chat, on the console /integrations card, ` +
           `or with: notion-sync approve|reject ${stale.vaultPath}`,
     );
