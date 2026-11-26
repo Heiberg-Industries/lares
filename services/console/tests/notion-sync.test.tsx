@@ -89,3 +89,16 @@ it("asks the server for the page again when the Notion key card says the key cha
   expect(screen.getByTestId("sync-status").textContent).toContain("waiting for a preview");
   expect(screen.getByRole("button", { name: "Run preview" })).toBeTruthy();
 });
+
+it("keeps a people database id that is typed but not saved when the page is read again, and follows the server when it is untouched", async () => {
+  const page = render(<NotionSyncControl initial={on({ peopleDataSource: "saved-1" })} />);
+  const field = () => screen.getByLabelText(/People database id/) as HTMLInputElement;
+  // Untouched: a new saved value from the server is shown.
+  page.rerender(<NotionSyncControl initial={on({ peopleDataSource: "saved-2" })} />);
+  expect(field().value).toBe("saved-2");
+  // Typed and not saved: a key test makes the page read again, and the typed id stays.
+  await userEvent.clear(field()); await userEvent.type(field(), "typed-3");
+  page.rerender(<NotionSyncControl initial={on({ peopleDataSource: "saved-2", phase: "needs-key" })} />);
+  expect(field().value).toBe("typed-3");
+  expect(screen.getByTestId("sync-status").textContent).toContain("Connect the Notion key first");
+});

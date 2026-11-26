@@ -5,7 +5,7 @@ import { Button } from "@lares/ui/primitives/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { Input } from "@lares/ui/primitives/input";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { acceptNotionSyncPreview, runNotionSyncPreview, setNotionSync, type DefinitionActionResult } from "../app/actions/definition";
 import type { NotionSyncCounts, NotionSyncView } from "../lib/notion-sync";
 import { NOTION_KEY_UPDATED } from "./NotionCredential";
@@ -30,13 +30,20 @@ export function NotionSyncControl({ initial }: { initial: NotionSyncView }) {
     window.addEventListener(NOTION_KEY_UPDATED, onKey);
     return () => window.removeEventListener(NOTION_KEY_UPDATED, onKey);
   }, [router]);
-  useEffect(() => { setView(initial); setPeople(initial.peopleDataSource ?? ""); }, [initial]);
+  // What the server last said the saved id is. An id the person has typed but not saved is theirs: fresh data from
+  // the server (after a key test, say) replaces the field only while it still shows the saved value.
+  const saved = useRef(initial.peopleDataSource ?? "");
+  useEffect(() => {
+    const next = initial.peopleDataSource ?? "", before = saved.current;
+    setView(initial); setPeople((typed) => (typed === before ? next : typed));
+    saved.current = next;
+  }, [initial]);
   const run = (work: () => Promise<DefinitionActionResult<NotionSyncView>>) => {
     setError(null);
     start(async () => {
       const r = await work();
       if (!r.ok) { setError(r.error.message); return; }
-      setView(r.result); setPeople(r.result.peopleDataSource ?? "");
+      setView(r.result); setPeople(r.result.peopleDataSource ?? ""); saved.current = r.result.peopleDataSource ?? "";
     });
   };
   const last = view.lastRun ? new Date(view.lastRun).toLocaleString() : "never";
