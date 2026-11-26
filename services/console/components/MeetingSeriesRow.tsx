@@ -1,4 +1,5 @@
 "use client";
+import { Notice, Row } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { useState, useTransition } from "react";
 import { revokeSeries } from "../app/actions/meeting-series";
@@ -19,34 +20,33 @@ export function MeetingSeriesRow(p: {
   if (revoked) return null;
 
   return (
-    <tr>
-      <td>{p.name}</td>
-      <td className="mono lares-status-muted">{p.updatedBy}</td>
-      <td className="mono lares-status-muted">{p.updatedAt}</td>
-      <td>
-        <span className="lares-actions">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={pending}
-            title={`Turn off auto-send for ${p.name}`}
-            onClick={() =>
-              start(async () => {
-                setErr("");
-                try {
-                  await revokeSeries(p.agent, p.seriesKey);
-                  setRevoked(true);
-                } catch (e) {
-                  setErr(String(e instanceof Error ? e.message : e));
-                }
-              })
-            }
-          >
-            {pending ? "…" : "Revoke"}
-          </Button>
-          {err && <span title={err} className="lares-status-error">!</span>}
-        </span>
-      </td>
-    </tr>
+    <Row
+      title={p.name}
+      description={<>Turned on by {p.updatedBy} on {p.updatedAt}</>}
+      control={
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={pending}
+          aria-label={`Revoke: stop sending follow-ups for ${p.name} without asking`}
+          onClick={() =>
+            start(async () => {
+              setErr("");
+              try {
+                await revokeSeries(p.agent, p.seriesKey);
+                setRevoked(true);
+              } catch (e) {
+                setErr(String(e instanceof Error ? e.message : e));
+              }
+            })
+          }
+        >
+          {pending ? "Revoking…" : "Revoke"}
+        </Button>
+      }
+    >
+      {err && <Notice error>Not revoked: {err}</Notice>}
+    </Row>
   );
 }

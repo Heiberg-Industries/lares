@@ -11,10 +11,11 @@
  * database, and a client component may not pull that in. The page reads them from the one constant.
  */
 import { useState, useTransition } from "react";
-import { Choice } from "@lares/ui/patterns";
+import { Field, Notice, Row, Rows } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
-import { Checkbox } from "@lares/ui/primitives/checkbox";
+import { CardContent } from "@lares/ui/primitives/card";
 import { Input } from "@lares/ui/primitives/input";
+import { Switch } from "@lares/ui/primitives/switch";
 import { saveCeilings, saveDnd, saveQuietHours } from "../app/actions/proactivity";
 import type { SaveResult } from "../app/actions/proactivity";
 
@@ -59,29 +60,25 @@ export interface EngineMaxima {
   perOwnerPerDay: number;
 }
 
-function Note({ children }: { children: React.ReactNode }) {
-  return <p className="lares-note">{children}</p>;
-}
+type Message = { ok: boolean; text: string } | null;
 
-function Msg({ msg }: { msg: { ok: boolean; text: string } | null }) {
+function Msg({ msg }: { msg: Message }) {
   if (!msg) return null;
-  return (
-    <span className={msg.ok ? "lares-form-success" : "lares-form-error"}>{msg.text}</span>
-  );
+  return <Notice tone={msg.ok ? "success" : "error"}>{msg.text}</Notice>;
 }
 
-/** The engine-disagrees annotation. Warn-coloured, never hidden: a stored value the fleet is
- *  overriding is the one thing this page must not let an owner read as truth. */
+/** The engine-disagrees annotation. Shown as the warning message, never hidden: a stored value the
+ *  fleet is overriding is the one thing this page must not let an owner read as truth. */
 function Override({ note }: { note: string | null }) {
   if (!note) return null;
-  return <span className="mono lares-small lares-status-warning">{note}</span>;
+  return <Notice tone="needs-you">{note}</Notice>;
 }
 
 // ── Do not disturb ─────────────────────────────────────────────────────────────────────────────
 
 function DndRow({ scope }: { scope: DndScope }) {
   const [on, setOn] = useState(scope.dnd);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [msg, setMsg] = useState<Message>(null);
   const [pending, start] = useTransition();
   // `effective` is what the gate resolves for this agent (global OR its own row): an agent row that
   // is off while the effective answer is on can only mean the global switch is holding it quiet.
@@ -95,34 +92,33 @@ function DndRow({ scope }: { scope: DndScope }) {
       let r: SaveResult;
       try { r = await saveDnd({ agent: scope.agent, dnd: next }); }
       catch (e) { r = { ok: false, message: String(e instanceof Error ? e.message : e) }; }
-      if (r.ok) setMsg({ ok: true, text: next ? "quiet — nothing will be initiated" : "off" });
-      else { setOn(prev); setMsg({ ok: false, text: r.message }); }
+      if (r.ok) setMsg({ ok: true, text: next ? `Saved. ${scope.label} will not start anything.` : `Saved. Do not disturb is off for ${scope.label.toLowerCase()}.` });
+      else { setOn(prev); setMsg({ ok: false, text: `Not saved, and the switch is back where it was. ${r.message}` }); }
     });
   }
 
   return (
-    <div>
-      <Choice>
-        <Checkbox checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
-        <span>{scope.label}{on ? " — ON" : ""}</span>
-        <Msg msg={msg} />
-      </Choice>
-      <Note>
-        {scope.agent === "*"
-          ? "On = no agent starts a conversation with you: no briefs, no nudges. Your replies to a message you send still work, and nothing is lost — held items are reconsidered when you switch it off."
+    <Row
+      title={scope.label}
+      description={
+        scope.agent === "*"
+          ? "When on, no agent starts a conversation with you: no briefs, no nudges. Your replies to a message you send still work, and nothing is lost: what was held is looked at again when you switch it off."
           : heldByGlobal
-            ? `On for ${scope.label.toLowerCase()} either way — the global switch above is on, and do-not-disturb is an OR across scopes.`
-            : `On = only ${scope.label} stays quiet. The other agents carry on.`}
-      </Note>
-    </div>
+            ? `Quiet either way: the switch for every agent above is on, and that covers ${scope.label.toLowerCase()} too.`
+            : `When on, only ${scope.label} stays quiet. The other agents carry on.`
+      }
+      control={<Switch aria-label={`Do not disturb: ${scope.label}`} checked={on} disabled={pending} onCheckedChange={toggle} />}
+    >
+      <Msg msg={msg} />
+    </Row>
   );
 }
 
 export function DndSection({ scopes }: { scopes: DndScope[] }) {
   return (
-    <div className="card lares-control-card lares-stack">
+    <Rows label="Do not disturb">
       {scopes.map((s) => <DndRow key={s.agent} scope={s} />)}
-    </div>
+    </Rows>
   );
 }
 
@@ -133,7 +129,7 @@ function QuietRow({ scope }: { scope: QuietScope }) {
   // and pre-filling the input with it would invite a save that changes nothing an owner can see.
   const [startAt, setStart] = useState(scope.quietStart);
   const [endAt, setEnd] = useState(scope.quietEnd);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [msg, setMsg] = useState<Message>(null);
   const [pending, save] = useTransition();
 
   function submit() {
@@ -142,41 +138,38 @@ function QuietRow({ scope }: { scope: QuietScope }) {
       let r: SaveResult;
       try { r = await saveQuietHours({ door: scope.door, quietStart: startAt, quietEnd: endAt }); }
       catch (e) { r = { ok: false, message: String(e instanceof Error ? e.message : e) }; }
-      setMsg(r.ok ? { ok: true, text: "saved" } : { ok: false, text: r.message });
+      setMsg(r.ok ? { ok: true, text: "Saved." } : { ok: false, text: r.message });
     });
   }
 
   return (
-    <tr>
-      <td className="mono lares-small">
-        {scope.label}
-        {scope.isDefault && <span className="lares-status-muted"> · default</span>}
-      </td>
-      <td><Input type="time" value={startAt} onChange={(e) => setStart(e.target.value)} aria-label={`${scope.label} quiet from`} /></td>
-      <td><Input type="time" value={endAt} onChange={(e) => setEnd(e.target.value)} aria-label={`${scope.label} quiet until`} /></td>
-      <td>
-        <div className="lares-actions">
-          <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
-          <Msg msg={msg} />
-          <Override note={scope.note} />
+    <Row title={<>{scope.label}{scope.isDefault && <span className="lares-muted"> · default</span>}</>}>
+      <div className="lares-stack">
+        <div className="lares-inline-form">
+          <Field label="Quiet from">
+            <Input type="time" value={startAt} onChange={(e) => setStart(e.target.value)} aria-label={`${scope.label} quiet from`} />
+          </Field>
+          <Field label="Until">
+            <Input type="time" value={endAt} onChange={(e) => setEnd(e.target.value)} aria-label={`${scope.label} quiet until`} />
+          </Field>
+          <Button type="button" variant="outline" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
         </div>
-      </td>
-    </tr>
+        <Override note={scope.note} />
+        <Msg msg={msg} />
+      </div>
+    </Row>
   );
 }
 
 export function QuietSection({ scopes }: { scopes: QuietScope[] }) {
   return (
-    <div className="lares-table-scroll"><table className="card lares-operational-table">
-      <thead><tr><th>Door</th><th>Quiet from</th><th>Until</th><th /></tr></thead>
-      <tbody>
-        {scopes.map((s) => <QuietRow key={s.door} scope={s} />)}
-      </tbody>
-    </table></div>
+    <Rows label="Quiet hours">
+      {scopes.map((s) => <QuietRow key={s.door} scope={s} />)}
+    </Rows>
   );
 }
 
-// ── Ceilings ───────────────────────────────────────────────────────────────────────────────────
+// ── Limits ─────────────────────────────────────────────────────────────────────────────────────
 
 export function CeilingSection({ values, engine }: {
   /** Each already re-validated against the engine by the page (see {@link EffectiveValue}). */
@@ -192,12 +185,12 @@ export function CeilingSection({ values, engine }: {
   const [ev, setEv] = useState(values.eventPerDoorPerDay.value);
   const [esc, setEsc] = useState(values.escalationPerDoorPerDay.value);
   const [own, setOwn] = useState(values.perOwnerPerDay.value);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [msg, setMsg] = useState<Message>(null);
   const [pending, save] = useTransition();
 
   const fields: Array<{ label: string; what: string; value: number; max: number; note: string | null; set(n: number): void }> = [
     {
-      label: "Events per door per day", what: "A new email, a reply, a proposal — anything the world caused.",
+      label: "Events per door per day", what: "A new email, a reply, a proposal: anything the world caused.",
       value: ev, max: engine.eventPerDoorPerDay, note: values.eventPerDoorPerDay.note, set: setEv,
     },
     {
@@ -205,7 +198,7 @@ export function CeilingSection({ values, engine }: {
       value: esc, max: engine.escalationPerDoorPerDay, note: values.escalationPerDoorPerDay.note, set: setEsc,
     },
     {
-      label: "Messages per day, all doors", what: "The whole day's budget across events and escalations. Scheduled slots (the briefs) never count.",
+      label: "Messages per day, all doors", what: "The whole day's budget across events and escalations. Scheduled messages (the briefs) never count.",
       value: own, max: engine.perOwnerPerDay, note: values.perOwnerPerDay.note, set: setOwn,
     },
   ];
@@ -216,31 +209,34 @@ export function CeilingSection({ values, engine }: {
       let r: SaveResult;
       try { r = await saveCeilings({ door: "*", eventPerDoorPerDay: ev, escalationPerDoorPerDay: esc, perOwnerPerDay: own }); }
       catch (e) { r = { ok: false, message: String(e instanceof Error ? e.message : e) }; }
-      setMsg(r.ok ? { ok: true, text: "saved" } : { ok: false, text: r.message });
+      setMsg(r.ok ? { ok: true, text: "Saved." } : { ok: false, text: r.message });
     });
   }
 
   return (
-    <div className="card lares-control-card lares-stack">
-      {fields.map((f) => (
-        <div key={f.label}>
-          <Choice>
-            <Input
-              className="lares-short-input" type="number" min={0} max={f.max} step={1}
-              value={f.value} onChange={(e) => f.set(Number(e.target.value))}
-            />
-            <span>{f.label}</span>
-            <span className="lares-small lares-status-muted">engine max {f.max}</span>
+    <>
+      <Rows label="Limits">
+        {fields.map((f) => (
+          <Row
+            key={f.label}
+            title={f.label}
+            description={`${f.what} Highest allowed: ${f.max}.`}
+            control={
+              <Input
+                className="lares-short-input" type="number" min={0} max={f.max} step={1} aria-label={f.label}
+                value={f.value} onChange={(e) => f.set(Number(e.target.value))}
+              />
+            }
+          >
             <Override note={f.note} />
-          </Choice>
-          <Note>{f.what}</Note>
-        </div>
-      ))}
-      <div className="lares-actions">
-        <Button type="button" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save ceilings"}</Button>
+          </Row>
+        ))}
+      </Rows>
+      <CardContent className="lares-stack">
+        <p className="lares-muted">A limit can only be set at or below the highest allowed. A higher number is refused when you save, not quietly lowered.</p>
+        <Button type="button" variant="outline" disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save limits"}</Button>
         <Msg msg={msg} />
-      </div>
-      <Note>A ceiling can only be lowered. Above the engine maximum the save is refused, not quietly trimmed.</Note>
-    </div>
+      </CardContent>
+    </>
   );
 }

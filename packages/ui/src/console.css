@@ -632,6 +632,33 @@ p.lares-form-success::before {
   opacity: .5;
   cursor: not-allowed;
 }
+/* List editor: one box per value, each with its remove button, and Add under them. */
+.lares-list-editor {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.lares-list-editor-items {
+  display: grid;
+  justify-self: stretch;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lares-list-editor-items > li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.lares-list-editor-items [data-slot="input"] {
+  flex: 0 1 var(--lares-field-width);
+}
+.lares-list-editor[data-size="short"] .lares-list-editor-items [data-slot="input"] {
+  flex-basis: var(--lares-short-field-width);
+}
 .lares-inline-form {
   display: flex;
   flex-wrap: wrap;
@@ -857,6 +884,11 @@ p.lares-form-success::before {
   flex: 1 1 8rem;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+/* A form or a message under a row's words stands a little apart from them. */
+.lares-row-main > .lares-stack,
+.lares-row-main > .lares-notice {
+  margin-top: var(--space-2);
 }
 .lares-row-title {
   font: var(--lares-type-label);
