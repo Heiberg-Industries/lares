@@ -15,7 +15,7 @@
 //   3. From card to outcome through the real door: the edit goes out as one `editMessageText`,
 //      and it is the only thing the handler does.
 //   4. A card eve posted WITHOUT an Approve button (its text was cut) gets a note under it: it
-//      cannot be approved here, and here is the console's Waiting on you page for it. The note
+//      cannot be approved here, and here is the console's Reviews page for it. The note
 //      goes when the request is decided.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -522,7 +522,7 @@ describe("4. a card that could not show everything points to the console", () =>
     (call.body["reply_markup"] as { inline_keyboard: Array<Array<{ text: string }>> }).inline_keyboard.flat().map((b) => b.text);
 
   describe("the link", () => {
-    it("goes to the Waiting on you page for this request, and only from an http(s) address", () => {
+    it("goes to the Reviews page for this request, and only from an http(s) address", () => {
       expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "https://console.example.com" })).toBe("https://console.example.com/reviews?request=req-1");
       expect(waitingPageLink("req 1", { LARES_CONSOLE_URL: "https://console.example.com/lares/" })).toBe("https://console.example.com/lares/reviews?request=req+1");
       expect(waitingPageLink("req-1", { LARES_CONSOLE_URL: "  https://console.example.com  " })).toBe("https://console.example.com/reviews?request=req-1");
@@ -535,10 +535,10 @@ describe("4. a card that could not show everything points to the console", () =>
     it("the note says it cannot be approved here, where it can, and that Deny still works", () => {
       const withLink = shortenedCardNote(LINK);
       expect(withLink).toContain("cannot be approved here");
-      expect(withLink).toContain(`Open it in the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: ${LINK}`);
+      expect(withLink).toContain(`Open it in the Reviews page in the console, where it shows in full, to approve it. The page for this request: ${LINK}`);
       expect(withLink).toContain("Deny still works here.");
       const without = shortenedCardNote(null);
-      expect(without).toContain("Open it in the Waiting on you page in the console, where it shows in full, to approve it.");
+      expect(without).toContain("Open it in the Reviews page in the console, where it shows in full, to approve it.");
       expect(without).not.toContain("http");
       expect(without).toContain("Deny still works here.");
     });
