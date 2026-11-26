@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { hashOf, parseDefinition } from "../src/definition.js";
 import { validateDefinition } from "../src/definition-validate.js";
-import { checkOutsideUrl, isDangerRun, outsideHttpsHosts, outsideSecretName, outsideToolOfferedOn, outsideToolsInEffect, runsWithoutAsking, withSwitchesFrom } from "../src/outside-tools.js";
+import { checkOutsideUrl, isDangerRun, outsideHttpsHosts, outsideSecretName, outsideToolOfferedOn, outsideToolsInEffect, runsWithoutAsking, switchesHold, withSwitchesFrom } from "../src/outside-tools.js";
 import { assemblePersona } from "../src/persona/index.js";
 
 const ROLE = "I keep the books.\n";
@@ -209,5 +209,19 @@ describe("the owner's run-without-asking switches in an open conversation", () =
     expect(isDangerRun(withSwitchesFrom(pinned, on).outsideTools![0]!, "create_note", pin)).toBe(true);
     expect(withSwitchesFrom(on, base({ outsideTools: [] })).outsideTools![0]!.tools).toEqual({ allow: ["lookup", "create_note"], read: ["lookup"] });
     expect(withSwitchesFrom(base({ outsideTools: undefined }), on).outsideTools).toBeUndefined();
+  });
+  it("agrees with the definition check on which switches are valid", () => {
+    const tools = (extra: Record<string, unknown>) => ({ allow: ["lookup", "create_note"], read: ["lookup"], ...extra });
+    const cases: Record<string, unknown>[] = [
+      { outsideTools: [entry({ tools: tools({ trusted: [grant("lookup")], danger: [grant("create_note")] }) })] },
+      { outsideTools: [entry({ tools: tools({ trusted: [grant("create_note")] }) })] },
+      { outsideTools: [entry({ tools: tools({ trusted: [grant("lookup"), grant("lookup")] }) })] },
+      { outsideTools: [entry({ tools: tools({ danger: [grant("lookup")] }) })] },
+      { outsideTools: [entry({ tools: tools({ danger: [grant("unlisted")] }) })] },
+      { outsideTools: [entry({ tools: tools({ danger: [grant("create_note"), grant("create_note")] }) })] },
+      { grants: [{ capability: "outside", scope: "read" }], autonomy: { outside: "gated" }, outsideTools: [entry({ tools: { allow: ["lookup"], read: ["lookup"], danger: [] } })] },
+    ];
+    expect(cases.map((c) => switchesHold(base(c)))).toEqual(cases.map((c) => messages(check(c)) === ""));
+    expect(cases.map((c) => switchesHold(base(c)))).toEqual([true, false, false, false, false, false, true]);
   });
 });

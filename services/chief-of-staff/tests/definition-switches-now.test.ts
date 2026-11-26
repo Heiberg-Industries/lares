@@ -48,3 +48,15 @@ it("keeps what the conversation started on when the folder holds a different def
   mount("{ not json");
   expect(await runsFree(on)).toBe(true);
 });
+
+it("keeps the last valid switches when a hand edit breaks their rules", async () => {
+  mount(agent(false));
+  const off = await started();
+  const grant = { tool: "lookup", pin, by: "member-a", at: "2026-11-20T10:00:00.000Z" };
+  // A lookup put in the danger zone, and the same tool listed twice: both are refused by the definition check.
+  for (const danger of [[grant], [{ ...grant, tool: "create_note" }, { ...grant, tool: "create_note" }]]) {
+    mount({ ...neutral, outsideTools: [{ name: "registry", url: "https://tools.example.org/mcp", description: "Looks up companies by name.", token: false,
+      tools: { allow: ["lookup", "create_note"], read: ["lookup"], danger } }] });
+    expect((await withSwitchesNow(off)).outsideTools![0]!.tools.danger).toBeUndefined();
+  }
+});

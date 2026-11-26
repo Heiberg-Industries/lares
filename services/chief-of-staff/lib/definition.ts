@@ -38,7 +38,7 @@ import { join } from "node:path";
 
 import { loadDefinition, type AgentDefinition, type LoadedDefinition } from "@lares/agent-kit/definition";
 import { resolveDefinition, type Resolved } from "@lares/agent-kit/definition-cache";
-import { withSwitchesFrom } from "@lares/agent-kit/outside-tools";
+import { switchesHold, withSwitchesFrom } from "@lares/agent-kit/outside-tools";
 import { toolSourcesFor } from "@lares/agent-kit/definition-validate";
 import { deployedToolsFor } from "@lares/agent-kit/persona";
 
@@ -120,7 +120,8 @@ export function thisAgent(sessionId: string | undefined): Promise<Resolved> {
 /**
  * The conversation's pinned definition, with the owner's "run without asking" switches for outside tools as they are
  * NOW. Everything else stays what the conversation started on (ADR-0015): the switches are taken from a fresh read only
- * when that read is the same definition (equal hash, which leaves the switches out). A different or unreadable folder
+ * when that read is the same definition (equal hash, which leaves the switches out) and its switches obey the rules
+ * the definition check holds them to. A different, unreadable or invalid folder
  * changes nothing here, and Keeper still checks every call against the applied definition, so this can only decide
  * whether a card is raised. One folder read, no database and no signal: an invalid hand edit is reported by the
  * session-start read, not once per model call.
@@ -128,7 +129,7 @@ export function thisAgent(sessionId: string | undefined): Promise<Resolved> {
 export async function withSwitchesNow(loaded: LoadedDefinition): Promise<AgentDefinition> {
   try {
     const current = await loadDefinition({ serviceDir: process.cwd() });
-    return current.hash === loaded.hash ? withSwitchesFrom(loaded.definition, current.definition) : loaded.definition;
+    return current.hash === loaded.hash && switchesHold(current.definition) ? withSwitchesFrom(loaded.definition, current.definition) : loaded.definition;
   } catch {
     return loaded.definition;
   }

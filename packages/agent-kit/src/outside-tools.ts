@@ -120,6 +120,21 @@ export function withSwitchesFrom<D extends Pick<AgentDefinition, "outsideTools">
   }) };
 }
 
+/** Whether a definition's "run without asking" switches obey the rules the definition check holds them to
+ *  (`validateDefinition`, the outside-tools block): a trusted tool is a lookup, a danger-zone tool is an allowed tool that
+ *  changes something on a grant that is not read-only, and no tool is listed twice. A fresh read whose switches break
+ *  these is an invalid hand edit: the agent keeps its last valid switches, as it keeps its last valid definition. */
+export function switchesHold(d: Pick<AgentDefinition, "grants" | "outsideTools">): boolean {
+  const readOnly = d.grants.find((g) => g.capability === OUTSIDE_CAPABILITY)?.scope === "read";
+  return (d.outsideTools ?? []).every(({ tools }) => {
+    const trusted = (tools.trusted ?? []).map((t) => t.tool);
+    const danger = (tools.danger ?? []).map((t) => t.tool);
+    return trusted.every((t) => tools.read.includes(t)) && new Set(trusted).size === trusted.length
+      && danger.every((t) => tools.allow.includes(t) && !tools.read.includes(t)) && new Set(danger).size === danger.length
+      && !(danger.length > 0 && readOnly);
+  });
+}
+
 /** Where a conversation happens, for the one question "may this outside tool be offered here?".
  *  `web-chat`: the console's own verified session, where every allowed tool is offered and a card asks first.
  *  `private-door-chat`: the claimed person in a private chat on a door (Slack, Telegram, ...). A door has no
