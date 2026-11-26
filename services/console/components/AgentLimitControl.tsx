@@ -43,7 +43,7 @@ export function AgentLimitControl({ capacity }: { capacity: Capacity }) {
           Agent limit
           <p>
             {current === null ? "Not set yet." : `This server may run up to ${current} ${noun(current)}. You have ${capacity.activeCount}.`}
-            {" "}A fresh installation starts with a limit of 1 as a conservative setting, not a measurement of this server’s capacity. {editable ? "Only the installation owner can change it here; review the separate RAM estimate below first." : "Ask the installation owner to review the separate RAM estimate before changing it in Settings → Agents."}
+            {" "}A fresh installation starts with a limit of 1 as a conservative setting, not a measurement of this server’s capacity. {editable ? "Only the installation owner can change it here; review the separate RAM estimate below first." : "Ask the installation owner to review the separate RAM estimate before changing it in General → Agents."}
           </p>
         </div>
         {!editable && <span className="mono" data-testid="agent-limit">{current ?? "Not set"}</span>}

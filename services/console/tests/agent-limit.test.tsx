@@ -54,7 +54,7 @@ it("is read-only when the viewer cannot change it", () => {
   expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   expect(screen.queryByLabelText(/New limit/)).toBeNull();
   expect(screen.getByTestId("agent-limit").textContent).toBe("2");
-  expect(document.body.textContent).toContain("Ask the installation owner to review the separate RAM estimate before changing it in Settings → Agents.");
+  expect(document.body.textContent).toContain("Ask the installation owner to review the separate RAM estimate before changing it in General → Agents.");
 });
 
 it("is read-only with no memory line when an older keeper sends no new fields", () => {
