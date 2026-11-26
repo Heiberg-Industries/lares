@@ -53,7 +53,7 @@ export interface CardDoor {
    *  as it takes). A door that does not is where a shortened card gets no Approve. */
   readonly showsLongCardWhole: boolean;
   /** Whether the door lists the cards that were raised on OTHER doors. A card is only on the door
-   *  it was raised on, except in the console's Waiting on you page, which lists every door's. So
+   *  it was raised on, except in the console's Reviews page, which lists every door's. So
    *  only a door that does this can be where a person is sent to read a card raised elsewhere. */
   readonly listsCardsFromEveryDoor: boolean;
   /** Whether this door is connected for the person who answers (the installation's owner, for an
@@ -104,7 +104,7 @@ export function isCardDoor(door: unknown): door is string {
  * long card whole, are connected for this person, and hold this card, best first. The input of
  * {@link shortenedCardSentence}.
  *
- * A card is on the door it was raised on and in the console's Waiting on you page, so the places
+ * A card is on the door it was raised on and in the console's Reviews page, so the places
  * are the doors that list every door's cards. A door that shows long cards whole but lists only its
  * own (Slack) is not named for a card that was cut somewhere else: a sentence that named it would
  * send a person to look for a request that is not there.
@@ -127,7 +127,7 @@ function isConnected(door: CardDoor, env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
- * The console's Waiting on you page for one request, from `LARES_CONSOLE_URL`, or null when it is
+ * The console's Reviews page for one request, from `LARES_CONSOLE_URL`, or null when it is
  * unset or not an http(s) address. The page selects the request by eve's interaction id
  * (`?request=<id>`).
  */

@@ -267,7 +267,7 @@ describe("an email approval card", () => {
     expect(notice).toMatch(/^— shortened — \d+ characters are not shown\.\n/u);
     expect(notice).toContain("The request above is shortened, so it cannot be approved here.");
     expect(notice).toContain("Deny still works here.");
-    expect(notice).toContain("the Waiting on you page in the console");
+    expect(notice).toContain("the Reviews page in the console");
     // Slack is not named as a place to read it: the request is not on Slack's side of anything else.
     expect(notice).not.toContain("Open it in Slack");
 

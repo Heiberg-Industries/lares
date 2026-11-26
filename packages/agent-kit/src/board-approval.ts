@@ -209,7 +209,7 @@ export function boardApproval(
       await withTimeout(assertManagedRuntimeCurrent(undefined, process.env, ctx?.session?.auth), BOARD_READ_TIMEOUT_MS, 'managed connection authority');
     }
     catch (e) {
-      if (e instanceof Error && e.message === NO_OWNER_CONNECTION) return {type:'denied',reason:'No chat app is connected yet, and this request did not come from the console. Approve it from web chat or the Waiting on you page in the console, or connect Telegram or Slack.'};
+      if (e instanceof Error && e.message === NO_OWNER_CONNECTION) return {type:'denied',reason:'No chat app is connected yet, and this request did not come from the console. Approve it from web chat or the Reviews page in the console, or connect Telegram or Slack.'};
       return {type:'denied',reason:'The owner connection changed or is unavailable. Apply current connection changes before approving actions.'};
     }
     const deps = depsOverride ?? productionDeps;
