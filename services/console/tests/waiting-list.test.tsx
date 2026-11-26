@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The Waiting on you page's list and detail: what is shown, which item a Telegram link opens, and
+// The Reviews page's list and detail: what is shown, which item a Telegram link opens, and
 // what the owner sees after pressing a button — including "already decided elsewhere".
 import React from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -86,8 +86,8 @@ it("approved but the action failed: says so as a failure, and offers nothing mor
   const onDecide = vi.fn(async (): Promise<DecideResult> => ({ ok: false, reason: "action-failed", message: "Your approval arrived, but the action did not go through: refused." }));
   const detail = setup([item("a")], onDecide);
   await userEvent.click(within(detail).getByRole("button", { name: "Approve" }));
-  await waitFor(() => expect(within(detail).getByRole("status").textContent).toContain("did not go through"));
-  expect(within(detail).getByRole("status").className).toBe("lares-form-error");
+  await waitFor(() => expect(within(detail).getByRole("alert").textContent).toContain("did not go through"));
+  expect(within(detail).getByRole("alert").getAttribute("data-tone")).toBe("error");
   expect(within(detail).queryByRole("button")).toBeNull();
 });
 

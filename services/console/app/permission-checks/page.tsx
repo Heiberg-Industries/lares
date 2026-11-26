@@ -1,6 +1,6 @@
 import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
-import { PageHeader, Page } from "@lares/ui/patterns";
+import { Field, PageHeader, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Input } from "@lares/ui/primitives/input";
 import { getPermissionEvents } from "../../lib/console-overview";
@@ -18,31 +18,28 @@ export default async function ActivityPage({
   return (
     <Page className="lares-stack">
       <PageHeader
-        title="Permission activity"
-        description="Permission decisions across your agents."
+        title="Permission checks"
+        description="Each time an agent asked whether it may use a tool, and what was decided."
         actions={
           <Button variant="outline" asChild>
-            <Link href="/alerts">Signals & events →</Link>
+            <Link href="/alerts">Alerts →</Link>
           </Button>
         }
       />
-      <form className="lares-actions" action="/permission-checks">
-        <label>
-          Filter by agent name
-          <Input
-            name="agent"
-            defaultValue={agent ?? ""}
-            placeholder="All agents"
-          />
-        </label>
+      <form className="lares-inline-form" action="/permission-checks">
+        <Field label="Agent name">
+          <Input name="agent" defaultValue={agent ?? ""} placeholder="All agents" />
+        </Field>
         <Button variant="outline" type="submit">
           Filter
         </Button>
-        {agent && <Link href="/permission-checks">Clear filter</Link>}
+        {agent && (
+          <Button variant="ghost" asChild>
+            <Link href="/permission-checks">Clear filter</Link>
+          </Button>
+        )}
       </form>
-      <section>
-        <PermissionEvents events={events} />
-      </section>
+      <PermissionEvents events={events} />
       <p className="lares-muted">
         These records show permission decisions. Completed work appears in the
         original conversation.

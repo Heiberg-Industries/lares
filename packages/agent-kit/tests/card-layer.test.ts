@@ -163,16 +163,16 @@ describe("a shortened card (D-6)", () => {
   });
 
   it("points to the places that show a card whole, in the order of the table, in words that are true of each", () => {
-    expect(placesShowingWhole()).toEqual([{ where: "the Waiting on you page in the console", hasLink: true }]);
+    expect(placesShowingWhole()).toEqual([{ where: "the Reviews page in the console", hasLink: true }]);
     expect(shortenedCardSentence(placesShowingWhole(), "https://console.example/reviews?request=r"))
-      .toBe("The request above is shortened, so it cannot be approved here. Open it in the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: https://console.example/reviews?request=r\nDeny still works here.");
+      .toBe("The request above is shortened, so it cannot be approved here. Open it in the Reviews page in the console, where it shows in full, to approve it. The page for this request: https://console.example/reviews?request=r\nDeny still works here.");
     // Without an address, the sentence still names the page and invents no link.
     expect(shortenedCardSentence(placesShowingWhole(), null)).not.toContain("http");
-    expect(shortenedCardSentence(placesShowingWhole(), null)).toContain("Waiting on you page in the console");
+    expect(shortenedCardSentence(placesShowingWhole(), null)).toContain("Reviews page in the console");
     // Once Slack shows a long card whole its row says so, and the same words name it first.
     const slack = { where: "Slack", hasLink: false };
     expect(shortenedCardSentence([slack, ...placesShowingWhole()], "https://console.example/x"))
-      .toBe("The request above is shortened, so it cannot be approved here. Open it in Slack or the Waiting on you page in the console, where it shows in full, to approve it. The page for this request: https://console.example/x\nDeny still works here.");
+      .toBe("The request above is shortened, so it cannot be approved here. Open it in Slack or the Reviews page in the console, where it shows in full, to approve it. The page for this request: https://console.example/x\nDeny still works here.");
     expect(shortenedCardSentence([slack], "https://console.example/x")).not.toContain("https://");
     expect(shortenedCardSentence([], null)).toBe("The request above is shortened, so it cannot be approved here. Deny still works here.");
   });
@@ -196,7 +196,7 @@ describe("where a person is sent to read a card too long for its door", () => {
     ["Slack not connected, no console address", {}, null],
   ] as const)("%s: names the page in the console, never Slack (the request is not on Slack), and a link only when there is one", (_name, env, link) => {
     const text = sentence(env, link);
-    expect(text).toContain("Open it in the Waiting on you page in the console, where it shows in full, to approve it.");
+    expect(text).toContain("Open it in the Reviews page in the console, where it shows in full, to approve it.");
     expect(text).not.toContain("Slack");
     expect(text).not.toContain("Telegram");
     expect(text.includes("http")).toBe(link !== null);
@@ -208,10 +208,10 @@ describe("where a person is sent to read a card too long for its door", () => {
       first: { ...CARD_DOORS["console"]!, whereToOpen: "First", opensWithLink: false, connected: (env: NodeJS.ProcessEnv) => env["FIRST"] === "yes" },
       console: CARD_DOORS["console"]!,
     };
-    expect(placesShowingWhole({ FIRST: "yes" }, doors).map((p) => p.where)).toEqual(["First", "the Waiting on you page in the console"]);
-    expect(placesShowingWhole({}, doors).map((p) => p.where)).toEqual(["the Waiting on you page in the console"]);
+    expect(placesShowingWhole({ FIRST: "yes" }, doors).map((p) => p.where)).toEqual(["First", "the Reviews page in the console"]);
+    expect(placesShowingWhole({}, doors).map((p) => p.where)).toEqual(["the Reviews page in the console"]);
     const broken = { ...doors, first: { ...doors.first, connected: () => { throw new Error("unreadable"); } } };
-    expect(placesShowingWhole({}, broken).map((p) => p.where)).toEqual(["the Waiting on you page in the console"]);
+    expect(placesShowingWhole({}, broken).map((p) => p.where)).toEqual(["the Reviews page in the console"]);
   });
 
   it("a door that shows a long card whole but lists only its own is never named for a card cut elsewhere", () => {
