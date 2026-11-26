@@ -89,7 +89,7 @@ const steps = {
     await page.goto(`${origin}/agents/new`);
     await page.getByRole("radio", { name: "Chief of staff" }).check({ timeout: 30_000 });
     await page.getByRole("button", { name: "Continue →" }).click();
-    await page.getByLabel("Name (permanent slug)").fill(settings.agent);
+    await page.getByLabel("Permanent name").fill(settings.agent);
     await page.getByRole("button", { name: "Continue →" }).click();
     await page.getByRole("button", { name: "Create agent" }).click();
     await page.waitForURL((url) => url.pathname !== "/agents/new", { timeout: STEP_MS });
@@ -103,8 +103,8 @@ const steps = {
   async "member-limit"(page) {
     await page.goto(`${origin}/members`);
     await page.locator('input[name="monthlyLimit"]').fill(settings.memberLimit, { timeout: 30_000 });
-    await page.getByRole("button", { name: "Save initial limit" }).click();
-    await page.getByText("Initial monthly limit saved.").waitFor({ timeout: 60_000 });
+    await page.getByRole("button", { name: "Save first limit" }).click();
+    await page.getByText("First monthly limit saved.").waitFor({ timeout: 60_000 });
   },
   // A tool that just runs, a Track change and a Vault note that each need the owner's answer on
   // their card, then one more message in the same conversation.
