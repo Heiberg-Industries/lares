@@ -36,7 +36,13 @@ Commit titles from 9cd65931407291e74dc48bc4514541c7a73ca40a to c09263205cb2c450a
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- Token servers that also offer a sign-in page. Choosing Token when you add a connector now always makes it a token connector. Before, a server that offers its own sign-in page and also accepts an API key was recorded as a sign-in server, which cannot be used yet, so it could not be connected at all.
+- Use a token instead. A connector already recorded as a sign-in server now has a Use a token instead button. Press it, and the page continues with the usual token steps; there is no need to remove the connector and add it again.
+- Check it works keeps a token connector a token connector when the server also offers a sign-in page, so it can no longer undo your choice. It can still see that a server needs no login at all.
+- A rare failure in the check of the notes folders is gone: Git's own background tidying could remove a lock file while Lares was looking at it, and the check then failed.
+- No database file and no setting changes.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
