@@ -18,7 +18,7 @@ export default async function NewAgentPage() {
       </Page>
     );
   return (
-    <Page width="narrow" className="lares-settings">
+    <Page>
       <PageHeader
         title="Create an agent"
         description="A purpose, a name, and a clear set of permissions."

@@ -47,7 +47,7 @@ it('has no refresh button, and shows a prominent pending state while an apply ru
  mocks.states[STATE.rows]=[row('slack',{enabled:true,configured:true})];mocks.states[STATE.progress]='Applying (restarts the agent, about a minute)…';
  const tree=DoorSetup(props);const html=renderToStaticMarkup(tree);
  expect(find(tree,'Refresh connection status')).toBeUndefined();expect(html).not.toContain('Refresh connection status');
- expect(html).toContain('lares-door-progress');expect(html).toContain('Applying (restarts the agent, about a minute)');
+ expect(html).toContain('data-tone="working"');expect(html).toContain('Applying (restarts the agent, about a minute)');
 });
 it('shows the Apply button only when a door the owner touched is waiting',()=>{
  mocks.states[STATE.rows]=[row('slack'),row('telegram',{pending:true})];

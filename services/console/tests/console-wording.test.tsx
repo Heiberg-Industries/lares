@@ -67,7 +67,7 @@ afterEach(() => {
 
 async function toReview() {
   await userEvent.click(screen.getByRole("button", { name: "Continue →" }));
-  await userEvent.type(screen.getByLabelText("Name (permanent slug)"), "helper");
+  await userEvent.type(screen.getByLabelText("Permanent name"), "helper");
   await userEvent.click(screen.getByRole("button", { name: "Continue →" }));
 }
 

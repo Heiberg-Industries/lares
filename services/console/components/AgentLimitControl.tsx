@@ -1,5 +1,5 @@
 "use client";
-import { Field } from "@lares/ui/patterns";
+import { Field, Notice } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Input } from "@lares/ui/primitives/input";
 import { useState, useTransition } from "react";
@@ -62,9 +62,9 @@ export function AgentLimitControl({ capacity }: { capacity: Capacity }) {
             </Field>
             <Button type="submit" disabled={!valid || pending}>{pending ? "Saving…" : "Save"}</Button>
           </div>
-          {tooHigh && <p role="alert">This is more than the estimate of about {suggestedMax} {noun(suggestedMax!)} this server can hold. You can still save it, but the server may run out of memory.</p>}
-          {error && <p role="alert">{error}</p>}
-          {saved && <p role="status">Saved. The limit is now {current}.</p>}
+          {tooHigh && <Notice tone="needs-you">This is more than the estimate of about {suggestedMax} {noun(suggestedMax!)} this server can hold. You can still save it, but the server may run out of memory.</Notice>}
+          {error && <Notice error>{error}</Notice>}
+          {saved && <Notice tone="success">Saved. The limit is now {current}.</Notice>}
         </form>
       )}
     </>

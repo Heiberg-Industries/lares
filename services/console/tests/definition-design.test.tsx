@@ -64,7 +64,7 @@ it("requires the review step before creating and preserves an unknown outcome", 
   expect(screen.getByText("Choose a purpose")).toBeTruthy();
   await userEvent.click(screen.getByRole("button", { name: "Continue →" }));
   await userEvent.type(
-    screen.getByLabelText("Name (permanent slug)"),
+    screen.getByLabelText("Permanent name"),
     "helper",
   );
   await userEvent.click(screen.getByRole("button", { name: "Continue →" }));
@@ -83,7 +83,7 @@ it("keeps edited values until navigation is explicitly discarded", async () => {
   render(<DefinitionForm {...props} />);
   await userEvent.click(screen.getByRole("button", { name: "Continue →" }));
   await userEvent.type(
-    screen.getByLabelText("Name (permanent slug)"),
+    screen.getByLabelText("Permanent name"),
     "helper",
   );
   await userEvent.click(screen.getByRole("button", { name: "Close" }));
@@ -91,7 +91,7 @@ it("keeps edited values until navigation is explicitly discarded", async () => {
   expect(calls.push).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   expect(
-    (screen.getByLabelText("Name (permanent slug)") as HTMLInputElement).value,
+    (screen.getByLabelText("Permanent name") as HTMLInputElement).value,
   ).toBe("helper");
   await userEvent.click(screen.getByRole("button", { name: "Close" }));
   await userEvent.click(
