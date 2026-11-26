@@ -90,7 +90,7 @@ it('refuses past the agent limit with the existing sentence', async () => {
     register(1);
     await hostImport('first');
     compose.create.mockClear();
-    await expect(hostImport('second')).rejects.toThrow("this box's agent limit is 1; the installation owner can raise it in Settings → Agents after reviewing the RAM estimate, or retire an agent");
+    await expect(hostImport('second')).rejects.toThrow("this box's agent limit is 1; the installation owner can raise it in General → Agents after reviewing the RAM estimate, or retire an agent");
     expect(existsSync(join(agentsDir, 'second'))).toBe(false);
     expect(compose.create).not.toHaveBeenCalled();
 });

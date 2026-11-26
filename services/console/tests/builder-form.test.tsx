@@ -19,7 +19,7 @@ it('keeps new-agent permission writes unavailable and gives every field its timi
  expect(html.split(NOTE).length-1).toBe(1);
  expect(html).toContain('Create this agent first');expect(html).not.toContain('open web-chat conversations');expect(html).not.toContain('role="group" aria-label=');
  expect(html).toContain('What is this agent for? Write it the way you would tell a person.');
- expect(html).toContain('This server holds up to 6 agents. You have 3.');expect(html).toContain('Open Settings → Agents');
+ expect(html).toContain('This server holds up to 6 agents. You have 3.');expect(html).toContain('Open General → Agents');
  expect(html).toContain('Access and skills');expect(html).toContain('Schedules');
  expect(html).not.toContain('installation-brain');
 });
@@ -43,7 +43,7 @@ it('shows the plain label note and no timing note under Description, which nothi
 });
 it('distinguishes unapproved capacity and a full box',()=>{
  expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:null,activeCount:3,approved:false,creationAvailable:false}}/>)).toContain('not been measured and approved');
- expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:0,activeCount:0,approved:true,creationAvailable:false}}/>)).toContain('Ask the installation owner to review Settings → Agents');
+ expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:0,activeCount:0,approved:true,creationAvailable:false}}/>)).toContain('Ask the installation owner to review General → Agents');
  expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:1,activeCount:1,approved:true,creationAvailable:false}}/>)).toContain('up to 1 agent');
 });
 
