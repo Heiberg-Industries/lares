@@ -12,7 +12,7 @@ vi.mock('../components/AvatarEditor',()=>({AvatarEditor:()=><section>Picture</se
 vi.mock('../components/DoorSetup',()=>({DoorSetup:()=><section>Doors setup</section>}));
 vi.mock('../components/ConversationControl',()=>({ConversationControl:()=>null}));
 afterEach(()=>{cleanup();vi.clearAllMocks();});
-const base={startingPoints:startingPoints(),aliases:modelAliases('example'),timing:Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)])),capacity:{ceiling:6,activeCount:3,approved:true,creationAvailable:true,canChange:true}};
+const base={owner:true,startingPoints:startingPoints(),aliases:modelAliases('example'),timing:Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)])),capacity:{ceiling:6,activeCount:3,approved:true,creationAvailable:true,canChange:true}};
 const initial={definition:{...base.startingPoints[0].definition,name:'example',model:'example-brain',language:'English'},duties:'d',voice:'v',hash:'a'.repeat(64),runtime:{pending:false,reason:null,running:true,healthy:true},status:'valid'};
 const edit=()=>render(<DefinitionForm {...base} initial={initial as never}/>);
 const order=(a:Element,b:Element)=>Boolean(a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING);

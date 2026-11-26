@@ -20,7 +20,7 @@ async function postAction(id: number, action: "approve" | "reject"): Promise<voi
   }
 }
 
-function ProposalRow(p: { proposal: NotionProposalDTO; onResolved: (id: number) => void }) {
+function ProposalRow(p: { proposal: NotionProposalDTO; onResolved: (id: number) => void; canDecide: boolean }) {
   const [pending, start] = useTransition();
   const [err, setErr] = useState("");
 
@@ -54,20 +54,21 @@ function ProposalRow(p: { proposal: NotionProposalDTO; onResolved: (id: number) 
         {isCreate && "This file does not exist in the vault yet. "}
         Approve: {approveConsequence(p.proposal)}. Reject: {rejectConsequence(p.proposal)}.
       </p>
-      <div className="lares-actions">
+      {p.canDecide ? <div className="lares-actions">
         <Button type="button" disabled={pending} onClick={() => act("approve")}>
           Approve
         </Button>
         <Button type="button" variant="outline" disabled={pending} onClick={() => act("reject")}>
           Reject
         </Button>
-      </div>
+      </div> : <p className="lares-muted">Only the owner can approve or reject this.</p>}
       {err && <Notice tone="error">{err}</Notice>}
     </Row>
   );
 }
 
-export function NotionProposalsCard(p: { proposals: NotionProposalDTO[]; frozen: FrozenDocDTO[] }) {
+/** `canDecide`: true for the owner. Answering a proposal changes the installation's notes; the route refuses anyone else. */
+export function NotionProposalsCard(p: { proposals: NotionProposalDTO[]; frozen: FrozenDocDTO[]; canDecide: boolean }) {
   // Optimistic list ownership (same posture as AutonomyControl's local level
   // state): a resolved proposal is no longer "open" from this card's point of
   // view the moment approve/reject succeeds, even though the engine's actual
@@ -94,7 +95,7 @@ export function NotionProposalsCard(p: { proposals: NotionProposalDTO[]; frozen:
         ) : (
           <Rows label="Notion proposals">
             {proposals.map((proposal) => (
-              <ProposalRow key={proposal.id} proposal={proposal} onResolved={resolve} />
+              <ProposalRow key={proposal.id} proposal={proposal} onResolved={resolve} canDecide={p.canDecide} />
             ))}
           </Rows>
         )}

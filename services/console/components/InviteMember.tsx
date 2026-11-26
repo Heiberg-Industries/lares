@@ -6,9 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lare
 import { Input } from "@lares/ui/primitives/input";
 import { Select } from "@lares/ui/primitives/select";
 import { createInvitation, type InviteResult } from "../app/actions/members";
-import { ROLE_WORDS } from "../lib/member-roles";
-/** The roles an invitation can carry, in the order the form offers them. */
-const INVITE_ROLES = ["member", "restricted", "owner"] as const;
+import { ROLE_CHOICES as INVITE_ROLES, ROLE_WORDS } from "../lib/member-roles";
 export function InviteMember() {
   const [state, action, pending] = useActionState<InviteResult, FormData>(createInvitation, {});
   return <Card>

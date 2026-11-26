@@ -2,7 +2,7 @@
 import { cookies } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 import { agentAccessUpdateSchema, GrantStoreError } from '@lares/agent-kit/grant-store';
-import { requireConsoleMember } from '../../lib/auth';
+import { requireAction } from '../../lib/auth';
 import { agentAccess } from '../../lib/agent-access';
 import { ConsoleAdmissionUnavailableError } from '../../lib/admission-error';
 export type AccessResult={error?:string;saved?:boolean};
@@ -12,13 +12,13 @@ function failure(error:unknown):AccessResult {
   throw new ConsoleAdmissionUnavailableError();
 }
 export async function adoptAgent(_previous:AccessResult,form:FormData):Promise<AccessResult> {
-  const actor=await requireConsoleMember(),agentName=text(form,'agentName'),expectedDefinitionHash=text(form,'definitionHash');
+  const actor=await requireAction('owner'),agentName=text(form,'agentName'),expectedDefinitionHash=text(form,'definitionHash');
   if(!agentName||!expectedDefinitionHash)return {error:'Reload the current agent definition before adopting.'};
   try {await agentAccess.adoptAgent(actor.id,{agentName,expectedDefinitionHash},{designatedOwnerMemberId:process.env.AGENT_OWNER_USER_ID?.trim()??'',sessionToken:(await cookies()).get('lares_session')?.value??''});revalidatePath(`/agents/${agentName}`);return {saved:true};}
   catch(error){return failure(error);}
 }
 export async function saveAgentAccess(_previous:AccessResult,form:FormData):Promise<AccessResult> {
-  const actor=await requireConsoleMember(),agentName=text(form,'agentName'),rawRevision=text(form,'revision'),use=form.get('use');
+  const actor=await requireAction('owner'),agentName=text(form,'agentName'),rawRevision=text(form,'revision'),use=form.get('use');
   if(!agentName||!rawRevision||!/^\d+$/.test(rawRevision)||!['personal','named','organisation'].includes(String(use)))return {error:'Reload agent access before saving.'};
   const readers=form.getAll('readers'),editors=form.getAll('editors');
   if([...readers,...editors].some(value=>typeof value!=='string'||!value||value.length>200)||readers.length+editors.length>200)return {error:'Choose valid members.'};

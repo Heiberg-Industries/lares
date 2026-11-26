@@ -7,7 +7,7 @@ import { GOOGLE_PERSONAL_READ_SCOPES, googlePersonalConsentScopes } from '@lares
 const seam = vi.hoisted(() => ({ query: (..._args: unknown[]): Promise<unknown> => Promise.reject(new Error('not initialized')),
   connect: (): Promise<unknown> => Promise.reject(new Error('not initialized')), session: vi.fn() }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => ({ value: 'signed-cookie' }) }) }));
-vi.mock('../lib/auth', () => ({ sessionMember: seam.session }));
+vi.mock('../lib/auth', () => ({ sessionMember: seam.session, mayUse: (member: unknown, level: string) => !!member && level === 'member' }));
 vi.mock('../lib/accounts', () => ({ googleOrgs: () => [{ id: 'example', label: 'example' }] }));
 vi.mock('../lib/db', () => ({ pool: new Proxy({}, { get: (_t, key) => key === 'query' ? (...a: unknown[]) => seam.query(...a)
   : key === 'connect' ? () => seam.connect() : undefined, has: (_t, key) => key === 'query' || key === 'connect' }) }));

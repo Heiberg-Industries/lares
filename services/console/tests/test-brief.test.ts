@@ -8,7 +8,7 @@ import { TEST_BRIEF_WORKFLOW_TYPE } from "@lares/agent-kit/delivery";
  */
 
 const mocks = vi.hoisted(() => ({
-  verify: vi.fn(async (): Promise<string | null> => "owner@owner.example"),
+  actingAddress: vi.fn(async (): Promise<string | null> => "owner@owner.example"),
   keeper: vi.fn(),
   ownerOnly: true,
   insertRow: { id: "r1", busy: false, recent: 0 } as { id: string | null; busy: boolean; recent: number },
@@ -37,7 +37,7 @@ vi.mock("../lib/db", () => ({
     }),
   },
 }));
-vi.mock("../lib/auth", () => ({ verify: mocks.verify }));
+vi.mock("../lib/auth", () => ({ actingAddress: mocks.actingAddress }));
 vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: "c" }) })) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("../lib/keeper-client", async (importOriginal) => ({
@@ -65,8 +65,8 @@ function keeperAnswers(o: { definition?: Record<string, unknown>; runtime?: Reco
 }
 
 beforeEach(() => {
-  mocks.verify.mockClear();
-  mocks.verify.mockImplementation(async () => "owner@owner.example");
+  mocks.actingAddress.mockClear();
+  mocks.actingAddress.mockImplementation(async () => "owner@owner.example");
   mocks.keeper.mockReset();
   mocks.ownerOnly = true;
   mocks.insertRow = { id: "r1", busy: false, recent: 0 };
@@ -81,7 +81,7 @@ const inserted = () => mocks.statements.some((s) => /INSERT INTO workflow_jobs/.
 
 describe("who may press it", () => {
   it("anyone but the console owner is refused before anything is read or written", async () => {
-    mocks.verify.mockImplementation(async () => null);
+    mocks.actingAddress.mockImplementation(async () => null);
     await expect(sendTestBrief({ name: "chief", door: "telegram" })).rejects.toThrow("unauthenticated");
     await expect(testBriefStatus("chief")).rejects.toThrow("unauthenticated");
     expect(mocks.keeper).not.toHaveBeenCalled();

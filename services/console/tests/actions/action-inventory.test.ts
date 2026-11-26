@@ -4,19 +4,87 @@ import ts from "typescript";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 // Real lib/auth with the same stand-ins tests/auth.test.ts uses: used only to prove that the guards the
-// inventory relies on really refuse a person who is not the owner.
+// inventory relies on really refuse a person below the level written at the call.
 const mocks = vi.hoisted(() => ({ lookup: vi.fn(), query: vi.fn(), cookie: vi.fn() }));
 vi.mock("@lares/agent-kit/member-store", () => ({ PgMemberStore: class { sessionMember = mocks.lookup } }));
 vi.mock("../../lib/db", () => ({ pool: { query: mocks.query } }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: mocks.cookie }) }));
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`redirect:${path}`); } }));
 
-import { consoleRoot, generate, inventoryPath, overridesPath, render, scanActionSource, type Overrides, type Row } from "./generate";
-import { isConsoleOwner, requireConsoleMember, requireConsolePage, requireMember, verify } from "../../lib/auth";
+import { AUTH_GUARDS, AUTH_LOOKUPS, AUTH_NOT_GUARDS, consoleRoot, generate, inventoryPath, overridesPath, render, scanActionSource, type Overrides, type Row } from "./generate";
+import * as auth from "../../lib/auth";
+import { actingAddress, mayUse, requireAction, requirePage, sessionMember, signedInMember } from "../../lib/auth";
 
 const REGENERATE = "Run `pnpm -C services/console run actions:inventory`, read the diff, and commit it on purpose.";
-/** Owner decision: every page except chat and membership stays owner-only for now. */
-const RULE_OPEN_PAGES = ["/chat", "/chat/[name]", "/your-membership"];
+/**
+ * The owner's decision, written out. Three levels: owner, admin, member. Every page, action and route is
+ * listed here with its level ON PURPOSE; the tests below fail when the code and these lists disagree, in
+ * either direction. Anything new that is not placed here fails too: the default is owner, and opening
+ * something to an admin or a member is a line somebody adds here and the owner can read.
+ */
+/** A member is exactly as before this change: Chat, Your accounts, Your membership. */
+const MEMBER_PAGES = ["/chat", "/chat/[name]", "/your-accounts", "/your-membership"];
+/** An admin may also open these. */
+const ADMIN_PAGES = [
+  "/", "/reviews",
+  "/agents", "/agents/[name]", "/agents/[name]/edit", "/agents/new", "/writing-style",
+  "/integrations", "/integrations/[id]", "/outside-tools", "/outside-tools/[id]", "/outside-tools/new",
+  "/deadlines", "/meeting-follow-ups", "/saved-preferences",
+  "/permission-checks", "/alerts",
+  "/quiet-hours-and-delivery", "/alert-routing", "/alert-routing/catalogue",
+];
+/** Only the owner: members and roles, backups, the installation's general settings. */
+const OWNER_PAGES = ["/backups", "/general", "/members"];
+
+/** Actions any signed-in member may call. Each acts on the caller's own things only. Unchanged by the admin role. */
+const MEMBER_ACTIONS = [
+  "accounts.readPersonalSendCard", "accounts.removeAccount", "members.signOutEverywhere",
+  "outside-discovery.acceptOutsideDescriptorReview", "outside-discovery.applyOutsideCredentialCandidate", "outside-discovery.discoverOutsideTools",
+  "outside-discovery.inspectOutsideDiscovery", "outside-discovery.listOutsideDiscoveryTargets", "outside-discovery.previewOutsideCredentialApply",
+  "outside-discovery.previewOutsideDescriptorReview", "outside-discovery.previewOutsideDiscovery", "outside-discovery.publishOutsideDescriptorReview",
+  "outside-discovery.removeOutsideCredential", "outside-discovery.stageOutsideCredentialCandidate",
+  "private-metadata.createPrivateMetadataDataset", "private-metadata.issuePrivateMetadataDevice", "private-metadata.previewPrivateMetadataTarget",
+  "private-metadata.privateMetadataDeviceStatus", "private-metadata.revokePrivateMetadataDevice",
+];
+/** Actions that stay with the owner, each with the reason. Several sit on a page an admin may open. */
+const OWNER_ACTIONS: Record<string, string> = {
+  "agent-access.adoptAgent": "decides who owns an agent",
+  "agent-access.saveAgentAccess": "decides which people may use or edit an agent",
+  "definition.acceptNotionSyncPreview": "an installation setting (Notion sync)",
+  "definition.runNotionSyncPreview": "an installation setting (Notion sync)",
+  "definition.setNotionSync": "an installation setting (Notion sync)",
+  "definition.setMeetingsSource": "an installation setting (which Notion database holds meetings)",
+  "definition.setAgentLimit": "a General setting",
+  "definition.setAgentSetting": "a General setting",
+  "definition.deleteAgent": "deletes the installation's data",
+  "definition.startFreshConversation": "throws a conversation away",
+  "definition.claimCode": "the keeper records whoever asks as the agent's owner address",
+  "delivery.sendTestBrief": "sent to the owner and paid by the owner",
+  "inbox.markRead": "the owner's message inbox",
+  "members.createInvitation": "members and roles",
+  "members.removeMember": "members and roles",
+  "members.revokeInvitation": "members and roles",
+  "members.setInitialMemberLimit": "members and roles",
+  "members.setMemberRole": "members and roles: only the owner changes a role",
+  "members.signOutMember": "members and roles",
+  "outside-connect.connectSetDanger": "the danger zone",
+  "outside-connectors.removeConnector": "takes a connector from every agent and erases its held tokens",
+};
+
+/** Every route with a session, and its level. The rest are the machine and sign-in routes named in overrides.json. */
+const ROUTE_LEVELS: Record<string, "member" | "admin" | "owner"> = {
+  "GET /api/accounts/google/callback": "member", "POST /api/accounts/google/start": "member",
+  "GET /api/accounts/microsoft/callback": "member", "POST /api/accounts/microsoft/start": "member",
+  "GET /api/agent-mailbox": "member", "POST /api/agent-mailbox": "member",
+  "GET /api/chat/[name]/[...path]": "member", "POST /api/chat/[name]/[...path]": "member",
+  "GET /api/agents/[name]/avatar": "admin",
+  "GET /api/clipping": "admin", "POST /api/clipping": "admin",
+  "GET /api/notion-proposals": "admin",
+  "POST /api/notion-proposals": "owner",
+  "GET /api/credentials/notion": "owner", "POST /api/credentials/notion": "owner",
+  "GET /api/inbox": "owner",
+  "POST /api/provider-key": "owner",
+};
 
 const overrides = JSON.parse(readFileSync(overridesPath, "utf8")) as Overrides;
 const inventory = generate();
@@ -90,7 +158,7 @@ describe("console action inventory", () => {
   it("keeps the override table honest: every entry is needed, and says why", () => {
     const needed = new Set(rows.filter(r => r.source === "override").map(r => r.id));
     expect([...needed].sort(), "overrides.json guards must list exactly the rows the generator cannot derive").toEqual(Object.keys(overrides.guards).sort());
-    for (const [section, table] of Object.entries({ guards: overrides.guards, getChangesState: overrides.getChangesState, publicByDesign: overrides.publicByDesign, awaitingOwnerDecision: overrides.awaitingOwnerDecision })) {
+    for (const [section, table] of Object.entries({ guards: overrides.guards, getChangesState: overrides.getChangesState, publicByDesign: overrides.publicByDesign })) {
       for (const [id, value] of Object.entries(table)) {
         const reason = typeof value === "string" ? value : value.reason;
         expect(reason.trim().length, `${section}: ${id} needs a reason`).toBeGreaterThan(15);
@@ -101,76 +169,168 @@ describe("console action inventory", () => {
     for (const row of inventory.routes) if (row.methods === "GET") expect(row.changesState, row.id).toBe(row.id in overrides.getChangesState);
   });
 
-  it("lets only chat and membership (plus the named exceptions) be reached by a non-owner", () => {
-    const reachable = pages.filter(p => p.see !== "owner").map(p => p.id).sort();
-    const allowed = [...RULE_OPEN_PAGES, ...Object.keys(overrides.publicByDesign), ...Object.keys(overrides.awaitingOwnerDecision)].sort();
-    expect(reachable, "A page other than chat and membership is open to someone who is not the owner. Make it owner-only, or ask the owner and record the decision in overrides.json.").toEqual(allowed);
-    for (const id of [...Object.keys(overrides.publicByDesign), ...Object.keys(overrides.awaitingOwnerDecision)]) {
-      expect(RULE_OPEN_PAGES, `${id} is already open by rule`).not.toContain(id);
+  it("gives every page the level the owner decided, and no page a level by accident", () => {
+    const byLevel = (level: string) => pages.filter(p => p.see === level).map(p => p.id).sort();
+    expect(byLevel("member"), "Pages a member may open. A member is exactly as before the admin role: chat, their accounts, their membership.").toEqual([...MEMBER_PAGES].sort());
+    expect(byLevel("admin"), "Pages an admin may open. Opening another page to admins is a line added to ADMIN_PAGES on purpose.").toEqual([...ADMIN_PAGES].sort());
+    expect(byLevel("owner"), "Pages only the owner may open.").toEqual([...OWNER_PAGES].sort());
+    expect(byLevel("public"), "Pages a signed-out person must reach.").toEqual(Object.keys(overrides.publicByDesign).sort());
+    expect(new Set([...MEMBER_PAGES, ...ADMIN_PAGES, ...OWNER_PAGES, ...Object.keys(overrides.publicByDesign)]).size, "a page is listed at two levels").toBe(pages.length);
+  });
+
+  it("keeps Members, Backups and General away from an admin, and everything but chat, accounts and membership away from a member", () => {
+    for (const id of ["/members", "/backups", "/general"]) expect(pages.find(p => p.id === id)?.see, id).toBe("owner");
+    for (const page of pages) if (!MEMBER_PAGES.includes(page.id) && !(page.id in overrides.publicByDesign)) expect(["admin", "owner"], `${page.id} is open to a member`).toContain(page.see);
+  });
+
+  it("refuses at every page that needs a session: the page guard is there, and the page never acts more openly than it opens", () => {
+    const strict = { public: 0, member: 1, admin: 2, owner: 3 } as Record<string, number>;
+    const guarded = pages.filter(p => !(p.id in overrides.publicByDesign));
+    expect(guarded.length).toBeGreaterThan(20);
+    for (const page of guarded) {
+      expect(page.guards, page.id).toContain("requirePage");
+      if (page.act !== "none") expect(strict[page.act]!, `${page.id}: opens as ${page.see}, acts as ${page.act}`).toBeGreaterThanOrEqual(strict[page.see!]!);
     }
   });
 
-  it("keeps the chat and membership pages for members, signed in", () => {
-    for (const id of RULE_OPEN_PAGES) expect(pages.find(p => p.id === id)?.see, id).toBe("member");
+  it("gives every action the level the owner decided: the member list and the owner list are exact, the rest is admin", () => {
+    const byLevel = (level: string) => inventory.actions.filter(a => a.act === level).map(a => a.id).sort();
+    expect(byLevel("member"), "Actions any member may call. Nothing that was owner-only may appear here.").toEqual([...MEMBER_ACTIONS].sort());
+    expect(byLevel("owner"), "Actions that stay with the owner. One that leaves this list became open to admins.").toEqual(Object.keys(OWNER_ACTIONS).sort());
+    expect(byLevel("public"), "No action is callable without a session.").toEqual([]);
+    expect(byLevel("admin").length + MEMBER_ACTIONS.length + Object.keys(OWNER_ACTIONS).length).toBe(inventory.actions.length);
+    for (const [id, reason] of Object.entries(OWNER_ACTIONS)) expect(reason.length, `${id} needs its reason`).toBeGreaterThan(10);
   });
 
-  it("refuses a non-owner at every other page: the owner guard is the first thing the page does", () => {
-    const ownerPages = pages.filter(p => !RULE_OPEN_PAGES.includes(p.id) && !(p.id in overrides.publicByDesign) && !(p.id in overrides.awaitingOwnerDecision));
-    expect(ownerPages.length).toBeGreaterThan(15);
-    for (const page of ownerPages) {
-      expect(page.see, page.id).toBe("owner");
-      expect(page.act === "owner" || page.act === "none", `${page.id}: acts as ${page.act}`).toBe(true);
-      expect(page.guards, page.id).toContain("requireConsolePage");
+  it("keeps whole files at one level unless the exception is written down", () => {
+    // An action follows the page it serves. These files are entirely the level named; a new action in one of them
+    // at another level fails here until it is placed on purpose (the lists above then say why).
+    const whole: Record<string, string> = {
+      "agent-access": "owner", inbox: "owner",
+      autonomy: "admin", avatar: "admin", deadlines: "admin", "meeting-series": "admin", proactivity: "admin", signals: "admin", taste: "admin", voice: "admin", waiting: "admin",
+      accounts: "member", "outside-discovery": "member", "private-metadata": "member",
+    };
+    const mixed = ["definition", "delivery", "members", "outside-connect", "outside-connectors"];
+    const files = new Set(inventory.actions.map(a => a.id.split(".")[0]!));
+    expect([...files].sort(), "an action file is not placed at a level").toEqual([...Object.keys(whole), ...mixed].sort());
+    for (const action of inventory.actions) {
+      const file = action.id.split(".")[0]!;
+      if (file in whole) expect(action.act, action.id).toBe(whole[file]);
+    }
+    // In the mixed files everything is admin except what the owner list names and the one member action.
+    for (const action of inventory.actions.filter(a => mixed.includes(a.id.split(".")[0]!)))
+      expect(action.act, action.id).toBe(action.id in OWNER_ACTIONS ? "owner" : action.id === "members.signOutEverywhere" ? "member" : "admin");
+  });
+
+  it("gives every route with a session the level the owner decided", () => {
+    const withSession = inventory.routes.filter(r => r.source !== "override");
+    expect(Object.fromEntries(withSession.map(r => [r.id, r.act]))).toEqual(ROUTE_LEVELS);
+    for (const row of inventory.routes.filter(r => r.source === "override")) expect(row.act, row.id).toBe("public");
+  });
+
+  it("never lets an action be more open than the pages that use it need", () => {
+    const pageLevel = new Map(pages.map(p => [p.id, p.see]));
+    for (const action of inventory.actions) {
+      const users = action.usedBy!.map(u => pageLevel.get(u)).filter(Boolean);
+      if (action.act === "member" || action.act === "public")
+        expect(users.some(l => l === "member" || l === "public"), `${action.id} admits any member but no member page uses it; it probably needs a stricter level`).toBe(true);
+      if (action.act === "admin" && users.length)
+        expect(users.some(l => l !== "owner"), `${action.id} admits an admin but only owner-only pages use it; it should be owner`).toBe(true);
     }
   });
 
-  it("never lets a member-level action sit only on owner-only pages or on no page", () => {
-    const memberPages = new Set([...RULE_OPEN_PAGES, ...Object.keys(overrides.publicByDesign), ...Object.keys(overrides.awaitingOwnerDecision)]);
-    for (const action of inventory.actions.filter(a => a.act === "member" || a.act === "public")) {
-      expect(action.usedBy!.some(u => memberPages.has(u)), `${action.id} admits any member but no member page uses it; it probably needs the owner check`).toBe(true);
-    }
+  it("marks where a page or action an admin or member passes holds something stricter inside", () => {
+    // Not a gate by itself: it says where to look. The owner-only parts on admin pages are hidden by the page and refused by the action.
+    const withOwnerParts = rows.filter(r => r.ownerExtras).map(r => r.id).sort();
+    expect(withOwnerParts).toEqual(["/agents/[name]", "/agents/[name]/edit", "/agents/new", "/integrations/[id]", "/outside-tools/[id]", "/reviews", "/sign-in", "/your-accounts", "GET /api/auth/[...route]", "accounts.removeAccount"].sort());
+    expect(rows.filter(r => r.adminExtras).map(r => r.id)).toEqual([]);
   });
 
-  it("only owner-gates actions and routes through guards this suite has proved", () => {
-    const proved = new Set(["requireConsolePage", "requireConsoleMember", "verify", "isConsoleOwner", "requireMember", "sessionMember", "signedInMember"]);
+  it("only gates pages, actions and routes through guards this suite has proved, and knows every function lib/auth.ts exports", () => {
+    const proved = new Set([...Object.keys(AUTH_GUARDS), ...AUTH_LOOKUPS]);
     for (const row of rows) for (const guard of row.guards) expect(proved.has(guard), `${row.id} relies on ${guard}; add a behaviour check for it below`).toBe(true);
+    const exported = Object.entries(auth).filter(([, value]) => typeof value === "function").map(([name]) => name).sort();
+    expect(exported, "lib/auth.ts exports a function the generator does not know. Say in generate.ts whether it is a guard, a lookup or neither, and prove it below.")
+      .toEqual([...Object.keys(AUTH_GUARDS), ...AUTH_LOOKUPS, ...AUTH_NOT_GUARDS].sort());
+  });
+
+  it("reads the level from the word written at the call, and counts a level it cannot read as no guard", () => {
+    // Every guard call in the console writes its level out. A call that passed a variable would leave its row unknown,
+    // which the "no row whose guard is unknown" test refuses. This checks the source the same way, by text.
+    const calls = /\b(requirePage|requireAction|actingAddress)\(([^)]*)\)|\bmayUse\([^,()]+(?:\([^()]*\))?[^,()]*,\s*([^)]*)\)/g;
+    let seen = 0;
+    for (const folder of ["app", "components", "lib"]) for (const file of sourceFiles(join(consoleRoot, folder))) {
+      if (file.endsWith("lib/auth.ts")) continue;
+      for (const match of readFileSync(file, "utf8").matchAll(calls)) {
+        seen++;
+        expect((match[2] ?? match[3] ?? "").trim(), `${file}: ${match[0]}`).toMatch(/^["'](owner|admin|member)["']$/);
+      }
+    }
+    expect(seen).toBeGreaterThan(100);
   });
 });
 
 const owner = { id: "owner-1", organisationId: "org", role: "owner", status: "active", automationMode: "draft-and-ask" };
+const people = {
+  "the named owner": owner,
+  "an admin": { ...owner, id: "admin-1", role: "admin" },
+  "a member": { ...owner, id: "member-1", role: "member" },
+  "a different owner": { ...owner, id: "owner-2" },
+  "a person with an unknown role": { ...owner, id: "odd-1", role: "superuser" },
+} as const;
+/** What each person may use, by level. A second owner and an unknown role are members. */
+const MAY: Record<keyof typeof people, readonly string[]> = {
+  "the named owner": ["owner", "admin", "member"], "an admin": ["admin", "member"], "a member": ["member"],
+  "a different owner": ["member"], "a person with an unknown role": ["member"],
+};
 beforeEach(() => {
   vi.stubEnv("AGENT_OWNER_USER_ID", "owner-1");
   mocks.lookup.mockReset().mockResolvedValue(owner);
-  mocks.query.mockReset().mockResolvedValue({ rows: [{ primary_email: "owner@example.test" }] });
+  mocks.query.mockReset().mockResolvedValue({ rows: [{ primary_email: "person@example.test" }] });
   mocks.cookie.mockReset().mockReturnValue({ value: "opaque" });
 });
 afterEach(() => vi.unstubAllEnvs());
 
-describe("the owner guards the inventory relies on really refuse a non-owner", () => {
-  const notOwners = [
-    ["a member", { ...owner, id: "member-1", role: "member" }],
-    ["a different owner", { ...owner, id: "owner-2" }],
-  ] as const;
-  for (const [who, person] of notOwners) {
-    it(`refuses ${who}`, async () => {
+describe("the guards the inventory relies on really refuse a person below the level, for all three levels", () => {
+  for (const who of Object.keys(people) as (keyof typeof people)[]) for (const level of ["owner", "admin", "member"] as const) {
+    const allowed = MAY[who].includes(level);
+    it(`${allowed ? "lets" : "refuses"} ${who} at ${level} level, in each guard as the generator reads it`, async () => {
+      const person = people[who];
       mocks.lookup.mockResolvedValue(person);
-      expect(isConsoleOwner(person as never)).toBe(false);
-      await expect(requireConsolePage()).rejects.toThrow("redirect:/your-membership");
-      await expect(requireConsoleMember()).rejects.toThrow("owner admission required");
-      expect(await verify("opaque")).toBeNull();
+      // check: mayUse answers yes or no
+      expect(AUTH_GUARDS.mayUse).toEqual({ levelArg: 1, kind: "check" });
+      expect(mayUse(person as never, level)).toBe(allowed);
+      // throws: requirePage redirects, requireAction throws
+      expect(AUTH_GUARDS.requirePage).toEqual({ levelArg: 0, kind: "throws" });
+      expect(AUTH_GUARDS.requireAction).toEqual({ levelArg: 0, kind: "throws" });
+      if (allowed) {
+        await expect(requirePage(level)).resolves.toMatchObject({ id: person.id });
+        await expect(requireAction(level)).resolves.toMatchObject({ id: person.id });
+      } else {
+        await expect(requirePage(level)).rejects.toThrow("redirect:/your-membership?refused=1");
+        await expect(requireAction(level)).rejects.toThrow(`${level} admission required`);
+      }
+      // nullable: actingAddress returns the person's own address or null
+      expect(AUTH_GUARDS.actingAddress).toEqual({ levelArg: 0, kind: "nullable" });
+      expect(await actingAddress(level)).toBe(allowed ? "person@example.test" : null);
     });
   }
-  it("sends someone who is signed out to sign in, and refuses their actions", async () => {
+  it("sends someone who is signed out to sign in, and refuses their actions, at every level", async () => {
     mocks.lookup.mockResolvedValue(null);
-    await expect(requireConsolePage()).rejects.toThrow("redirect:/sign-in");
-    await expect(requireMember()).rejects.toThrow("redirect:/sign-in");
-    await expect(requireConsoleMember()).rejects.toThrow("owner admission required");
-    expect(await verify("opaque")).toBeNull();
+    for (const level of ["owner", "admin", "member"] as const) {
+      await expect(requirePage(level)).rejects.toThrow("redirect:/sign-in");
+      await expect(requireAction(level)).rejects.toThrow("admission required");
+      expect(await actingAddress(level)).toBeNull();
+      expect(mayUse(null, level)).toBe(false);
+    }
   });
-  it("lets the designated owner through", async () => {
-    expect(isConsoleOwner(owner as never)).toBe(true);
-    await expect(requireConsolePage()).resolves.toMatchObject({ id: "owner-1" });
-    await expect(requireConsoleMember()).resolves.toMatchObject({ id: "owner-1" });
-    expect(await verify("opaque")).toBe("owner@example.test");
+  it("the lookups return the signed-in person or null, so a null check on them is a member-level guard", async () => {
+    expect(AUTH_LOOKUPS).toEqual(["sessionMember", "signedInMember"]);
+    mocks.lookup.mockResolvedValue(people["a member"]);
+    expect(await sessionMember("opaque")).toMatchObject({ id: "member-1" });
+    expect(await signedInMember()).toMatchObject({ id: "member-1" });
+    mocks.lookup.mockResolvedValue(undefined);
+    expect(await sessionMember("opaque")).toBeNull();
+    expect(await signedInMember()).toBeNull();
   });
 });

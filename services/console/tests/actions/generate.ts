@@ -6,9 +6,11 @@
  * reach which actions. Run it by hand with:  node tests/actions/generate.ts --write   (from services/console)
  *
  * Who-may-act is DERIVED, never typed in: each page, action and route is parsed, the guard calls it makes are
- * followed into lib/auth.ts, and the strictest guard that really refuses (a throw, a redirect or a null check
- * on the result) decides the level. Anything that cannot be derived is "unknown"; overrides.json can resolve
- * it, each with a reason, and the test refuses unknown rows and stale overrides.
+ * followed to the guards of lib/auth.ts, and the strictest guard that really refuses (a throw, a redirect or a
+ * check on the result) decides the level. The level is the word the code hands the guard: "owner", "admin" or
+ * "member", written out at the call. A level that is not written out there cannot be read and counts as no
+ * guard. Anything that cannot be derived is "unknown"; overrides.json can resolve it, each with a reason, and
+ * the test refuses unknown rows and stale overrides.
  */
 import ts from "typescript";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -19,16 +21,14 @@ export const consoleRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../
 export const inventoryPath = join(consoleRoot, "tests/actions/action-inventory.json");
 export const overridesPath = join(consoleRoot, "tests/actions/overrides.json");
 
-export type Who = "owner" | "member" | "public" | "none" | "unknown";
+export type Who = "owner" | "admin" | "member" | "public" | "none" | "unknown";
 export interface Overrides {
   /** Resolves a row the generator marked unknown. Key is the row id. */
-  guards: Record<string, { level: "public" | "member" | "owner"; reason: string }>;
+  guards: Record<string, { level: "public" | "member" | "admin" | "owner"; reason: string }>;
   /** GET handlers that change state although GET normally does not. Key is the row id. */
   getChangesState: Record<string, string>;
-  /** Pages (other than chat and membership) that a non-owner can reach, by design. */
+  /** Pages a signed-out person must reach. */
   publicByDesign: Record<string, string>;
-  /** Pages (other than chat and membership) a member can reach today, until the owner decides. */
-  awaitingOwnerDecision: Record<string, string>;
 }
 export interface Row {
   id: string;
@@ -38,8 +38,10 @@ export interface Row {
   see?: Who;
   /** Who may act: pages = through their actions; actions and routes = their own guard. */
   act: Who;
-  /** True when a member passes the guard but part of it is owner-only (a branch or a section). */
+  /** True when someone below the owner passes the guard but part of it is owner-only (a branch or a section). */
   ownerExtras?: true;
+  /** True when a member passes the guard but part of it needs an admin (a branch or a section). */
+  adminExtras?: true;
   /** The functions in lib/auth.ts that the guard reaches. */
   guards: string[];
   source: "derived" | "override" | "unknown";
@@ -52,7 +54,23 @@ export interface Row {
 }
 export interface Inventory { note: string; useServerDirectives: number; pages: Row[]; actions: Row[]; routes: Row[] }
 
-const rank: Record<string, number> = { none: 0, member: 1, owner: 2 };
+const rank: Record<string, number> = { none: 0, member: 1, admin: 2, owner: 3 };
+const LEVELS = ["none", "member", "admin", "owner"] as const;
+type Level = (typeof LEVELS)[number];
+/** The guards of lib/auth.ts: which argument is the level, and how each refuses. `throws`: it throws or
+ * redirects by itself. `nullable`: it returns null, so the caller must check the result. `check`: it answers
+ * yes or no (mayUse), so it counts only where a "no" ends the function. The test proves each one against the
+ * real lib/auth.ts for all three levels, and fails if lib/auth.ts exports a function that is in neither list. */
+export const AUTH_GUARDS: Record<string, { levelArg: number; kind: "throws" | "nullable" | "check" }> = {
+  requirePage: { levelArg: 0, kind: "throws" },
+  requireAction: { levelArg: 0, kind: "throws" },
+  actingAddress: { levelArg: 0, kind: "nullable" },
+  mayUse: { levelArg: 1, kind: "check" },
+};
+/** Functions of lib/auth.ts that look a person up. `sessionMember` and `signedInMember` return the signed-in,
+ * active member or null: a null check on the result is a member-level guard. The other two guard nothing. */
+export const AUTH_LOOKUPS = ["sessionMember", "signedInMember"];
+export const AUTH_NOT_GUARDS = ["memberAuditAddress", "consoleLevel"];
 const posix = (p: string) => p.split("\\").join("/");
 const rel = (p: string) => posix(relative(consoleRoot, p));
 
@@ -167,8 +185,9 @@ function directive(body: ts.Node | undefined): boolean {
 }
 
 // ---------- guard analysis ----------
-interface Analysis { level: "none" | "member" | "owner"; throws: boolean; nullable: boolean; ownerExtras: boolean; via: Set<string> }
-const none = (): Analysis => ({ level: "none", throws: false, nullable: false, ownerExtras: false, via: new Set() });
+/** `extras`: the strictest level asked for somewhere inside that the function as a whole does not enforce. */
+interface Analysis { level: Level; throws: boolean; nullable: boolean; extras: Level; via: Set<string> }
+const none = (): Analysis => ({ level: "none", throws: false, nullable: false, extras: "none", via: new Set() });
 const authFile = join(consoleRoot, "lib/auth.ts");
 const analysisCache = new Map<string, Analysis>();
 const strip = (node: ts.Expression): ts.Expression => {
@@ -190,23 +209,41 @@ const exitsWith = (node: ts.Node): { throws: boolean; returns: boolean } => {
   return out;
 };
 
-interface Ref { node: ts.CallExpression; special?: "ownerCheck" | "lookup"; name: string; callee?: Analysis; calleeFile?: string; cond: boolean; boundVar?: string; inReturn: boolean; direct: boolean }
-interface Gate { vars: Set<string>; calls: Set<ts.Node>; ownerCheck: boolean; throws: boolean }
+interface Ref { node: ts.CallExpression; special?: "check" | "lookup"; checkLevel?: Level; name: string; callee?: Analysis; calleeFile?: string; cond: boolean; boundVar?: string; inReturn: boolean; direct: boolean }
+interface Gate { vars: Set<string>; calls: Set<ts.Node>; throws: boolean }
 
-function calleeOf(file: string, call: ts.CallExpression): { special?: "ownerCheck" | "lookup"; name: string; fn?: { file: string; node: FnNode; name: string } } | undefined {
+type Callee = { special?: "check" | "lookup"; checkLevel?: Level; name: string; guard?: Analysis; fn?: { file: string; node: FnNode; name: string } };
+/** The level word written at a guard call, or undefined when it is not a plain "owner", "admin" or "member". */
+function writtenLevel(call: ts.CallExpression, index: number): Level | undefined {
+  const arg = call.arguments[index];
+  if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) && (arg.text === "owner" || arg.text === "admin" || arg.text === "member")) return arg.text;
+  return undefined;
+}
+function authCallee(name: string, call: ts.CallExpression): Callee | undefined {
+  const guard = AUTH_GUARDS[name];
+  if (guard) {
+    const level = writtenLevel(call, guard.levelArg);
+    if (!level) return undefined; // a level that is not written out cannot be read: no guard
+    if (guard.kind === "check") return { special: "check", checkLevel: level, name };
+    return { name, guard: { level, throws: guard.kind === "throws", nullable: guard.kind === "nullable", extras: "none", via: new Set([name]) } };
+  }
+  if (AUTH_LOOKUPS.includes(name)) return { special: "lookup", name };
+  return undefined;
+}
+function calleeOf(file: string, call: ts.CallExpression): Callee | undefined {
   const callee = call.expression;
   if (ts.isIdentifier(callee)) {
-    if (callee.text === "isConsoleOwner") return { special: "ownerCheck", name: "isConsoleOwner" };
     const local = functionIndex(file).get(callee.text);
-    if (local) return { name: callee.text, fn: { file, node: local, name: callee.text } };
+    if (local) return file === authFile ? authCallee(callee.text, call) : { name: callee.text, fn: { file, node: local, name: callee.text } };
     const imported = importsOf(file).names.get(callee.text);
     if (imported && !imported.typeOnly) {
+      if (imported.file === authFile) return authCallee(imported.name, call);
       const node = functionIndex(imported.file).get(imported.name);
       if (node) return { name: callee.text, fn: { file: imported.file, node, name: imported.name } };
     }
     return undefined;
   }
-  if (ts.isPropertyAccessExpression(callee) && (callee.name.text === "sessionMember" || callee.name.text === "signedInMember")) return { special: "lookup", name: callee.name.text };
+  if (ts.isPropertyAccessExpression(callee) && AUTH_LOOKUPS.includes(callee.name.text)) return { special: "lookup", name: callee.name.text };
   return undefined;
 }
 
@@ -216,7 +253,6 @@ function analyseFunction(file: string, name: string, fn: FnNode): Analysis {
   if (cached) return cached;
   analysisCache.set(key, none()); // cycles count as no guard
   const result = analyseBody(file, fn);
-  if (file === authFile) result.via = new Set([name]);
   analysisCache.set(key, result);
   return result;
 }
@@ -233,20 +269,18 @@ function analyseBody(file: string, fn: FnNode): Analysis {
     const boundVar = ctx?.boundVar, inReturn = ctx?.inReturn ?? false, direct = !swallowed.has(call);
     const c = calleeOf(file, call);
     if (!c) return;
-    if (c.fn) {
+    if (c.guard) refs.push({ node: call, name: c.name, callee: c.guard, calleeFile: authFile, cond, boundVar, inReturn, direct });
+    else if (c.fn) {
       const callee = analyseFunction(c.fn.file, c.fn.name, c.fn.node);
-      if (callee.level === "none") return;
+      if (callee.level === "none" && callee.extras === "none") return;
       refs.push({ node: call, name: c.name, callee, calleeFile: c.fn.file, cond, boundVar, inReturn, direct });
-    } else refs.push({ node: call, special: c.special, name: c.name, cond, boundVar, inReturn, direct });
+    } else refs.push({ node: call, special: c.special, checkLevel: c.checkLevel, name: c.name, cond, boundVar, inReturn, direct });
   };
   const bangOperands = (expr: ts.Node, out: Gate) => {
     if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.ExclamationToken) {
       const operand = strip(expr.operand as ts.Expression);
       if (ts.isIdentifier(operand)) out.vars.add(operand.text);
-      else if (ts.isCallExpression(operand)) {
-        out.calls.add(operand);
-        if (ts.isIdentifier(operand.expression) && operand.expression.text === "isConsoleOwner") out.ownerCheck = true;
-      }
+      else if (ts.isCallExpression(operand)) out.calls.add(operand);
     }
     ts.forEachChild(expr, child => bangOperands(child, out));
   };
@@ -271,7 +305,7 @@ function analyseBody(file: string, fn: FnNode): Analysis {
     }
     if (ts.isIfStatement(node)) {
       if (!cond) {
-        const gate: Gate = { vars: new Set(), calls: new Set(), ownerCheck: false, throws: false };
+        const gate: Gate = { vars: new Set(), calls: new Set(), throws: false };
         bangOperands(node.expression, gate);
         const exit = exitsWith(node.thenStatement);
         if ((gate.vars.size || gate.calls.size) && (exit.throws || exit.returns)) { gate.throws = exit.throws; gates.push(gate); }
@@ -297,43 +331,47 @@ function analyseBody(file: string, fn: FnNode): Analysis {
   };
   if (fn.body) visit(fn.body, false);
 
-  const levelOf = (r: Ref): "member" | "owner" => r.special === "lookup" ? "member" : r.callee!.level as "member" | "owner";
-  let level = 0 as 0 | 1 | 2, throws = false, passthroughNullable = false, gateNullable = false;
+  const levelOf = (r: Ref): number => r.special === "lookup" ? rank.member : rank[r.callee!.level];
+  let level = 0, throws = false, passthroughNullable = false, gateNullable = false;
   const via = new Set<string>();
-  const consumedOwnerChecks = new Set<ts.Node>();
+  const consumedChecks = new Set<ts.Node>();
   const enforced = new Set<Ref>();
-  const bump = (n: number) => { if (n > level) level = n as 1 | 2; };
+  const bump = (n: number) => { if (n > level) level = n; };
   for (const gate of gates) {
     let matched = false, gateLevel = 0;
     for (const r of refs) {
-      if (r.cond || r.special === "ownerCheck") continue;
+      if (r.cond || r.special === "check" || (r.callee && r.callee.level === "none")) continue;
       if ((r.boundVar && gate.vars.has(r.boundVar)) || gate.calls.has(r.node)) {
-        matched = true; enforced.add(r); gateLevel = Math.max(gateLevel, rank[levelOf(r)]);
+        matched = true; enforced.add(r); gateLevel = Math.max(gateLevel, levelOf(r));
       }
     }
-    for (const r of refs) if (r.special === "ownerCheck" && gate.calls.has(r.node)) { matched = true; gateLevel = 2; consumedOwnerChecks.add(r.node); via.add("isConsoleOwner"); }
+    // `if (!mayUse(person, "owner")) <leave>`: the check itself is the guard, at the level written in it.
+    for (const r of refs) if (r.special === "check" && gate.calls.has(r.node)) { matched = true; gateLevel = Math.max(gateLevel, rank[r.checkLevel!]); consumedChecks.add(r.node); via.add(r.name); }
     if (matched) { bump(gateLevel); if (gate.throws) throws = true; else gateNullable = true; }
   }
   for (const r of refs) {
-    if (r.special === "ownerCheck" || r.cond) continue;
+    if (r.special === "check" || r.cond || (r.callee && r.callee.level === "none")) continue;
     if (r.inReturn) {
-      enforced.add(r); bump(rank[levelOf(r)]);
+      enforced.add(r); bump(levelOf(r));
       if (r.special === "lookup" || !r.callee!.throws) passthroughNullable = true; else throws = true;
-    } else if (r.callee?.throws && r.direct) { enforced.add(r); bump(rank[levelOf(r)]); throws = true; }
+    } else if (r.callee?.throws && r.direct) { enforced.add(r); bump(levelOf(r)); throws = true; }
   }
   for (const r of enforced) {
     if (r.special === "lookup") via.add(r.name);
     else if (r.calleeFile === authFile) via.add(r.name);
     else for (const v of r.callee!.via) via.add(v);
   }
-  let ownerExtras = false;
+  // Anything stricter that is asked for inside but does not stop the whole function: a branch or a section.
+  let extras = 0;
   for (const r of refs) {
-    if (r.special === "ownerCheck") { if (!consumedOwnerChecks.has(r.node)) ownerExtras = true; }
-    else if (!enforced.has(r) && r.callee?.level === "owner") ownerExtras = true;
+    if (r.special === "check") { if (!consumedChecks.has(r.node)) extras = Math.max(extras, rank[r.checkLevel!]); }
+    else if (r.special !== "lookup") {
+      if (!enforced.has(r)) extras = Math.max(extras, rank[r.callee!.level]);
+      extras = Math.max(extras, rank[r.callee!.extras]);
+    }
   }
-  if (level === 2) ownerExtras = false;
-  if (ownerExtras) via.add("isConsoleOwner");
-  return { level: (["none", "member", "owner"] as const)[level], throws, nullable: !throws && level > 0 && (passthroughNullable || gateNullable), ownerExtras, via };
+  if (extras <= level) extras = 0;
+  return { level: LEVELS[level]!, throws, nullable: !throws && level > 0 && (passthroughNullable || gateNullable), extras: LEVELS[extras]!, via };
 }
 
 // ---------- row building ----------
@@ -348,6 +386,7 @@ function defaultExport(file: string): FnNode | undefined {
   return undefined;
 }
 function derivedWho(a: Analysis): Who { return a.level === "none" ? "unknown" : a.level; }
+const extrasOf = (a: Analysis) => (a.extras === "owner" ? { ownerExtras: true as const } : a.extras === "admin" ? { adminExtras: true as const } : {});
 const pageId = (file: string) => {
   const route = posix(relative(join(consoleRoot, "app"), dirname(file)));
   return route === "." ? "/" : `/${route}`;
@@ -413,7 +452,7 @@ export function generate(overrides: Overrides = JSON.parse(readFileSync(override
       const a = fn ? analyseFunction(fn.file, fn.name, fn.node) : none();
       routeRows.push(finish({
         id, kind: "route", file: rel(file), act: derivedWho(a), guards: [...a.via].sort(), source: "derived",
-        ...(a.ownerExtras ? { ownerExtras: true as const } : {}), methods: method,
+        ...extrasOf(a), methods: method,
         changesState: !["GET", "HEAD", "OPTIONS"].includes(method) || id in overrides.getChangesState,
       }, overrides));
       ids.push(id);
@@ -472,7 +511,7 @@ export function generate(overrides: Overrides = JSON.parse(readFileSync(override
     for (const name of names) {
       const id = actionId(file, name);
       const a = analyseFunction(file, name, index.get(name)!);
-      actionRows.set(id, finish({ id, kind: "action", file: rel(file), act: derivedWho(a), guards: [...a.via].sort(), source: "derived", ...(a.ownerExtras ? { ownerExtras: true as const } : {}), usedBy: [] }, overrides));
+      actionRows.set(id, finish({ id, kind: "action", file: rel(file), act: derivedWho(a), guards: [...a.via].sort(), source: "derived", ...extrasOf(a), usedBy: [] }, overrides));
     }
     // An export the generator cannot read as a function (a wrapped call, a re-export, a default) is still callable
     // from the browser: it becomes an unknown row until a person resolves it.
@@ -499,7 +538,7 @@ export function generate(overrides: Overrides = JSON.parse(readFileSync(override
     const { used, routes } = reach(file);
     const row: Row = finish({
       id, kind: isLayout ? "layout" : "page", file: rel(file), see: derivedWho(a), act: "none", guards: [...a.via].sort(), source: "derived",
-      ...(a.ownerExtras ? { ownerExtras: true as const } : {}), actions: used, routes,
+      ...extrasOf(a), actions: used, routes,
     }, overrides);
     pageRows.push(row);
     for (const u of used) actionRows.get(u)!.usedBy!.push(id);
@@ -513,16 +552,17 @@ export function generate(overrides: Overrides = JSON.parse(readFileSync(override
   for (const page of pageRows) {
     if (!page.actions!.length) { page.act = "none"; continue; }
     const levels = page.actions!.map(a => actionRows.get(a)!.act);
+    // What the most open action it reaches allows, never more than opening the page allows.
+    const strict = (w?: Who) => (w === "owner" ? 3 : w === "admin" ? 2 : w === "member" ? 1 : 0);
     if (levels.includes("unknown")) page.act = "unknown";
-    else if (page.see === "owner") page.act = "owner";
-    else page.act = levels.includes("public") ? "public" : levels.includes("member") ? "member" : "owner";
+    else page.act = (["public", "member", "admin", "owner"] as const)[Math.max(strict(page.see), Math.min(...levels.map(strict)))]!;
   }
-  const open = (w?: Who) => (w === "public" ? 3 : w === "member" ? 2 : w === "owner" ? 1 : 0);
+  const open = (w?: Who) => (w === "public" ? 4 : w === "member" ? 3 : w === "admin" ? 2 : w === "owner" ? 1 : 0);
   const byId = new Map(pageRows.map(p => [p.id, p]));
   for (const action of actionRows.values()) {
     action.usedBy!.sort();
     const seen = action.usedBy!.map(u => byId.get(u)!.see);
-    action.see = seen.includes("unknown") ? "unknown" : seen.length ? (["none", "owner", "member", "public"] as const)[Math.max(...seen.map(open))] : "none";
+    action.see = seen.includes("unknown") ? "unknown" : seen.length ? (["none", "owner", "admin", "member", "public"] as const)[Math.max(...seen.map(open))] : "none";
   }
   const byRowId = (a: Row, b: Row) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   return {

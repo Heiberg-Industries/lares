@@ -1,4 +1,4 @@
-vi.mock("../lib/auth", () => ({ requireConsolePage: async () => ({ id: "owner-1" }) }));
+vi.mock("../lib/auth", () => ({ requirePage: async () => ({ id: "owner-1" }) }));
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 

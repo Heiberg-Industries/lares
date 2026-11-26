@@ -2,7 +2,8 @@ import {beforeEach,expect,it,vi} from 'vitest';
 
 const mocks=vi.hoisted(()=>({cookie:'member-a-session',sessionMember:vi.fn(),audit:vi.fn(),keeper:vi.fn(),createdFor:[] as string[],resources:[] as string[]}));
 vi.mock('next/headers',()=>({cookies:async()=>({get:(name:string)=>name==='lares_session'&&mocks.cookie?{value:mocks.cookie}:undefined})}));
-vi.mock('../lib/auth',()=>({sessionMember:mocks.sessionMember,memberAuditAddress:mocks.audit}));
+// signedInMember reads the session cookie itself; the stand-in does the same, so a forged cookie still finds nobody.
+vi.mock('../lib/auth',()=>({signedInMember:async()=>mocks.sessionMember(mocks.cookie||undefined),mayUse:(member:unknown,level:string)=>!!member&&level==='member',memberAuditAddress:mocks.audit}));
 vi.mock('../lib/keeper-client',async original=>({...await original<typeof import('../lib/keeper-client')>(),keeper:mocks.keeper}));
 vi.mock('../lib/db',()=>({pool:{}}));
 vi.mock('@lares/agent-kit/account-store',()=>({PgAccountStore:class{

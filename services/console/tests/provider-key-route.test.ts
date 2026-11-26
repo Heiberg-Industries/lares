@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({ session: vi.fn(), audit: vi.fn(), keeper: vi.fn(), cookie: vi.fn(), owner: vi.fn() }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: mocks.cookie }) }));
-vi.mock('../lib/auth', () => ({ sessionMember: mocks.session, memberAuditAddress: mocks.audit, isConsoleOwner: mocks.owner }));
+vi.mock('../lib/auth', () => ({ sessionMember: mocks.session, memberAuditAddress: mocks.audit, mayUse: (member: unknown, level: string) => !!member && (level === "member" || mocks.owner(member)) }));
 vi.mock('../lib/keeper-client', async original => ({ ...await original<typeof import('../lib/keeper-client')>(), keeper: mocks.keeper }));
 import { POST } from '../app/api/provider-key/route';
 import { KeeperRefusedError, KeeperUnavailableError } from '../lib/keeper-client';

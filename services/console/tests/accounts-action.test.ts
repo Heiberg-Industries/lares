@@ -4,11 +4,14 @@ vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "s
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ deleteToken: m.delete }));
 vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { beginUpdate = m.begin; setStatus = m.status; } }));
-vi.mock("../lib/auth", () => ({ sessionMember: m.member, isConsoleOwner: m.owner }));
+vi.mock("../lib/auth", () => {
+  const mayUse = (member: unknown, level: string) => !!member && (level === "member" || m.owner(member));
+  return { mayUse, requireAction: async (level: string) => { const member = await m.member(); if (!mayUse(member, level)) throw new Error(`Console ${level} admission required`); return member; } };
+});
 vi.mock("../lib/db", () => ({ pool: {} })); vi.mock("../lib/accounts", () => ({ consolePrincipal: () => "configured-owner" }));
 import { removeAccount } from "../app/actions/accounts";
 beforeEach(() => { vi.clearAllMocks(); m.member.mockResolvedValue({ id: "member-a" }); m.owner.mockReturnValue(false); m.begin.mockResolvedValue({ accountId: "account", generation: 2, lifecycleRevision: 3 }); });
-it("refuses unauthenticated deletion", async () => { m.member.mockResolvedValue(null); await expect(removeAccount({ email: "x@example.test" })).rejects.toThrow("unauthenticated"); expect(m.delete).not.toHaveBeenCalled(); });
+it("refuses unauthenticated deletion", async () => { m.member.mockResolvedValue(null); await expect(removeAccount({ email: "x@example.test" })).rejects.toThrow("Console member admission required"); expect(m.delete).not.toHaveBeenCalled(); });
 it("revokes only the current member stable account and generation", async () => { await removeAccount({ accountId: "account", generation: 2 }); expect(m.begin).toHaveBeenCalledWith("member-a", "account", 2); expect(m.status).toHaveBeenCalledWith("member-a", expect.objectContaining({ lifecycleRevision: 3 }), "revoked"); expect(m.delete).not.toHaveBeenCalled(); });
 it("keeps legacy deletion owner-only, deriving its principal server-side", async () => { await expect(removeAccount({ email: "x@example.test" })).rejects.toThrow("could not"); expect(m.delete).not.toHaveBeenCalled(); m.owner.mockReturnValue(true); await removeAccount({ email: "x@example.test" }); expect(m.delete).toHaveBeenCalledWith({}, "configured-owner", "google", "x@example.test"); });
 it("never exposes DB errors or accepts mixed authority fields", async () => { m.begin.mockRejectedValue(new Error("PRIVATE SQL")); await expect(removeAccount({ accountId: "account", generation: 2 })).rejects.toThrow("Refresh"); await expect(removeAccount({ accountId: "account", generation: 2, email: "x@example.test" } as never)).rejects.toThrow("Refresh"); });

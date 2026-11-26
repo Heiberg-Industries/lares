@@ -1,10 +1,9 @@
 "use server";
-import { cookies } from "next/headers";
-import { verify } from "../../lib/auth";
+import { actingAddress } from "../../lib/auth";
 import { putAdmin } from "../../lib/signals";
 
 async function who(): Promise<string> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
+  const email = await actingAddress("admin");
   if (!email) throw new Error("unauthenticated");
   return email;
 }

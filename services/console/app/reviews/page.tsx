@@ -1,7 +1,5 @@
-import { requireConsolePage } from "../../lib/auth";
-import { cookies } from "next/headers";
+import { actingAddress, mayUse, requirePage } from "../../lib/auth";
 import { PageHeader, Page } from "@lares/ui/patterns";
-import { verify } from "../../lib/auth";
 import { listWaiting } from "../../lib/waiting";
 import { waitingDeps } from "../../lib/waiting-deps";
 import { decide } from "../actions/waiting";
@@ -16,8 +14,8 @@ export const dynamic = "force-dynamic";
  * (`lib/waiting.ts`).
  */
 export default async function WaitingPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
-  await requireConsolePage();
-  const member = await verify((await cookies()).get("lares_session")?.value);
+  const person = await requirePage("admin");
+  const member = await actingAddress("admin");
   if (!member) throw new Error("unauthenticated");
   const [{ request }, list] = await Promise.all([searchParams, listWaiting(member, waitingDeps)]);
   return (
@@ -31,6 +29,7 @@ export default async function WaitingPage({ searchParams }: { searchParams: Prom
         unreadable={list.unreadable}
         now={Date.now()}
         onDecide={decide}
+        {...(mayUse(person, "owner") ? {} : { emptyNote: "Approvals are answered by each agent's owner, so there is nothing here for you to decide." })}
         {...(typeof request === "string" ? { selectedRef: request } : {})}
       />
     </Page>

@@ -1,4 +1,4 @@
-import { requireConsolePage } from "../../lib/auth";
+import { requirePage } from "../../lib/auth";
 import Link from "next/link";
 import { getRules, getConsumers } from "../../lib/signals";
 import { JsonEditor } from "../../components/JsonEditor";
@@ -9,7 +9,7 @@ import { Button } from "@lares/ui/primitives/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 export const dynamic = "force-dynamic";
 export default async function RulesPage() {
-  await requireConsolePage();
+  await requirePage("admin");
   // The switches sit ABOVE the rules rather than on their own page, because they are the same
   // question — where does an alert go — asked one level up. Fetched independently so a spine
   // that answers one and not the other still renders what it can.

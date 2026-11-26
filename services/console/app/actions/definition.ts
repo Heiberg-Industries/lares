@@ -1,12 +1,19 @@
 "use server";
-import { cookies } from 'next/headers';
 import { keeper, keeperFailureText, keeperReferenceText, KeeperFailedError, KeeperRefusedError, KeeperUnavailableError, type KeeperFailureState } from '../../lib/keeper-client';
-import { verify } from '../../lib/auth';
+import { actingAddress } from '../../lib/auth';
 import type { Capacity, DefinitionResult, RetirementResult, Role, RuntimeState } from '../../lib/builder';
 import type { NotionSyncView } from '../../lib/notion-sync';
 import { deliveryFollowingFirstChatDoor } from '../../lib/delivery';
+/** The signed-in person's own address, for an action an admin may use. */
 async function actor(): Promise<string> {
-  const email = await verify((await cookies()).get('lares_session')?.value);
+  const email = await actingAddress("admin");
+  if (!email) throw new Error('unauthenticated');
+  return email;
+}
+/** The same, for an action that stays with the owner: the installation's general settings, anything
+ * that deletes data, and the claim that decides who an agent answers to. */
+async function ownerActor(): Promise<string> {
+  const email = await actingAddress("owner");
   if (!email) throw new Error('unauthenticated');
   return email;
 }
@@ -41,32 +48,32 @@ export async function saveDefinition(input: DefinitionInput): Promise<Definition
   return call('definition.save', input, await actor(), SAVE_TIMEOUT_MS);
 }
 export async function setAgentLimit(input: {ceiling: number}): Promise<DefinitionActionResult<Capacity>> {
-  return call('definition.capacity_set', {ceiling: input.ceiling}, await actor());
+  return call('definition.capacity_set', {ceiling: input.ceiling}, await ownerActor());
 }
 export interface MeetingsSourceResult { value: string | null; restarted: string[]; waiting: string[]; stopped: string[] }
 export async function setMeetingsSource(input: {dataSource: string}): Promise<DefinitionActionResult<MeetingsSourceResult>> {
-  return call('settings.notion_meetings_set', {dataSource: input.dataSource}, await actor(), 90_000);
+  return call('settings.notion_meetings_set', {dataSource: input.dataSource}, await ownerActor(), 90_000);
 }
 export interface AgentSettingsResult { key: string; value: string | null; restarted: string[]; waiting: string[]; stopped: string[] }
 export async function setAgentSetting(input: {key: string; value: string}): Promise<DefinitionActionResult<AgentSettingsResult>> {
-  return call('settings.agent_environment_set', {key: input.key, value: input.value}, await actor(), 90_000);
+  return call('settings.agent_environment_set', {key: input.key, value: input.value}, await ownerActor(), 90_000);
 }
 export async function setNotionSync(input: {enabled: boolean; peopleDataSource: string}): Promise<DefinitionActionResult<NotionSyncView>> {
-  return call('sync.notion_set', {enabled: input.enabled, peopleDataSource: input.peopleDataSource}, await actor(), 90_000);
+  return call('sync.notion_set', {enabled: input.enabled, peopleDataSource: input.peopleDataSource}, await ownerActor(), 90_000);
 }
 /** Reads Notion and the calendar once, writes nothing; can take a few minutes. The wait is longer than the keeper's
  * own 10-minute limit for the one-shot run, so a slow preview that is stored is never reported as unknown. */
 export async function runNotionSyncPreview(): Promise<DefinitionActionResult<NotionSyncView>> {
-  return call('sync.notion_preview', {}, await actor(), 660_000);
+  return call('sync.notion_preview', {}, await ownerActor(), 660_000);
 }
 export async function acceptNotionSyncPreview(input: {hash: string}): Promise<DefinitionActionResult<NotionSyncView>> {
-  return call('sync.notion_accept', {hash: input.hash}, await actor(), 90_000);
+  return call('sync.notion_accept', {hash: input.hash}, await ownerActor(), 90_000);
 }
 export async function retireAgent(input: {name: string}): Promise<DefinitionActionResult<RetirementResult>> {
   return call('definition.retire', input, await actor());
 }
 export async function deleteAgent(input: {name: string; confirm: boolean}): Promise<DefinitionActionResult<unknown>> {
-  const email = await actor();
+  const email = await ownerActor();
   if (input.confirm !== true) throw new Error('Explicit deletion confirmation is required.');
   return call('definition.delete', {name:input.name,confirm:true}, email);
 }
@@ -81,7 +88,7 @@ export async function listConversations(input:{name:string}):Promise<DefinitionA
   return call('conversation.list',input,await actor());
 }
 export async function startFreshConversation(input:{name:string;sessionId:string;incarnation:string;confirm:boolean}):Promise<DefinitionActionResult<{status:string}>> {
-  const email=await actor();
+  const email=await ownerActor();
   if(input.confirm!==true)throw new Error('Explicit conversation reset confirmation is required.');
   return call('conversation.reset',input,email);
 }
@@ -104,7 +111,7 @@ export async function verifyDoor(name:string,kind:'slack'|'telegram'):Promise<De
   return call('door.verify',{name,kind},await actor());
 }
 export async function claimCode(name:string,kind:'slack'|'telegram'):Promise<DefinitionActionResult<{code:string;expiresAt:string;instruction:string}>> {
-  return call('door.claim_issue',{name,kind},await actor());
+  return call('door.claim_issue',{name,kind},await ownerActor());
 }
 export async function registerTelegram(name:string):Promise<DefinitionActionResult<{registered:boolean}>> {
   return call('telegram.webhook_set',{name},await actor());

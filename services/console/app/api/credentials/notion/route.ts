@@ -1,15 +1,20 @@
 import { withConsoleAdmission } from "../../../../lib/admission-error";
 import { credentialMutationInput, credentialStatusSchema } from '@lares/agent-kit/credential-lifecycle';
-import { credentialActor, credentialViewFor } from '../../../../lib/credentials';
+import { actingAddress, mayUse, signedInMember } from '../../../../lib/auth';
+import { credentialViewFor } from '../../../../lib/credentials';
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from '../../../../lib/keeper-client';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const response = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
 const failed = (code: string, status: number) => response({ ok: false, code }, status);
+/** The key is the owner's. A signed-in person who is not the owner is told so; anyone else is told to sign in. */
+async function refusedPerson(): Promise<Response> {
+  return mayUse(await signedInMember(), "member") ? failed('administrator-required', 403) : failed('sign-in-required', 401);
+}
 async function handleGET(req: Request): Promise<Response> {
-  const actor = await credentialActor();
-  if (!actor) return failed('sign-in-required', 401);
+  const actor = await actingAddress("owner");
+  if (!actor) return refusedPerson();
   if (new URL(req.url).search) return failed('invalid-request', 400);
   const view = await credentialViewFor(actor);
   if (view.kind !== 'status') return failed(view.kind, view.kind === 'administrator-required' ? 403 : 503);
@@ -38,8 +43,8 @@ async function input(req: Request): Promise<unknown> {
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 async function handlePOST(req: Request): Promise<Response> {
-  const actor = await credentialActor();
-  if (!actor) return failed('sign-in-required', 401);
+  const actor = await actingAddress("owner");
+  if (!actor) return refusedPerson();
   if (!sameOrigin(req)) return failed('origin-refused', 403);
   const view = await credentialViewFor(actor);
   if (view.kind !== 'status') return failed(view.kind === 'unavailable' ? 'unavailable-before-send' : view.kind, view.kind === 'administrator-required' ? 403 : 503);

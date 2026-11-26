@@ -1,12 +1,11 @@
 import { AgentAccess } from "../../../components/AgentAccess";
 import { agentAccess } from "../../../lib/agent-access";
-import { members, memberAuditAddress } from "../../../lib/auth";
 import { cookies } from "next/headers";
 import { AgentMailbox } from "../../../components/AgentMailbox";
 import { agentMailboxView, mailboxUnavailableView } from "../../../lib/agent-mailbox";
 import { AgentProviderKey } from "../../../components/AgentProviderKey";
 import { providerKeyStatusFor } from "../../../lib/provider-key";
-import { requireConsolePage } from "../../../lib/auth";
+import { mayUse, memberAuditAddress, members, requirePage } from "../../../lib/auth";
 import { notFound } from "next/navigation";
 import { Notice, PageHeader, Page } from "@lares/ui/patterns";
 import { listAgents, savedAgentFolder } from "../../../lib/agents";
@@ -25,7 +24,7 @@ export default async function AgentPage({
 }: {
   params: Promise<{ name: string }>;
 }) {
-  const actor = await requireConsolePage();
+  const actor = await requirePage("admin");
   const { name } = await params;
   let agents;
   try {
@@ -75,18 +74,21 @@ export default async function AgentPage({
           running: definition.status === "fulfilled" ? definition.value.initial?.runtime?.running : undefined,
         }
       : undefined;
-  const access = await agentAccess.agentAccess(actor.id,name);
-  const directory = await members.listMembers(actor.id);
+  // Who may use or edit the agent, and the agent's own model key, are the owner's: an admin is not
+  // shown them, and the member directory and the key state are not read for an admin at all.
+  const owner = mayUse(actor, "owner");
+  const access = owner ? await agentAccess.agentAccess(actor.id,name) : undefined;
+  const directory = owner ? await members.listMembers(actor.id) : [];
   const sessionToken = (await cookies()).get("lares_session")?.value;
-  const auditAddress = await memberAuditAddress(actor.id);
-  const providerKey = sessionToken && auditAddress ? await providerKeyStatusFor(sessionToken, name, auditAddress) : { kind: "unavailable" as const };
+  const auditAddress = owner ? await memberAuditAddress(actor.id) : null;
+  const providerKey = owner ? sessionToken && auditAddress ? await providerKeyStatusFor(sessionToken, name, auditAddress) : { kind: "unavailable" as const } : undefined;
   const mailbox = saved?.role === "chief-of-staff" ? await agentMailboxView(actor, name, saved).catch(() => mailboxUnavailableView(name)) : undefined;
   return (
     <Page>
     <AgentDetail
-      accessSettings={definition.status === "fulfilled" && definition.value.initial ? <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/> : undefined}
+      accessSettings={access && definition.status === "fulfilled" && definition.value.initial ? <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/> : owner ? undefined : <p className="lares-muted">Only the owner decides who may use or edit this agent, and sets the agent's own model key.</p>}
       mailboxSettings={mailbox ? <AgentMailbox name={name} initial={mailbox} /> : undefined}
-      providerKeySettings={<AgentProviderKey name={name} initial={providerKey} />}
+      providerKeySettings={providerKey ? <AgentProviderKey name={name} initial={providerKey} /> : undefined}
       routing={routing}
       outsideTools={outsideTools}
       agent={agent}

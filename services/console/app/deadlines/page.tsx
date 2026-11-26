@@ -1,4 +1,4 @@
-import { requireConsolePage } from "../../lib/auth";
+import { requirePage } from "../../lib/auth";
 import { Notice, PageHeader, Page } from "@lares/ui/patterns";
 import { Card, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import {
@@ -35,7 +35,7 @@ export const dynamic = "force-dynamic";
  */
 
 export default async function DeadlinesPage() {
-  await requireConsolePage();
+  await requirePage("admin");
   const now = new Date();
   const view = await getDeadlinesView();
   const clock = resolveConsoleOwnerClock(now, { homeTz: homeTz() });

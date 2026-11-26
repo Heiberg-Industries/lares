@@ -1,4 +1,4 @@
-import { credentialActor } from './credentials';
+import { actingAddress } from './auth';
 import { keeper } from './keeper-client';
 
 export interface NotionSyncCounts { create: number; adoptPatch: number; skip: number; conflict: number }
@@ -22,7 +22,7 @@ export interface NotionSyncView {
 /** One keeper read per page render. Null means it could not be read (no session, keeper down, or this
  * installation's release offers no Notion sync). */
 export async function getNotionSyncView(): Promise<NotionSyncView | null> {
-  const actor = await credentialActor();
+  const actor = await actingAddress("admin");
   if (!actor) return null;
   try { return await keeper<NotionSyncView>('sync.notion_get', {}, actor); }
   catch { return null; }

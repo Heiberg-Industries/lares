@@ -807,9 +807,16 @@ async function refusalCode(response: Response): Promise<string | null> {
   }
 }
 
+// Proposed changes to the installation's Notion pages and shared notes are the owner's to answer, as
+// approvals are each agent's owner's. `deps.signedInMember` is the console's owner check
+// (lib/waiting-deps.ts): for anyone else nothing is listed here and a decision sent anyway is refused.
 const proposals: WaitingSource = {
-  list: (_member, deps) => listProposals(deps, (parts) => itemId("proposal", parts)),
+  async list(_member, deps) {
+    if (!(await deps.signedInMember())) return { items: [], unreadable: [] };
+    return listProposals(deps, (parts) => itemId("proposal", parts));
+  },
   async decide(_member, key, actionId, deps) {
+    if (!(await deps.signedInMember())) return { ok: false, reason: "refused", message: "Only the owner of this installation can decide this." };
     let parts: unknown;
     try {
       parts = JSON.parse(Buffer.from(key, "base64url").toString("utf8"));

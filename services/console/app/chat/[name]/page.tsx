@@ -1,5 +1,5 @@
 import { EmptyState, Page, PageHeader } from "@lares/ui/patterns";
-import { requireMember } from "../../../lib/auth";
+import { requirePage } from "../../../lib/auth";
 import { listPrivateChatAgents } from "../../../lib/agents";
 import { requireConsoleAgentUse } from "@lares/agent-kit/console-turn-authority";
 import { pool } from "../../../lib/db";
@@ -7,7 +7,7 @@ import { Chat } from "../../../components/Chat";
 import { notFound } from "next/navigation";
 export const dynamic = "force-dynamic";
 export default async function ChatAgentPage({ params }: { params: Promise<{ name: string }> }) {
-  const member = await requireMember();
+  const member = await requirePage("member");
   const { name } = await params;
   try { await requireConsoleAgentUse(name, member.id, pool); } catch { notFound(); }
   const agents = await listPrivateChatAgents(member);

@@ -225,14 +225,14 @@ describe("the token flows", () => {
 describe("rename, check and remove", () => {
   it("refreshes the page when Check it works finds the server no longer needs a token", async () => {
     mocks.check.mockResolvedValue({ ok: true, value: { authKind: "none", sentence: "Found the server. It needs no login." } });
-    render(<ConnectorActions id="abc" displayName="Rates" authKind="token" />);
+    render(<ConnectorActions id="abc" displayName="Rates" authKind="token" canRemove />);
     fireEvent.click(screen.getByRole("button", { name: "Check it works" }));
     await screen.findByText("Found the server. It needs no login.");
     expect(mocks.check).toHaveBeenCalledWith("abc"); // no Token override on a recheck
     expect(mocks.refresh).toHaveBeenCalled();
   });
   it("warns once that running agents restart before it removes anything", () => {
-    render(<ConnectorActions id="abc" displayName="Rates" />);
+    render(<ConnectorActions id="abc" displayName="Rates" canRemove />);
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(screen.getByText(/Running agents restart/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove connector" })).toBeTruthy();

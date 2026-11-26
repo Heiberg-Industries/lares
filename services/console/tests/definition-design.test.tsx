@@ -22,6 +22,7 @@ vi.mock("../components/ConversationControl", () => ({
   ConversationControl: () => null,
 }));
 const props = {
+  owner: true,
   startingPoints: [
     {
       id: "creative" as const,

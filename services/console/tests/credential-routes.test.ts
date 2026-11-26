@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ verify: vi.fn(), keeper: vi.fn(), cookie: vi.fn() }));
+const mocks = vi.hoisted(() => ({ actingAddress: vi.fn(), signedIn: vi.fn(), keeper: vi.fn(), cookie: vi.fn() }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: mocks.cookie }) }));
-vi.mock('../lib/auth', () => ({ verify: mocks.verify }));
+vi.mock('../lib/auth', () => ({ actingAddress: mocks.actingAddress, signedInMember: mocks.signedIn, mayUse: (member: unknown, _level: string) => !!member }));
 vi.mock('../lib/keeper-client', async original => ({ ...await original<typeof import('../lib/keeper-client')>(), keeper: mocks.keeper }));
 import { GET, POST } from '../app/api/credentials/notion/route';
 import { KeeperRefusedError, KeeperUnavailableError } from '../lib/keeper-client';
@@ -15,13 +15,21 @@ const command = { operation: 'test_save', slot: 'notion:shared', expectedRevisio
 const post = (body: unknown = command, from: string | null = origin) => POST(new Request(url, { method: 'POST', headers: { 'content-type': 'application/json', ...(from ? { origin: from } : {}) }, body: JSON.stringify(body) }));
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubEnv('CONSOLE_OAUTH_REDIRECT', `${origin}/api/auth/callback`); vi.stubEnv('NODE_ENV', 'production');
-  mocks.cookie.mockReturnValue({ value: 'signed-cookie' }); mocks.verify.mockResolvedValue('admin@example.invalid'); mocks.keeper.mockResolvedValue(status);
+  mocks.cookie.mockReturnValue({ value: 'signed-cookie' }); mocks.actingAddress.mockResolvedValue('admin@example.invalid'); mocks.keeper.mockResolvedValue(status);
+  mocks.signedIn.mockResolvedValue(null);
 });
 afterEach(() => vi.unstubAllEnvs());
+it('tells a signed-in person who is not the owner that the key is the owner\'s, before any keeper read or write', async () => {
+  mocks.actingAddress.mockResolvedValue(null); mocks.signedIn.mockResolvedValue({ id: 'admin-1', role: 'admin', status: 'active' });
+  for (const response of [await GET(new Request(url)), await post()]) {
+    expect(response.status).toBe(403); expect(await response.json()).toEqual({ ok: false, code: 'administrator-required' });
+  }
+  expect(mocks.actingAddress).toHaveBeenCalledWith('owner'); expect(mocks.keeper).not.toHaveBeenCalled();
+});
 it.each([null, 'invalid', 'expired'])('reverifies %s sessions before keeper reads or writes', async session => {
-  mocks.cookie.mockReturnValue(session ? { value: session } : undefined); mocks.verify.mockResolvedValue(null);
+  mocks.cookie.mockReturnValue(session ? { value: session } : undefined); mocks.actingAddress.mockResolvedValue(null);
   expect((await GET(new Request(url))).status).toBe(401); expect((await post()).status).toBe(401); expect(mocks.keeper).not.toHaveBeenCalled();
-  expect(mocks.verify).toHaveBeenCalledTimes(2);
+  expect(mocks.actingAddress).toHaveBeenCalledTimes(2);
 });
 it.each([null, 'null', 'https://other.example.test', `${origin}:444`, `${origin}/path`])('requires exact mutation Origin %s independently of middleware', async from => {
   expect((await post(command, from)).status).toBe(403); expect(mocks.keeper).not.toHaveBeenCalled();
@@ -30,13 +38,13 @@ it('fails closed without public origin even when forwarded headers name the cons
   vi.stubEnv('CONSOLE_OAUTH_REDIRECT', ''); expect((await post()).status).toBe(403); expect(mocks.keeper).not.toHaveBeenCalled();
 });
 it('refuses allowlisted non-admin reads and mutations through keeper authority', async () => {
-  mocks.verify.mockResolvedValue('member@example.invalid'); mocks.keeper.mockRejectedValue(new KeeperRefusedError('Credential administrator required'));
+  mocks.actingAddress.mockResolvedValue('member@example.invalid'); mocks.keeper.mockRejectedValue(new KeeperRefusedError('Credential administrator required'));
   expect((await GET(new Request(url))).status).toBe(403); expect((await post()).status).toBe(403);
   expect(mocks.keeper.mock.calls.every(call => call[0] === 'credential.status' && call[2] === 'member@example.invalid')).toBe(true);
 });
 it('derives actor from session, forwards one strict secret command, and returns only status', async () => {
   const response = await post(); expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('no-store');
-  expect(mocks.verify).toHaveBeenCalledWith('signed-cookie');
+  expect(mocks.actingAddress).toHaveBeenCalledWith('owner');
   expect(mocks.keeper.mock.calls).toEqual([['credential.status', { slot: 'notion:shared' }, 'admin@example.invalid'], ['credential.test_save', { slot: 'notion:shared', expectedRevision: 0, token: secret }, 'admin@example.invalid']]);
   expect(await response.text()).not.toContain(secret);
 });

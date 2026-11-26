@@ -4,7 +4,7 @@ import type { ConnectedAccountView } from "@lares/agent-kit/authority-contract";
 import { Notice, Page, PageHeader, Row, Rows } from "@lares/ui/patterns";
 import { Card } from "@lares/ui/primitives/card";
 import { pool } from "../../lib/db";
-import { requireMember, isConsoleOwner } from "../../lib/auth";
+import { requirePage, mayUse } from "../../lib/auth";
 import { listAgentUses } from "../../lib/agent-mailbox";
 import { listAgents } from "../../lib/agents";
 import { agentNames } from "../../lib/connection-words";
@@ -15,7 +15,7 @@ import { GOOGLE_CLIENT_MISSING } from "../../lib/account-errors";
 import { googleOrgs, listGoogleAccounts } from "../../lib/accounts";
 export const dynamic = "force-dynamic";
 export default async function AccountsPage({ searchParams }: { searchParams: Promise<{ added?: string; error?: string }> }) {
-  const member = await requireMember();
+  const member = await requirePage("member");
   const params = await searchParams;
   let accounts: ConnectedAccountView[] = [], unavailable = false;
   let uses: { agent: string; accountId: string }[] = [];
@@ -24,7 +24,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
   const agents = uses.length > 0 ? await listAgents() : [];
   const list = buildAccountList(accounts, uses).map(r => ({ ...r, usedBy: agentNames(r.usedBy, agents) }));
   // Mailboxes from the older way of connecting mail. Owner only; nothing shows if they cannot be read.
-  const older = isConsoleOwner(member) ? await listGoogleAccounts().then(v => v.unavailable ? [] : v.accounts, () => []) : [];
+  const older = mayUse(member, "owner") ? await listGoogleAccounts().then(v => v.unavailable ? [] : v.accounts, () => []) : [];
   return <Page width="narrow" className="lares-stack">
     <PageHeader title="Your accounts" description="Accounts you connect stay yours. An agent works on one only when you choose it on that agent's page." actions={unavailable ? undefined : <AddAccount orgs={googleOrgs()} />} />
     {params.added && <Notice tone="success">Account connected.</Notice>}
@@ -39,6 +39,6 @@ export default async function AccountsPage({ searchParams }: { searchParams: Pro
       <p className="lares-muted">These came from an older way of connecting mail. Nothing uses them any more. You can remove them.</p>
       <Card><Rows label="Older mailbox connections">{older.map(a => <Row key={a.email} title={a.email} control={<RemoveAccountButton email={a.email} />} />)}</Rows></Card>
     </section>}
-    <p className="lares-muted">More services come later. Shared tools for the whole installation are under {isConsoleOwner(member) ? <Link href="/integrations">Integrations</Link> : "Integrations"}.</p>
+    <p className="lares-muted">More services come later. Shared tools for the whole installation are under {mayUse(member, "admin") ? <Link href="/integrations">Integrations</Link> : "Integrations"}.</p>
   </Page>;
 }

@@ -7,10 +7,9 @@
  * Before it is saved, a routing that would send a brief to a door whose quiet hours cover the
  * brief's hour is refused with a plain sentence - the same check the hour and quiet-hours saves make.
  */
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { deliveryFindings, isTestBriefDoor } from "@lares/agent-kit/delivery";
-import { verify } from "../../lib/auth";
+import { actingAddress } from "../../lib/auth";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
 import { homeTz, ownerId } from "../../lib/proactivity";
 import type { RuntimeState } from "../../lib/builder";
@@ -25,7 +24,7 @@ import type { DeliveryMap } from "../../lib/delivery";
 export type DeliveryResult = { ok: true } | { ok: false; message: string };
 
 export async function saveDelivery(input: { name: string; delivery: DeliveryMap }): Promise<DeliveryResult> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
+  const email = await actingAddress("admin");
   if (!email) throw new Error("unauthenticated");
 
   const problems = deliveryFindings(input.delivery);
@@ -91,7 +90,7 @@ export async function saveDelivery(input: { name: string; delivery: DeliveryMap 
 export type TestBriefAskResult = { ok: true; message: string } | { ok: false; message: string };
 
 export async function sendTestBrief(input: { name: string; door: string }): Promise<TestBriefAskResult> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
+  const email = await actingAddress("owner");
   if (!email) throw new Error("unauthenticated");
   if (!/^[a-z][a-z0-9-]{1,30}$/.test(input.name) || !isTestBriefDoor(input.door)) {
     return { ok: false, message: TEST_BRIEF_REFUSALS.unavailable };
@@ -129,7 +128,7 @@ export interface TestBriefStatus {
 
 /** The newest test-brief request for the agent, as one status line. Read only. */
 export async function testBriefStatus(name: string): Promise<TestBriefStatus> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
+  const email = await actingAddress("admin");
   if (!email) throw new Error("unauthenticated");
   try {
     const [row, dnd] = await Promise.all([latestTestBrief(name), dndOn(ownerId(), name)]);

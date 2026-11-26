@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Notice, Page, PageHeader, StatusBadge } from "@lares/ui/patterns";
-import { isConsoleOwner, requireConsolePage } from "../../../lib/auth";
+import { mayUse, requirePage } from "../../../lib/auth";
 import { listConnectors } from "../../actions/outside-connectors";
 import { listAgents } from "../../../lib/agents";
 import { getOutsideToolEvidence } from "../../../lib/outside-tools";
@@ -15,7 +15,7 @@ import { DangerZone } from "../../../components/DangerZone";
 export const dynamic = "force-dynamic";
 
 export default async function ConnectorPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ found?: string | string[] }> }) {
-  const member = await requireConsolePage();
+  const member = await requirePage("admin");
   const [{ id }, { found }] = await Promise.all([params, searchParams]);
   const [result, uses, agents] = await Promise.all([listConnectors(), agentUsesByConnector(), listAgents()]);
   if (!result.ok) return <Page width="narrow" className="lares-stack">
@@ -38,8 +38,8 @@ export default async function ConnectorPage({ params, searchParams }: { params: 
     {uses === null && <Notice tone="needs-you">Could not read which agents use this connector, so changes are switched off here. Reload the page to try again.</Notice>}
     <p className="lares-muted">{authWords(c.authKind)} · {tools} tool{tools === 1 ? "" : "s"} · {mine.length} agent{mine.length === 1 ? "" : "s"}{dangerCount(mine) > 0 && <> · <StatusBadge tone="error">{dangerCount(mine)} run{dangerCount(mine) === 1 ? "s" : ""} without asking and change{dangerCount(mine) === 1 ? "s" : ""} something</StatusBadge></>}</p>
     {uses !== null && <ConnectorAccess known={known} conn={{ id: c.id, slug: c.slug, url: c.url, description: c.description, authKind: c.authKind }} uses={mine}
-      allAgents={agents.map(a => ({ name: a.name, displayName: a.displayName }))} canWiden={isConsoleOwner(member)} keyLines={keyLines} />}
-    <ConnectorActions id={c.id} displayName={c.displayName} authKind={c.authKind} />
-    {uses !== null && <DangerZone slug={c.slug} uses={mine} isOwner={isConsoleOwner(member)} />}
+      allAgents={agents.map(a => ({ name: a.name, displayName: a.displayName }))} canWiden={mayUse(member, "owner")} keyLines={keyLines} />}
+    <ConnectorActions id={c.id} displayName={c.displayName} authKind={c.authKind} canRemove={mayUse(member, "owner")} />
+    {uses !== null && <DangerZone slug={c.slug} uses={mine} isOwner={mayUse(member, "owner")} />}
   </Page>;
 }

@@ -2,7 +2,7 @@
   "guards": {
     "/invite": { "level": "public", "reason": "Explains a bearer invitation to a person who has no account yet; it reads no data." },
     "/sign-in": { "level": "public", "reason": "The sign-in page; it only sends someone who is already signed in to the right place." },
-    "layout (root)": { "level": "public", "reason": "The shell around every page, including sign-in; it shows the owner navigation only to the owner." },
+    "layout (root)": { "level": "public", "reason": "The shell around every page, including sign-in; it shows each person the menu for their level and reads no data." },
     "GET /api/auth/[...route]": { "level": "public", "reason": "The sign-in flow with the identity provider; it starts or finishes a sign-in and has no session to check yet." },
     "POST /api/auth/[...route]": { "level": "public", "reason": "Sign-out and the other steps of the sign-in flow; they act on the caller's own session cookie." },
     "POST /api/doors/[name]/[kind]/events": { "level": "public", "reason": "Slack and Telegram call this; the platform's own signature is checked before anything is read or changed." },
@@ -17,8 +17,5 @@
   "publicByDesign": {
     "/invite": "A person with an invitation link has no account yet.",
     "/sign-in": "A signed-out person has to be able to sign in."
-  },
-  "awaitingOwnerDecision": {
-    "/your-accounts": "Each member sees and manages only their own connected mail and calendar. The owner rule says every page except chat and membership is owner-only; the owner has not yet said whether this page is an exception."
   }
 }

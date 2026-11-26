@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ cookies: vi.fn(), sessionMember: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn(), listAgents: vi.fn(), requireConsoleMember: vi.fn() }));
+const mocks = vi.hoisted(() => ({ cookies: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn(), listAgents: vi.fn(), requireAction: vi.fn() }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
-vi.mock("../lib/auth", () => ({ sessionMember: mocks.sessionMember, memberAuditAddress: mocks.memberAuditAddress, requireConsoleMember: mocks.requireConsoleMember }));
+vi.mock("../lib/auth", () => ({ memberAuditAddress: mocks.memberAuditAddress, requireAction: mocks.requireAction }));
 vi.mock("../lib/agents", () => ({ listAgents: mocks.listAgents }));
 vi.mock("../lib/keeper-client", () => ({
   keeper: mocks.keeper,
@@ -34,9 +34,8 @@ const review = { descriptor: { version: 1, connectionName: "rates", scope: "writ
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.cookies.mockResolvedValue({ get: () => ({ value: session }) });
-  mocks.sessionMember.mockResolvedValue({ id: "member-id" });
   mocks.memberAuditAddress.mockResolvedValue(actor);
-  mocks.requireConsoleMember.mockResolvedValue({ id: "member-id" });
+  mocks.requireAction.mockResolvedValue({ id: "member-id" });
 });
 const calls = () => mocks.keeper.mock.calls.map(c => c[0] as string);
 
@@ -103,7 +102,7 @@ describe("connect: declare", () => {
   it("refuses malformed input without calling the keeper, and asks for a new sign-in without a session", async () => {
     expect((await connectDeclare({ agent: "worker", provisional: false, connection: { ...connection, credential: "x" } })).ok).toBe(false);
     expect(mocks.keeper).not.toHaveBeenCalled();
-    mocks.sessionMember.mockResolvedValueOnce(undefined);
+    mocks.cookies.mockResolvedValueOnce({ get: () => undefined });
     expect(await connectDeclare({ agent: "worker", provisional: false, connection })).toMatchObject({ ok: false, message: expect.stringMatching(/Sign in again/) });
   });
 });

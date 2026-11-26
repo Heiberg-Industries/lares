@@ -70,16 +70,22 @@ owner can revoke invitations, remove another member or revoke their sessions in 
 Owner-only directory reads return same-organisation member and invitation metadata, with no
 provider credentials, token values or hashes.
 
-**The existing console remains an unscoped owner surface.** Its global/private screens,
-server actions and APIs require an active session whose stable member id equals
-`AGENT_OWNER_USER_ID` and whose current role is `owner`. A different owner, member or restricted
-member receives only their own `/your-membership` view and sign-out controls. Giving a second
-member the owner role does not open those screens. Removal or demotion takes effect on the
-next protected request. This is a staged admission boundary, not a claim that shared console,
+**The console has three levels: owner, admin and member (ADR-0030).** The owner is the active
+session whose stable member id equals `AGENT_OWNER_USER_ID` and whose current role is `owner`. An
+admin is an active member whose role is `admin`; the owner sets it per person in `/members`. An
+admin may use the shared screens, but not members and roles, backups or the general settings, and
+may not delete the installation's data. Every other member, including a different owner, a
+restricted member and a role the console does not know, has chat with the agents shared with
+them, their own accounts and their own `/your-membership` view. Giving a second member the owner
+role does not open the owner's screens. One function, `mayUse` in `services/console/lib/auth.ts`,
+decides; every page, server action and API names the level it needs. Removal or a role change
+takes effect on the next protected request. This is a staged admission boundary, not a claim that shared console,
 connected accounts, channel conversations or private-resource isolation are complete.
 
-The keeper and web-chat transport still receive the designated owner's current database
-`primary_email` after stable-id admission. That address preserves their existing transport and
+The keeper and web-chat transport receive the signed-in person's own current database
+`primary_email` after stable-id admission: the owner's for the owner, an admin's for an admin,
+never the owner's for someone else. Where the keeper compares that address with its configured
+administrator, an admin is refused. That address preserves their existing transport and
 audit contracts; it is never used to look up, link or authorise console membership. Migrating
 those contracts is a separate integration step. `/api/doors/<agent>/<platform>/events` is an
 explicit platform-authenticated webhook relay and does not use member browser sessions.
@@ -169,8 +175,9 @@ Approval-only resumes of bound console sessions require the exact original-actio
 described below. The Waiting page keeps native Slack/Telegram ownership checks and transports
 a separate stable resolver identity without inventing a private console binding.
 
-This remains a designated-owner console slice. It does not enable second-member access to
-unscoped screens, provide complete audience filtering or claim multi-user release acceptance.
+Web-chat turn authority remains a designated-owner slice. The admin level opens the console's
+shared screens only; it does not change who an agent answers to or who may approve its actions,
+does not provide complete audience filtering or claim multi-user release acceptance.
 
 
 ## Exact private approval execution

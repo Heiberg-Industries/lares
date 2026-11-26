@@ -1,4 +1,4 @@
-import { requireConsolePage } from "../../lib/auth";
+import { requirePage } from "../../lib/auth";
 import { Page, PageHeader } from "@lares/ui/patterns";
 import { getConnectionRows } from "../../lib/connections";
 import { getCredentialView } from "../../lib/credentials";
@@ -10,7 +10,7 @@ import { IntegrationsGrid } from "../../components/IntegrationsGrid";
 export const dynamic = "force-dynamic";
 
 export default async function IntegrationsPage() {
-  await requireConsolePage();
+  await requirePage("admin");
   const [rows, credential, outsideToolsInUse, gateway] = await Promise.all([getConnectionRows(), getCredentialView(), anyOutsideToolsInUse(), getGatewayStatusView()]);
   return (
     <Page className="lares-stack">

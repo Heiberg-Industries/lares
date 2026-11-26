@@ -5,7 +5,7 @@ import { PgAccountStore } from "@lares/agent-kit/account-store";
 import { writeVerifiedAccountToken } from "@lares/agent-box/lib/oauth-tokens.js";
 import { ConsoleAdmissionUnavailableError, withConsoleAdmission } from "../../../../../lib/admission-error";
 import { pool } from "../../../../../lib/db";
-import { sessionMember } from "../../../../../lib/auth";
+import { mayUse, sessionMember } from "../../../../../lib/auth";
 import { googleOrgClientConfig, tokenEncKeyHex } from "../../../../../lib/accounts";
 import { ACCOUNT_FLOW_COOKIE, accountSessionHash, openAccountFlow } from "../../../../../lib/account-oauth-state";
 import { GOOGLE_CLIENT_MISSING } from "../../../../../lib/account-errors";
@@ -29,7 +29,7 @@ async function handleGET(req: Request): Promise<Response> {
       console.warn("[accounts] Google consent could not be saved: the Google client for mailbox and calendar access is no longer set up.");
       return terminal({ error: GOOGLE_CLIENT_MISSING });
     }
-    if (!session || !member || !flow || flow.provider !== "google" || flow.memberId !== member.id || flow.sessionHash !== accountSessionHash(session)
+    if (!session || !mayUse(member, "member") || !flow || flow.provider !== "google" || flow.memberId !== member.id || flow.sessionHash !== accountSessionHash(session)
       || supplied.searchParams.has("error") || !supplied.searchParams.get("code") || supplied.searchParams.get("state") !== flow.state
       || googleOrgClientConfig(flow.org)?.clientId !== flow.clientId) return fail();
     const store = new PgAccountStore(pool);

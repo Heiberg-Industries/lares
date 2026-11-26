@@ -14,14 +14,15 @@ function awaits(node: ts.Node | undefined, names: Set<string>): boolean {
   if (ts.isAwaitExpression(node) && ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression) && names.has(node.expression.expression.text)) return true;
   let found = false; node.forEachChild(child => { if (awaits(child, names)) found = true; }); return found;
 }
-const guards = new Set(["verify", "requireConsolePage", "requireConsoleMember", "requireMember", "credentialActor", "sessionMember", "admitted"]);
+// The guards of lib/auth.ts (each asks its one check, mayUse), the two lookups, and the local helper name some action files use.
+const guards = new Set(["requirePage", "requireAction", "actingAddress", "sessionMember", "signedInMember", "admitted"]);
 function localGuards(source: ts.SourceFile) {
   const result = new Set(guards);
   for (const fn of functions(source)) {
-    if (fn.name && (awaits(fn.body?.statements[0], guards) || fn.body?.statements[0]?.getText(source).startsWith("return verify("))) {
+    if (fn.name && (awaits(fn.body?.statements[0], guards) || fn.body?.statements[0]?.getText(source).startsWith("return actingAddress("))) {
       // Helpers returning nullable legacy transport identity must also refuse its absence.
       const text = fn.body?.getText(source) ?? "";
-      if (text.includes("throw") || text.includes("return verify(")) result.add(fn.name.text);
+      if (text.includes("throw") || text.includes("return actingAddress(")) result.add(fn.name.text);
     }
   }
   return result;
@@ -33,7 +34,7 @@ describe("all console member entry points guard before reading data", () => {
     it(`page ${path}`, () => {
       const source = syntax(file);
       const fn = functions(source).find(exported)!;
-      const expected = path === "sign-in/page.tsx" ? "signedInMember" : (path === "your-membership/page.tsx" || path === "your-accounts/page.tsx" || path === "agents/[name]/outside-tools/page.tsx" || path.startsWith("chat/")) ? "requireMember" : "requireConsolePage";
+      const expected = path === "sign-in/page.tsx" ? "signedInMember" : "requirePage";
       // Sign-in reads only its query parameters before checking admission; every data page
       // awaits its guard as its first statement, before invoking any data reader.
       const first = path === "sign-in/page.tsx" ? fn.body!.statements[1] : fn.body!.statements[0];
@@ -86,7 +87,7 @@ describe("all console member entry points guard before reading data", () => {
         const source = readFileSync(file, "utf8");
         const admission = source.indexOf("await sessionMember(session)");
         expect(admission).toBeGreaterThan(0);
-        const refusal = path.includes("/start/") ? source.indexOf("if (!member || !session)") : source.indexOf("if (!session || !member || !flow");
+        const refusal = path.includes("/start/") ? source.indexOf('if (!mayUse(member, "member") || !session)') : source.indexOf('if (!session || !mayUse(member, "member") || !flow');
         expect(refusal).toBeGreaterThan(admission);
         const consentCall = path.includes("/start/")
           ? consentProvider === "google" ? "await startAccountConsent(" : "await startMicrosoftAccountConsent("
@@ -113,8 +114,21 @@ describe("all console member entry points guard before reading data", () => {
       it(`API ${path}:${fn.name!.text}`, () => { expect(awaits(fn.body?.statements[0], accepted)).toBe(true); });
     }
   }
-  it("credentialActor itself performs current Node admission", () => {
+  it("the credential view performs current Node admission itself, through the shared check", () => {
     const source = readFileSync(new URL("../lib/credentials.ts", import.meta.url), "utf8");
-    expect(source).toContain(`await verify((await cookies()).get('lares_session')?.value)`);
+    expect(source).toContain(`const actor = await actingAddress("admin");`);
+    expect(source).not.toContain("cookies()");
+  });
+  it("nothing outside lib/auth.ts compares a role or the owner id to decide who gets in", () => {
+    // The one decision is mayUse in lib/auth.ts. A page, action, route or helper that tested the role or the
+    // owner id itself would be a second place to get it wrong.
+    const root = new URL("../", import.meta.url).pathname;
+    const offenders: string[] = [];
+    for (const folder of ["app", "components", "lib"]) for (const file of files(join(root, folder)).filter(p => /\.tsx?$/.test(p) && !p.endsWith("lib/auth.ts"))) {
+      const text = readFileSync(file, "utf8");
+      if (/\.role\s*[!=]==?\s*["'](owner|admin|member)["']|["'](owner|admin)["']\s*[!=]==?\s*\w+\.role\b/.test(text)) offenders.push(relative(root, file));
+      if (/\.id\s*[!=]==?\s*process\.env\.AGENT_OWNER_USER_ID/.test(text)) offenders.push(relative(root, file));
+    }
+    expect(offenders).toEqual([]);
   });
 });

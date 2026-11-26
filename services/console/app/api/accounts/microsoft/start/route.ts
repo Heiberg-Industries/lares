@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { PgAccountStore } from "@lares/agent-kit/account-store";
 import { withConsoleAdmission } from "../../../../../lib/admission-error";
-import { sessionMember } from "../../../../../lib/auth";
+import { mayUse, sessionMember } from "../../../../../lib/auth";
 import { pool } from "../../../../../lib/db";
 import { ACCOUNT_FLOW_COOKIE, ACCOUNT_FLOW_MAX_AGE, sealAccountFlow } from "../../../../../lib/account-oauth-state";
 import { callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 async function handlePOST(req: Request): Promise<Response> {
   const jar = await cookies(), session = jar.get("lares_session")?.value;
   const member = await sessionMember(session);
-  if (!member || !session) return new Response("Not authorised.", { status: 401 });
+  if (!mayUse(member, "member") || !session) return new Response("Not authorised.", { status: 401 });
   const origin = consoleOrigin();
   const fail = () => {
     const response = NextResponse.redirect(callbackRedirect(origin, { error: "Microsoft consent could not start. Check the work data client and tenant consent requirements." }), { status: 303 });

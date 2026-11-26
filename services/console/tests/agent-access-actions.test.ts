@@ -1,6 +1,6 @@
 import { beforeEach,describe,expect,it,vi } from 'vitest';
 const mocks=vi.hoisted(()=>({owner:vi.fn(),adopt:vi.fn(),update:vi.fn()}));
-vi.mock('../lib/auth',()=>({requireConsoleMember:mocks.owner}));
+vi.mock('../lib/auth',()=>({requireAction:mocks.owner}));
 vi.mock('../lib/agent-access',()=>({agentAccess:{adoptAgent:mocks.adopt,updateAgentAccess:mocks.update}}));
 vi.mock('next/headers',()=>({cookies:async()=>({get:()=>({value:'session-token'})})}));
 vi.mock('next/cache',()=>({revalidatePath:vi.fn()}));

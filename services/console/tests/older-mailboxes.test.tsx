@@ -3,7 +3,7 @@ import React from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 const m = vi.hoisted(() => ({ member: vi.fn(), owner: vi.fn(), list: vi.fn(), older: vi.fn() }));
-vi.mock("../lib/auth", () => ({ requireMember: m.member, isConsoleOwner: m.owner }));
+vi.mock("../lib/auth", () => ({ requirePage: m.member, mayUse: (member: unknown, level: string) => !!member && (level === "member" || m.owner(member)) }));
 vi.mock("../lib/db", () => ({ pool: {} }));
 vi.mock("../lib/accounts", () => ({ listGoogleAccounts: m.older, googleOrgs: () => [] }));
 vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { list = m.list; } }));

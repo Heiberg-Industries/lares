@@ -14,10 +14,9 @@
  * not depend on `@lares/agent-kit` or any `services/chief-of-staff` module. `lib/deadlines.ts`'s
  * `nextDueDate` is the same formula as the store's `nextDue`.
  */
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { pool } from "../../lib/db";
-import { verify } from "../../lib/auth";
+import { actingAddress } from "../../lib/auth";
 import { homeTz, ownerDayIn, ownerId, resolveConsoleOwnerClock } from "../../lib/proactivity";
 import { DEADLINE_RECURRENCES, DEADLINE_SOURCES, isValidIsoDate, mintYearFromMirror, nextDueDate } from "../../lib/deadlines";
 import type { DeadlineRecurrence, DeadlineSource } from "../../lib/deadlines";
@@ -35,7 +34,7 @@ export type MintResult =
   | { ok: false; message: string };
 
 async function requireUser(): Promise<string> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
+  const email = await actingAddress("admin");
   if (!email) throw new Error("unauthenticated");
   return email;
 }

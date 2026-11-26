@@ -1,4 +1,4 @@
-import { requireConsolePage } from "../../lib/auth";
+import { requirePage } from "../../lib/auth";
 import Link from "next/link";
 import { getRecentSignals } from "../../lib/signals";
 import { EmptyState, Field, Notice, PageHeader, Page, Row, Rows } from "@lares/ui/patterns";
@@ -18,7 +18,7 @@ const SEVERITY: Record<string, { word: string; variant: "error" | "warning" | "n
 const STATE: Record<string, string> = { open: "Open", recovered: "Recovered", closed: "Closed" };
 
 export default async function SignalsPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
-  await requireConsolePage();
+  await requirePage("admin");
   const q = await searchParams;
   const r = await getRecentSignals({ severity: q.severity, project: q.project, kind: q.kind, state: q.state, since: q.since });
   return (

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 const mocks = vi.hoisted(() => ({ actor: vi.fn(), keeper: vi.fn(), query: vi.fn() }));
-vi.mock("../lib/credentials", () => ({ credentialActor: mocks.actor }));
+vi.mock("../lib/auth", () => ({ actingAddress: mocks.actor }));
 vi.mock("../lib/keeper-client", async original => ({ ...await original<typeof import("../lib/keeper-client")>(), keeper: mocks.keeper }));
 vi.mock("../lib/db", () => ({ pool: { query: mocks.query } }));
 import { getGatewayStatusView, type GatewayStatusView } from "../lib/gateway-status";

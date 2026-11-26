@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const queries: Array<{ sql: string; params: unknown[] }> = [];
 vi.mock("../lib/db", () => ({ pool: { query: vi.fn(async (sql: string, params: unknown[]) => { queries.push({ sql, params }); return { rows: [] }; }) } }));
-vi.mock("../lib/auth", () => ({ verify: vi.fn(async () => "owner@owner.example") }));
+vi.mock("../lib/auth", () => ({ actingAddress: vi.fn(async () => "owner@owner.example") }));
 vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: "c" }) })) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 

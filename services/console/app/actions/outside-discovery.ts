@@ -1,6 +1,6 @@
 "use server";
 import { cookies } from "next/headers";
-import { memberAuditAddress,sessionMember } from "../../lib/auth";
+import { mayUse,memberAuditAddress,signedInMember } from "../../lib/auth";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
 import { keeperReason } from "../../lib/keeper-reason";
 import { parseOutsideDiscoveryDocument,parseOutsideDiscoveryInspection,parseOutsideDiscoveryPreview,parseOutsideDiscoveryTargets,
@@ -20,8 +20,8 @@ function isHash(value:unknown):value is string{return typeof value==='string'&&/
 function isSafeInteger(value:unknown,min:number):value is number{return typeof value==='number'&&Number.isSafeInteger(value)&&value>=min;}
 async function admitted():Promise<{sessionToken:string;auditActor:string}>{
   const sessionToken=(await cookies()).get("lares_session")?.value;
-  const member=await sessionMember(sessionToken);
-  if(!sessionToken||!member)throw new Error("Sign in again to manage private discovery.");
+  const member=await signedInMember();
+  if(!sessionToken||!mayUse(member,"member"))throw new Error("Sign in again to manage private discovery.");
   const auditActor=await memberAuditAddress(member.id);
   if(!auditActor)throw new Error("Sign in again to manage private discovery.");
   return {sessionToken,auditActor};

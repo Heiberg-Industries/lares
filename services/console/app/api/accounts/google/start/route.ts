@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { PgAccountStore } from "@lares/agent-kit/account-store";
 import { withConsoleAdmission } from "../../../../../lib/admission-error";
-import { sessionMember } from "../../../../../lib/auth";
+import { mayUse, sessionMember } from "../../../../../lib/auth";
 import { pool } from "../../../../../lib/db";
 import { googleOrgClientConfig, googleOrgs } from "../../../../../lib/accounts";
 import { ACCOUNT_FLOW_COOKIE, ACCOUNT_FLOW_MAX_AGE, sealAccountFlow } from "../../../../../lib/account-oauth-state";
@@ -14,7 +14,7 @@ async function handlePOST(req: Request): Promise<Response> {
   const jar = await cookies();
   const session = jar.get("lares_session")?.value;
   const member = await sessionMember(session);
-  if (!member || !session) return new Response("Not authorised.", { status: 401 });
+  if (!mayUse(member, "member") || !session) return new Response("Not authorised.", { status: 401 });
   const origin = consoleOrigin();
   const fail = () => {
     const response = NextResponse.redirect(callbackRedirect(origin, { error: "Account consent could not start. Please try again." }), { status: 303 });

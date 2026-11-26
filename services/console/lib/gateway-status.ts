@@ -1,5 +1,5 @@
 import { gatewayStatusSchema, type GatewayStatus } from '@lares/agent-kit/gateway-status';
-import { credentialActor } from './credentials';
+import { actingAddress } from './auth';
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from './keeper-client';
 import { pool } from './db';
 
@@ -22,7 +22,7 @@ async function usageByAlias(): Promise<Record<string, string[]> | null> {
 
 /** One keeper call per page render; no polling, no model call. */
 export async function getGatewayStatusView(): Promise<GatewayStatusView> {
-  const actor = await credentialActor();
+  const actor = await actingAddress("admin");
   if (!actor) return { kind: 'sign-in-required' };
   let raw: unknown;
   try { raw = await keeper('gateway.status', {}, actor); }

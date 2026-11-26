@@ -66,10 +66,10 @@ export async function editedOutsideTheConsole(name: string): Promise<{ at: strin
 
 /** Authenticate server-rendered builder reads as well as every action. */
 export async function builderData(name?: string) {
-  const [{cookies},{verify},{keeper},{getBoardRows}] = await Promise.all([
-    import('next/headers'),import('./auth'),import('./keeper-client'),import('./board'),
+  const [{actingAddress},{keeper},{getBoardRows}] = await Promise.all([
+    import('./auth'),import('./keeper-client'),import('./board'),
   ]);
-  const email=await verify((await cookies()).get('lares_session')?.value);
+  const email=await actingAddress("admin");
   if(!email) throw new Error('unauthenticated');
   const prefix = (await pool.query<{value:unknown}>("SELECT value FROM settings WHERE key='models.alias_prefix'")).rows[0]?.value;
   const aliases=modelAliases(typeof prefix === 'string' ? prefix : '', process.env.LARES_CONFIGURED_MODEL_ALIAS);

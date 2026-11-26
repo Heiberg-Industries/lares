@@ -1,4 +1,4 @@
-import { requireConsolePage } from "../lib/auth";
+import { requirePage } from "../lib/auth";
 import Link from "next/link";
 import { AgentsList } from "../components/AgentsList";
 import { Col, Notice, Page, PageHeader, Row, Rows } from "@lares/ui/patterns";
@@ -9,7 +9,7 @@ import { getFleetSnapshot, getPermissionEvents } from "../lib/console-overview";
 import { PermissionEvents } from "../components/PermissionEvents";
 export const dynamic = "force-dynamic";
 export default async function HomePage() {
-  await requireConsolePage();
+  await requirePage("admin");
   const [snapshot, events] = await Promise.all([
     getFleetSnapshot(),
     getPermissionEvents({ limit: 5 }),

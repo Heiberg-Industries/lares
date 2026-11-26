@@ -4,12 +4,11 @@ import { revalidatePath } from "next/cache";
 import { PgAccountStore } from "@lares/agent-kit/account-store";
 import { deleteToken } from "@lares/agent-box/lib/oauth-tokens.js";
 import { pool } from "../../lib/db";
-import { sessionMember, isConsoleOwner } from "../../lib/auth";
+import { mayUse, requireAction } from "../../lib/auth";
 import { consolePrincipal } from "../../lib/accounts";
 export type RemoveAccountInput = { accountId: string; generation: number } | { email: string };
 export async function removeAccount(input: RemoveAccountInput): Promise<void> {
-  const member = await sessionMember((await cookies()).get("lares_session")?.value);
-  if (!member) throw new Error("unauthenticated");
+  const member = await requireAction("member");
   try {
     if ("accountId" in input) {
       if (Object.keys(input).sort().join(",") !== "accountId,generation" || typeof input.accountId !== "string"
@@ -18,7 +17,7 @@ export async function removeAccount(input: RemoveAccountInput): Promise<void> {
       const ticket = await store.beginUpdate(member.id, input.accountId, input.generation);
       await store.setStatus(member.id, ticket, "revoked");
     } else {
-      if (!isConsoleOwner(member) || Object.keys(input).join(",") !== "email" || typeof input.email !== "string" || !input.email) throw new Error();
+      if (!mayUse(member, "owner") || Object.keys(input).join(",") !== "email" || typeof input.email !== "string" || !input.email) throw new Error();
       await deleteToken(pool, consolePrincipal(), "google", input.email);
     }
   } catch { throw new Error("Account could not be disconnected. Refresh the page and try again."); }
@@ -30,8 +29,8 @@ export async function removeAccount(input: RemoveAccountInput): Promise<void> {
 /** Review only. Authentication, current binding, selected account and encrypted stored proposal
  * are all server-derived. The returned card never confers execution/approval authority. */
 export async function readPersonalSendCard(requestId:string):Promise<import('../../lib/approval-text').PersonalSendCard>{
-  const raw=(await cookies()).get('lares_session')?.value,member=await sessionMember(raw);
-  if(!raw||!member||typeof requestId!=='string'||!requestId||requestId.length>512)throw new Error('Personal mail review unavailable');
+  const member=await requireAction('member'),raw=(await cookies()).get('lares_session')?.value;
+  if(!raw||typeof requestId!=='string'||!requestId||requestId.length>512)throw new Error('Personal mail review unavailable');
   try{
     const found=(await pool.query(`SELECT p.id,p.account_id,p.account_generation,p.resource_binding_id,p.agent,p.session_id,p.incarnation
       FROM personal_actions p WHERE p.approval_request_id=$1 AND p.actor_member_id=$2`,[requestId,member.id])).rows[0];
