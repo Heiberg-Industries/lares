@@ -67,7 +67,7 @@ export function textShownWhole(text: string): boolean {
 /** The console page where a card raised on any door is shown whole and can be answered. It is not
  *  web chat (the Chat page holds its own conversations), so a sentence that sends a person there
  *  names this page. */
-export const CONSOLE_WAITING_PAGE_NAME = "the Waiting on you page in the console";
+export const CONSOLE_WAITING_PAGE_NAME = "the Reviews page in the console";
 
 /** A place a person can read and approve a card too long for the door it came on. */
 export interface ShortenedCardPlace {

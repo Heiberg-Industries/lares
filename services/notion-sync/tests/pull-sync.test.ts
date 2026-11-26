@@ -1039,7 +1039,7 @@ describe("runPullSync — stale-proposal escalation", () => {
     expect(d.notified[0]).toContain("console");
     expect(d.notified[0]).toContain("notion-sync approve|reject");
     // The console's Waiting page lists it from the database even when the agent is down.
-    expect(d.notified[0]).toContain("Waiting on you page (/reviews)");
+    expect(d.notified[0]).toContain("Reviews page (/reviews)");
     expect(d.notified[0]).toContain("/integrations");
   });
 
