@@ -140,13 +140,23 @@ function allowedRoots(inv: VaultStorageInventory, options: VaultStorageFiles, pa
             throw new VaultStorageError('unclassified content under the managed working root');
     }
 }
+function lstatGone(path: string): ReturnType<typeof lstatSync> | undefined {
+    try { return lstatSync(path); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+}
 function noRedirects(root: string, allowedRepositories: ReadonlySet<string>): void {
     directory(root);
     const present = (name:string) => existsSync(join(root,name));
     if ((present('.git') && !allowedRepositories.has(join(root,'.git'))) || ((present('HEAD') && present('objects') && (present('refs') || present('packed-refs') || present('config'))) && !allowedRepositories.has(root)))
         throw new VaultStorageError();
     for (const name of readdirSync(root)) {
-        const path = join(root, name), st = lstatSync(path);
+        const path = join(root, name), st = lstatGone(path);
+        // Git's own background maintenance creates and removes lock files (*.lock) while this walks. Only such a lock file that
+        // is gone by the time it is looked at is skipped; any other entry that vanishes, and every other error, still refuses.
+        if (!st) {
+            if (name.endsWith('.lock')) continue;
+            throw new VaultStorageError();
+        }
         if (st.isSymbolicLink() || (!st.isDirectory() && !st.isFile()) || (st.isFile() && st.nlink !== 1))
             throw new VaultStorageError();
         if (st.isDirectory())

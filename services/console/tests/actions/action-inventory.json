@@ -248,7 +248,8 @@
         "outside-connectors.listConnectors",
         "outside-connectors.removeConnector",
         "outside-connectors.removeFromAgent",
-        "outside-connectors.renameConnector"
+        "outside-connectors.renameConnector",
+        "outside-connectors.switchConnectorToToken"
       ],
       "routes": []
     },
@@ -1090,6 +1091,16 @@
     },
     {
       "id": "outside-connectors.renameConnector",
+      "kind": "action",
+      "file": "app/actions/outside-connectors.ts",
+      "act": "owner",
+      "guards": ["requireConsoleMember", "sessionMember"],
+      "source": "derived",
+      "usedBy": ["/integrations/outside/[id]"],
+      "see": "owner"
+    },
+    {
+      "id": "outside-connectors.switchConnectorToToken",
       "kind": "action",
       "file": "app/actions/outside-connectors.ts",
       "act": "owner",
