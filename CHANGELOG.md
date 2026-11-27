@@ -76,4 +76,3 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 - Console wording: why there is an agent limit, what Instructions and Personality add to the built-in role, what Language does, a sentence for every schedule, and progress while an agent is created.
 
 - A fresh installation can approve in web chat before any door is connected: approval falls back to the installation's administrator. A chat label shows the agent's display name instead of "AGENT".
-
