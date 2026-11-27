@@ -32,8 +32,8 @@ export interface ScanAgent { name: string; displayName: string; briefOn: boolean
 export interface DeadlineScanFacts {
   /** null when the definitions could not be read: then nothing is said about switches. */
   agents: ScanAgent[] | null;
-  /** Each agent's last scan outcome, at most one per agent. */
-  runs: readonly ScheduleRunRow[];
+  /** Each agent's last scan outcome, at most one per agent. null when the records could not be read. */
+  runs: readonly ScheduleRunRow[] | null;
 }
 
 /** A scan that has said nothing for this long did not finish. The brief's whole mail pass is bounded to minutes. */
@@ -51,7 +51,7 @@ function listNames(names: readonly string[]): string {
 export function deadlineScanStatus(f: DeadlineScanFacts, now: Date, tz: string): DeadlineScanView {
   // Only the records of agents that run today count (a retired agent's record is ignored).
   const known = f.agents ? new Set(f.agents.map((a) => a.name)) : null;
-  const runs = f.runs.filter((r) => known === null || known.has(recordAgent(r)))
+  const runs = (f.runs ?? []).filter((r) => known === null || known.has(recordAgent(r)))
     .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   const agentOf = (r: ScheduleRunRow) => f.agents?.find((a) => a.name === recordAgent(r));
   const named = (a: ScanAgent | undefined) => a?.displayName ?? "the agent";
@@ -79,7 +79,7 @@ export function deadlineScanStatus(f: DeadlineScanFacts, now: Date, tz: string):
 
   // 3. The last outcome.
   const last = runs[0];
-  if (!last && f.agents === null) {
+  if (!last && (f.agents === null || f.runs === null)) {
     return { state: "waiting", why: "Whether the mail scan has run could not be read just now.", active: false, scanned: false };
   }
   if (!last) {
@@ -137,6 +137,6 @@ function jobOf(a: ScanAgent): string | null {
 export async function getDeadlineScanStatus(now: Date = new Date()): Promise<DeadlineScanView> {
   const agents = await scanAgents().catch(() => null);
   const jobs = (agents ?? []).map(jobOf).filter((j): j is string => j !== null);
-  const runs = await readScheduleRuns(pool, jobs).catch(() => []);
+  const runs = await readScheduleRuns(pool, jobs).catch(() => null);
   return deadlineScanStatus({ agents, runs }, now, homeTz());
 }

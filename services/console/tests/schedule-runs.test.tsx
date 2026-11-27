@@ -60,9 +60,15 @@ describe("a schedule's last run, from what it recorded", () => {
     expect(runs.digest).toBeNull();
   });
 
-  it("an unreadable source reads as nothing recorded, never as a failure of the page", async () => {
-    const query = vi.fn(async () => { throw new Error("no such table"); });
-    expect(await readScheduleLastRuns({ name: "example", role: "chief-of-staff" }, ["voice-learn"], 1, now, { query } as never)).toEqual({ "voice-learn": null });
+  it("a source that cannot be read is said as unreadable, never as nothing recorded or an older pass", async () => {
+    // Only the outcome record fails: voice learning must not fall back to its older heartbeat.
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM schedule_run")) throw new Error("no such table");
+      return { rows: [{ agent: "chief-of-staff/voice-learn", updated_at: "2026-11-20T04:00:00Z" }] };
+    });
+    await expect(readScheduleLastRuns({ name: "example", role: "chief-of-staff" }, ["voice-learn"], 1, now, { query } as never)).rejects.toThrow();
+    const down = vi.fn(async () => { throw new Error("database down"); });
+    await expect(readScheduleLastRuns({ name: "example", role: "chief-of-staff" }, ["digest"], 1, now, { query: down } as never)).rejects.toThrow();
   });
 });
 

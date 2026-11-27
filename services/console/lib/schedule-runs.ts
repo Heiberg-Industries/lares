@@ -60,7 +60,8 @@ function keyOr(make: () => string): string | null {
   try { return make(); } catch { return null; }
 }
 
-/** The tab's read: every schedule that is on, for one agent. Unreadable sources count as unknown. */
+/** The tab's read: every schedule that is on, for one agent. Throws when either source cannot be read, so
+ *  the tab keeps its saved-setting caveat instead of showing a partial or older answer as the last run. */
 export async function readScheduleLastRuns(
   agent: { name: string; role: string },
   on: readonly string[],
@@ -77,10 +78,10 @@ export async function readScheduleLastRuns(
     if (beat) beats.set(beat, name);
   }
   const [runs, passes] = await Promise.all([
-    readScheduleRuns(db, [...jobs.keys()]).catch(() => [] as ScheduleRunRow[]),
+    readScheduleRuns(db, [...jobs.keys()]),
     beats.size === 0 ? [] : db.query<{ agent: string; updated_at: Date | string }>(
       "SELECT agent, updated_at FROM heartbeat WHERE agent = ANY($1::text[])", [[...beats.keys()]],
-    ).then((r) => r.rows).catch(() => []),
+    ).then((r) => r.rows),
   ]);
   const facts: ScheduleRunFacts = { outcomes: {}, passes: {}, shared: sameKind > 1 };
   for (const r of runs) { const name = jobs.get(r.job); if (name) facts.outcomes[name] = r; }

@@ -89,7 +89,7 @@ export default async function AgentPage({
   const auditAddress = owner ? await memberAuditAddress(actor.id) : null;
   const providerKey = owner ? sessionToken && auditAddress ? await providerKeyStatusFor(sessionToken, name, auditAddress) : { kind: "unavailable" as const } : undefined;
   // Each schedule that is on, with its last run: the outcome record where the schedule writes one,
-  // otherwise its heartbeat. Never fails the page: an unreadable source reads as nothing recorded.
+  // otherwise its heartbeat. Never fails the page: when it cannot be read, the tab shows the switches only.
   const savedSchedules = saved ? Object.entries(saved.schedules).map(([schedule, s]) => ({ name: schedule, on: s.on })) : [];
   const lastRuns = saved?.role
     ? await readScheduleLastRuns({ name, role: saved.role }, savedSchedules.filter((s) => s.on).map((s) => s.name),

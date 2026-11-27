@@ -123,7 +123,11 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide, onC
     if (!onCheck) return;
     for (const d of open) {
       let result: DecideResult;
-      try { result = await onCheck({ id: d.item.id }); } catch { continue; }
+      try { result = await onCheck({ id: d.item.id }); } catch {
+        // Nothing learned, but the page must still see the time pass, or the ten-minute limit never ends it.
+        setDecided((all) => (all[d.item.id] ? { ...all, [d.item.id]: { ...all[d.item.id]! } } : all));
+        continue;
+      }
       setDecided((all) => (all[d.item.id] ? { ...all, [d.item.id]: { ...all[d.item.id]!, result } } : all));
     }
   });

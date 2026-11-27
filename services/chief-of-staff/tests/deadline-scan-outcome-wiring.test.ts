@@ -21,6 +21,7 @@ vi.mock("@lares/agent-kit/proactivity", async (importOriginal) => ({
   deferredSince: async () => [],
 }));
 
+const candidateWriteFails = vi.hoisted(() => ({ value: false }));
 const outcome = vi.hoisted(() => ({
   started: vi.fn(async (..._a: unknown[]) => true),
   finished: vi.fn(async (..._a: unknown[]) => true),
@@ -48,7 +49,7 @@ vi.mock("../lib/initiation.js", async (importOriginal) => ({
 vi.mock("../lib/deadlines-store.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/deadlines-store.js")>()),
   markCandidatesSurfaced: async () => {},
-  upsertCandidate: async () => {},
+  upsertCandidate: async () => { if (candidateWriteFails.value) throw new Error("database refused the row"); },
 }));
 
 const doors = [{ kind: "telegram", enabled: true, settings: {} }];
@@ -85,7 +86,10 @@ vi.mock("../lib/obligation-pipeline.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/obligation-pipeline.js")>()),
   gatherOpenObligations: async (deps: { recordCandidate?: (c: unknown) => Promise<void> }) => {
     if ("throws" in gather) throw new Error(gather.throws);
-    for (let i = 0; i < gather.notices; i++) await deps.recordCandidate?.({ threadId: `t${i}`, subject: "Invoice due", sender: "them@example.com", seenAt: new Date() });
+    // As the real gather does: one candidate that cannot be written never takes the gather down.
+    for (let i = 0; i < gather.notices; i++) {
+      try { await deps.recordCandidate?.({ threadId: `t${i}`, subject: "Invoice due", sender: "them@example.com", seenAt: new Date() }); } catch { /* logged there */ }
+    }
     return [];
   },
 }));
@@ -123,6 +127,7 @@ beforeEach(() => {
   process.env["EVE_SCHEDULES_LIVE"] = "1";
   process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
   mailbox.result = { ok: true };
+  candidateWriteFails.value = false;
   gather = { notices: 0 };
   queue = [];
   for (const m of Object.values(outcome)) m.mockClear();
@@ -151,6 +156,14 @@ describe("the mail scan for due notices records what it did", () => {
     expect(outcome.finished.mock.calls[0]!.slice(1)).toEqual([JOB, { agent: "chief-of-staff", counts: { found: 2 } }]);
     expect(outcome.skipped).not.toHaveBeenCalled();
     expect(outcome.failed).not.toHaveBeenCalled();
+  });
+
+  it("a due notice seen but not saved is not a clean scan: it is recorded as failed, with how many", async () => {
+    gather = { notices: 2 };
+    candidateWriteFails.value = true;
+    await tick(BRIEF_MINUTE);
+    expect(outcome.finished).not.toHaveBeenCalled();
+    expect(outcome.failed.mock.calls[0]!.slice(1)).toEqual([JOB, "Saw 2 due notices in mail, but 2 could not be saved to the list.", { agent: "chief-of-staff" }]);
   });
 
   it("a gather that fails is recorded as failed, with its message; the brief still goes out", async () => {

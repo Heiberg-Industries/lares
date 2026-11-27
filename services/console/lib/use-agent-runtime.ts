@@ -3,7 +3,7 @@
 // itself with `useKeepFresh` until it answers or ten minutes have passed (`agent-apply-status.ts`).
 // The Status card and the Connect doors section both go through it, so a restart is followed and
 // worded the same way wherever it was started from.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { agentRuntime, applyConnections } from "../app/actions/definition";
 import type { RuntimeState } from "./builder";
 import { agentRunStatus, APPLYING_WHY, type AgentRunView, type ApplyRun } from "./agent-apply-status";
@@ -46,21 +46,28 @@ export function useAgentRuntime(name: string | undefined, initial: RuntimeState 
   const [from, setFrom] = useState<"status" | "doors" | null>(null);
   // When this page first saw the agent started and not answering; the ten minutes count from here.
   const [since, setSince] = useState<number | null>(() => (notAnswering(initial) ? Date.now() : null));
+  // Reads in a row that failed while a start was being followed: the start state is kept and asked
+  // again. A count, not a flag, so every failure re-renders and the ten-minute limit can still end it.
+  const [readFailures, setReadFailures] = useState(0);
+  const latest = useRef(runtime);
+  useEffect(() => { latest.current = runtime; }, [runtime]);
 
   function setRuntime(next: RuntimeState | undefined) {
     setRuntimeState(next);
+    setReadFailures(0);
     setSince((s) => (notAnswering(next) ? (s ?? Date.now()) : null));
   }
   async function reread() {
     if (!name) return;
-    try {
-      const read = await agentRuntime(name);
-      setRuntime(read.ok ? read.result : undefined);
-    } catch {
-      setRuntime(undefined);
-    }
+    let read: Awaited<ReturnType<typeof agentRuntime>> | null = null;
+    try { read = await agentRuntime(name); } catch { read = null; }
+    if (read?.ok) { setRuntime(read.result); return; }
+    // While a start is being followed, one failed read is not an answer: keep following (the ten
+    // minutes still count). Otherwise an unreadable state shows as unavailable, never as the old one.
+    if (notAnswering(latest.current)) { setReadFailures((n) => n + 1); return; }
+    setRuntime(undefined);
   }
-  const status = agentRunStatus(run, runtime, Date.now(), since);
+  const status = agentRunStatus(run, runtime, Date.now(), since, readFailures > 0);
   useKeepFresh(status?.active === true, reread);
 
   async function apply(hash: string, opts: { label?: string; from?: "status" | "doors" } = {}) {

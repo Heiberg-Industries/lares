@@ -872,7 +872,7 @@ async function briefPass(mode: PassMode, c: PassContext): Promise<TestPassResult
   // test brief is not the day's scan. Recorded beside the work, never in its way: a write that fails
   // only warns. A mailbox that is missing or unusable is a skip with its reason, said before the
   // gather tries (and fails) on its own; the gather still runs exactly as before.
-  const scan = mode.kind === "slot" ? { job: deadlineScanJob(loaded.definition.name), agent: loaded.definition.name, found: 0, skipped: false } : null;
+  const scan = mode.kind === "slot" ? { job: deadlineScanJob(loaded.definition.name), agent: loaded.definition.name, found: 0, unsaved: 0, skipped: false } : null;
   if (scan) {
     const chosen = await chosenMailbox().catch(() => null);
     if (chosen && !chosen.ok) {
@@ -948,9 +948,15 @@ async function briefPass(mode: PassMode, c: PassContext): Promise<TestPassResult
             // re-sighting a no-op, so this runs on every tick without ever re-offering a mail
             // the owner already answered.
             recordCandidate: async (c) => {
-              await upsertCandidate(pool, { ...c, owner: ownerId() });
-              // Every due notice seen this pass, new or already listed: the scan's count.
+              // Every due notice seen this pass, new or already listed: the scan's count. One that
+              // could not be saved is counted apart, so the pass is not recorded as a clean scan.
               if (scan) scan.found += 1;
+              try {
+                await upsertCandidate(pool, { ...c, owner: ownerId() });
+              } catch (err) {
+                if (scan) scan.unsaved += 1;
+                throw err;
+              }
             },
             // Slack obligations reach the morning brief ONLY — this is the
             // one and only call site across the three obligation schedules that supplies
@@ -965,7 +971,11 @@ async function briefPass(mode: PassMode, c: PassContext): Promise<TestPassResult
       OBLIGATION_TIMEOUT_MS,
       "morning-brief: obligations",
     );
-    if (scan && !scan.skipped) await recordRunFinished(pool, scan.job, { agent: scan.agent, counts: { found: scan.found } });
+    if (scan && !scan.skipped && scan.unsaved > 0) {
+      await recordRunFailed(pool, scan.job, `Saw ${scan.found} due ${scan.found === 1 ? "notice" : "notices"} in mail, but ${scan.unsaved} could not be saved to the list.`, { agent: scan.agent });
+    } else if (scan && !scan.skipped) {
+      await recordRunFinished(pool, scan.job, { agent: scan.agent, counts: { found: scan.found } });
+    }
   } catch (e) {
     console.error(`morning-brief: could not gather obligations (slot ${slot}) — the brief goes out without them`, e);
     if (scan && !scan.skipped) await recordRunFailed(pool, scan.job, e instanceof Error ? e.message : String(e), { agent: scan.agent });

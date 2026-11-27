@@ -62,5 +62,9 @@ describe("the Deadlines page tells an empty list from a scan that did not happen
   it("no chief-of-staff agent, or definitions that could not be read, are said plainly", () => {
     expect(deadlineScanStatus({ agents: [], runs: [] }, now, tz).why).toBe("There is no chief-of-staff agent, so nothing scans mail for due notices.");
     expect(deadlineScanStatus({ agents: null, runs: [] }, now, tz).why).toBe("Whether the mail scan has run could not be read just now.");
+    // Records that could not be read are not "has not run yet".
+    const unread = deadlineScanStatus({ agents: [agent], runs: null }, now, tz);
+    expect(unread.why).toBe("Whether the mail scan has run could not be read just now.");
+    expect(emptyCandidatesText(unread)).not.toBe("No unresolved candidates.");
   });
 });

@@ -9,7 +9,7 @@ vi.mock("../app/actions/autonomy", () => ({ setAutonomy: vi.fn() }));
 import { agentRuntime, applyConnections } from "../app/actions/definition";
 import { DefinitionForm } from "../components/DefinitionForm";
 import { modelAliases, startingPoints, takesEffect } from "../lib/builder";
-import { agentRunStatus, ANSWERING_WHY, NOT_ANSWERING_MS, NOT_ANSWERING_WHY, STARTING_WHY } from "../lib/agent-apply-status";
+import { agentRunStatus, ANSWERING_WHY, NOT_ANSWERING_MS, NOT_ANSWERING_WHY, READ_FAILED_WHY, STARTING_WHY } from "../lib/agent-apply-status";
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -27,6 +27,8 @@ describe("where a restart stands", () => {
   it("a start that is not answering yet is followed for ten minutes, then said to have failed", () => {
     expect(agentRunStatus({ phase: "applied", at: 0 }, notAnswering, 1_000, 0)).toEqual({ state: "running", why: STARTING_WHY, active: true });
     expect(agentRunStatus({ phase: "idle" }, notAnswering, NOT_ANSWERING_MS, 0)).toEqual({ state: "failed", why: NOT_ANSWERING_WHY, active: false });
+    expect(agentRunStatus({ phase: "idle" }, notAnswering, 1_000, 0, true)).toEqual({ state: "running", why: `${STARTING_WHY} ${READ_FAILED_WHY}`, active: true });
+    expect(agentRunStatus({ phase: "idle" }, notAnswering, NOT_ANSWERING_MS, 0, true)?.state).toBe("failed");
   });
   it("nothing to say when nothing happened on this page and the agent simply runs", () => {
     expect(agentRunStatus({ phase: "idle" }, running, 0, null)).toBeNull();
@@ -79,6 +81,15 @@ describe("the edit page follows Apply and Start by itself", () => {
     await waitFor(() => expect(agentRuntime).toHaveBeenCalledWith("example"), { timeout: 7_000 });
     await waitFor(() => expect(document.querySelector('[data-state="finished"]')).not.toBeNull());
     expect(document.body.textContent).toContain(ANSWERING_WHY);
+  });
+
+  it("a read that fails while following a start keeps following, and says so", { timeout: 15_000 }, async () => {
+    vi.mocked(agentRuntime).mockResolvedValue({ ok: false, error: { message: "keeper busy", outcomeMayBeUnknown: false } } as never);
+    render(<DefinitionForm {...base} initial={initial(notAnswering) as never} />);
+    await waitFor(() => expect(agentRuntime).toHaveBeenCalledWith("example"), { timeout: 7_000 });
+    await waitFor(() => expect(document.body.textContent).toContain(READ_FAILED_WHY));
+    expect(document.querySelector('[data-state="running"]')).not.toBeNull();
+    expect(document.body.textContent).not.toContain("Whether this agent is running could not be read.");
   });
 
   it("a page opened while the agent is not answering yet follows it too, instead of asking for a reload", { timeout: 15_000 }, async () => {

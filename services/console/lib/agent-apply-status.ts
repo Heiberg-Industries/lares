@@ -27,6 +27,7 @@ export const APPLYING_WHY = "Restarting the agent with the saved definition. Thi
 export const STARTING_WHY = "Started, not answering yet. A first start after an upgrade can take several minutes. This page checks by itself.";
 export const ANSWERING_WHY = "Running and answering.";
 export const NOT_ANSWERING_WHY = "Started, but still not answering after 10 minutes. Its log says why.";
+export const READ_FAILED_WHY = "The last check could not read its state; it tries again.";
 
 /** "at 14:03", on this browser's clock: the time the page itself saw it happen. */
 export function atTime(at: number): string {
@@ -36,17 +37,17 @@ export function atTime(at: number): string {
 
 /**
  * Pure. `notAnsweringSince`: when this page first saw the agent running and not answering (null
- * when it has not). null result: nothing in progress or just finished, so the page shows its plain
- * sentence about the agent instead.
+ * when it has not). `lastReadFailed`: the last re-read while following could not read the state. null
+ * result: nothing in progress or just finished, so the page shows its plain sentence about the agent instead.
  */
-export function agentRunStatus(run: ApplyRun, runtime: RuntimeState | undefined, now: number, notAnsweringSince: number | null): AgentRunView | null {
+export function agentRunStatus(run: ApplyRun, runtime: RuntimeState | undefined, now: number, notAnsweringSince: number | null, lastReadFailed = false): AgentRunView | null {
   if (run.phase === "applying") return { state: "running", why: run.label || APPLYING_WHY, active: false };
   if (run.phase === "failed") return { state: "failed", when: atTime(run.at), why: run.why, active: false };
   if (runtime?.running === true && runtime.healthy === false) {
     if (notAnsweringSince !== null && now - notAnsweringSince >= NOT_ANSWERING_MS) {
       return { state: "failed", why: NOT_ANSWERING_WHY, active: false };
     }
-    return { state: "running", why: STARTING_WHY, active: true };
+    return { state: "running", why: lastReadFailed ? `${STARTING_WHY} ${READ_FAILED_WHY}` : STARTING_WHY, active: true };
   }
   if (run.phase === "applied" && runtime?.running === true && runtime.healthy === true) {
     return { state: "finished", when: atTime(run.at), why: ANSWERING_WHY, active: false };

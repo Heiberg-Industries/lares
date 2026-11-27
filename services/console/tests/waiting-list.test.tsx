@@ -190,3 +190,20 @@ it("follows an unconfirmed answer for ten minutes, and never a settled one", () 
   expect(following({ item: item("a"), result: { ok: true, outcome: "approved", message: "m" }, at: 0 }, 1)).toBe(false);
   expect(following(undefined, 1)).toBe(false);
 });
+
+// Real time: the page asks again after its own five seconds (`useKeepFresh`).
+it("checks that keep failing still end after ten minutes, with the plain sentence", { timeout: 15_000 }, async () => {
+  const onDecide = vi.fn(async (): Promise<DecideResult> => ({ ok: true, outcome: "sent", message: "Your answer reached example. Waiting for it to confirm.", unconfirmed: true }));
+  const onCheck = vi.fn(async (): Promise<DecideResult> => { throw new Error("the console could not be reached"); });
+  render(<WaitingList items={[item("a")]} unreadable={[]} now={NOW} onDecide={onDecide} onCheck={onCheck} />);
+  const detail = screen.getByRole("article", { name: "Selected item" });
+  await userEvent.click(within(detail).getByRole("button", { name: "Approve" }));
+  await waitFor(() => expect(detail.querySelector('[data-state="waiting"]')).not.toBeNull());
+  // Ten minutes pass before the first check comes back (it throws).
+  const real = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(real + CONFIRM_FOLLOW_MS + 1_000);
+  try {
+    await waitFor(() => expect(onCheck).toHaveBeenCalled(), { timeout: 7_000 });
+    await waitFor(() => expect(detail.textContent).toContain("It has not confirmed it after ten minutes"));
+  } finally { clock.mockRestore(); }
+});
