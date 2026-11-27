@@ -73,7 +73,7 @@ it("shows a list to someone who cannot change it as its entries, not as stored t
     row({ key: "COMMERCIAL_BRANDS", section: "Business data", label: "Commercial brands", value: '["EXAMPLE_BRAND","SECOND_BRAND"]', from: "console" }),
     row({ key: "CRM_BRANDS", section: "Business data", label: "CRM tracks", value: '[{"id":"FIRST_TRACK","description":"x"}]', from: "console" }),
   ]} />);
-  expect(screen.getByTestId("setting-COMMERCIAL_BRANDS").textContent).toBe("EXAMPLE_BRAND, SECOND_BRAND");
+  expect(screen.getByTestId("setting-COMMERCIAL_BRANDS").innerHTML).toBe("EXAMPLE_BRAND<br>SECOND_BRAND");
   expect(screen.getByTestId("setting-CRM_BRANDS").textContent).toBe("FIRST_TRACK");
 });
 
