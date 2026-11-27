@@ -195,12 +195,44 @@ const CLEAR_REQUEST = `UPDATE voice_profile SET relearn_requested_at = NULL
  */
 async function claimAndRecordStart(agent: string, detail: string): Promise<boolean> {
   return inRequestTransaction(async (db) => {
-    const { rowCount } = await db.query(CLEAR_REQUEST);
-    if ((rowCount ?? 0) === 0) return false;
+    if (!(await lockRequest(db))) return false;
+    // Another agent's run that is going holds the request until it ends: a second run would page a
+    // mailbox and bill the gateway twice for one press. A run that has said nothing for longer than a
+    // learn can take is treated as gone, so a crashed run does not hold requests for ever.
+    if (await anotherRunGoing(db)) return false;
+    await db.query(CLEAR_REQUEST);
     await recordInSavepoint(db, () => recordRunStarted(db, HEARTBEAT_KEY, { agent, detail }));
     return true;
   });
 }
+
+/** A run that has written nothing for this long is not going any more (the learn's own deadline is
+ *  45 minutes; the console reads the same silence as "stopped"). */
+const RUN_SILENT_MS = 2 * 60 * 60_000;
+
+/** Is a run going, by the job's shared outcome (locked for this transaction)? The lock is not waited
+ *  for: an outcome row someone else holds is being written right now, so the request waits for the
+ *  next tick instead of this transaction holding the request row while it waits. An outcome that
+ *  cannot be read for any other reason (an older database) never blocks a claim. */
+async function anotherRunGoing(db: PoolClient): Promise<boolean> {
+  await db.query("SAVEPOINT run_check");
+  try {
+    const { rows } = await db.query<{ going: boolean }>(
+      `SELECT (state = 'running' OR (state = 'skipped' AND reason = $2))
+              AND updated_at > now() - make_interval(secs => $3) AS going
+         FROM schedule_run WHERE job = $1 FOR UPDATE NOWAIT`,
+      [HEARTBEAT_KEY, VOICE_LEARN_SKIPS.alreadyRunning, RUN_SILENT_MS / 1000],
+    );
+    await db.query("RELEASE SAVEPOINT run_check");
+    return rows[0]?.going === true;
+  } catch (err) {
+    await db.query("ROLLBACK TO SAVEPOINT run_check");
+    return (err as { code?: string }).code === LOCK_NOT_AVAILABLE;
+  }
+}
+
+/** Postgres: `FOR UPDATE NOWAIT` found the row locked. */
+const LOCK_NOT_AVAILABLE = "55P03";
 
 /**
  * A request that arrives while this agent's run is going is answered by that run: taken, and said

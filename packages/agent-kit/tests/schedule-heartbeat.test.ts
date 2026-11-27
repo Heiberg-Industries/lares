@@ -183,6 +183,22 @@ describe("schedule-heartbeat: the job's last outcome", () => {
     expect(await heartbeatAge()).toBeGreaterThan(3500);
   });
 
+  it("a blocked write is cancelled on the database, not abandoned: it never lands later over a newer outcome", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await recordRunStarted(pool, KEY);
+    const blocker = await pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM schedule_run WHERE job = $1 FOR UPDATE", [KEY]);
+      expect(await recordRunFinished(pool, KEY, { counts: { kept: 1 } })).toBe(false);
+      await blocker.query("COMMIT");
+    } finally {
+      blocker.release();
+    }
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect((await readScheduleRun(pool, KEY))!.state).toBe("running");
+  }, 20_000);
+
   it("a failing database never throws into the schedule — it warns and resolves false", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const dead = quiet(new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" }));

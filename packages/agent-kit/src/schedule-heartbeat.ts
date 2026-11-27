@@ -114,7 +114,9 @@ export async function recordScheduleTick(db: HeartbeatDb, key: string): Promise<
  * must not put an address or a message text into `detail` beyond an error's own message.
  *
  * Same contract as a stamp: it NEVER throws and NEVER hangs the run (bounded to 5 s), and a failed
- * write is a warning. A record that fails must never cost the schedule its real work — and the
+ * write is a warning. Handed a pool, the write also carries a 4 s limit on the database itself, so a
+ * blocked write is cancelled there instead of holding a connection and landing late over a newer
+ * outcome. A record that fails must never cost the schedule its real work — and the
  * outcome is written to the log as well, so nothing is lost that was there before.
  * ------------------------------------------------------------------------------------------- */
 
@@ -150,6 +152,31 @@ function cleanCounts(counts: Record<string, number> | undefined): Record<string,
   return out;
 }
 
+/** An outcome write's limit on the database itself, below the 5 s wait, so a write that is blocked
+ *  is cancelled there rather than abandoned while it keeps a connection and lands late. */
+const OUTCOME_SERVER_TIMEOUT_MS = 4_000;
+
+/** Run `write` with the server-side limit. Handed a pool, it takes one connection for a short
+ *  transaction with `SET LOCAL` timeouts. Handed anything else (a client already inside the caller's
+ *  transaction, or a test double), it runs the write as given: the caller owns that transaction. */
+async function withServerTimeout(db: HeartbeatDb, write: (q: HeartbeatDb) => Promise<unknown>): Promise<void> {
+  const pool = db as Partial<Pick<Pool, "connect" | "totalCount">>;
+  if (typeof pool.connect !== "function" || typeof pool.totalCount !== "number") { await write(db); return; }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL statement_timeout = ${OUTCOME_SERVER_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${OUTCOME_SERVER_TIMEOUT_MS}`);
+    await write(client);
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 async function writeOutcome(
   db: HeartbeatDb, key: string, state: ScheduleRunState,
   fields: { reason?: string; detail?: string; counts?: Record<string, number>; agent?: string },
@@ -158,7 +185,7 @@ async function writeOutcome(
   const detail = (fields.detail ?? "").slice(0, DETAIL_MAX);
   try {
     await Promise.race([
-      db.query(
+      withServerTimeout(db, (q) => q.query(
         // `started_at`: a start sets it, a skip clears it, a finish or failure keeps the start it ends.
         `INSERT INTO schedule_run (job, agent, state, reason, detail, counts, started_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6::jsonb, CASE WHEN $3 = 'running' THEN clock_timestamp() END, clock_timestamp())
@@ -170,7 +197,7 @@ async function writeOutcome(
                                             ELSE schedule_run.started_at END,
            updated_at = EXCLUDED.updated_at`,
         [key, fields.agent ?? "", state, fields.reason ?? "", detail, JSON.stringify(cleanCounts(fields.counts))],
-      ),
+      )),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`timed out after ${STAMP_TIMEOUT_MS} ms`)), STAMP_TIMEOUT_MS);
       }),

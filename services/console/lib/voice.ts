@@ -3,6 +3,7 @@
 //
 //  (sql/001_baseline.sql): one card per MAILBOX. `default` is the shared fallback card and carries the
 // learn settings; every enrolled mailbox has its own row, proposal and learn status.
+import type { PoolClient } from "pg";
 import { pool } from "./db";
 import { readScheduleRun, type ScheduleRunRow } from "@lares/agent-kit/schedule-heartbeat";
 import { VOICE_LEARN_JOB, VOICE_LEARN_SKIPS } from "@lares/agent-kit/voice-learn-outcome";
@@ -216,13 +217,50 @@ export async function voiceLearnAgents(): Promise<VoiceLearnAgent[]> {
   }));
 }
 
+/** One step inside a read-only transaction: its result, or `fallback` when it cannot be read (an
+ *  older database without the table), without spoiling the rest of the transaction. */
+async function orElse<T>(db: PoolClient, step: () => Promise<T>, fallback: T): Promise<T> {
+  await db.query("SAVEPOINT step");
+  try {
+    const result = await step();
+    await db.query("RELEASE SAVEPOINT step");
+    return result;
+  } catch {
+    await db.query("ROLLBACK TO SAVEPOINT step");
+    return fallback;
+  }
+}
+
+/** The request and the job's outcome from ONE snapshot. The schedule clears the request and records
+ *  "running" in one transaction; two separate reads could fall either side of it and see an old
+ *  finished outcome with no request, and the page would stop keeping itself up to date. */
+async function readRequestAndRun(): Promise<{ requestedAt: Date | null; run: ScheduleRunRow | null }> {
+  let client: PoolClient | undefined;
+  try {
+    client = await pool.connect();
+    const db = client;
+    await db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const requestedAt = await orElse(db, async () => {
+      const { rows } = await db.query<{ relearn_requested_at: Date | string | null }>(
+        `SELECT relearn_requested_at FROM voice_profile WHERE id = 'default'`,
+      );
+      return rows[0]?.relearn_requested_at ? new Date(rows[0].relearn_requested_at) : null;
+    }, null);
+    const run = await orElse(db, () => readScheduleRun(db, VOICE_LEARN_JOB), null);
+    await db.query("COMMIT");
+    return { requestedAt, run };
+  } catch {
+    await client?.query("ROLLBACK").catch(() => {});
+    return { requestedAt: null, run: null };
+  } finally {
+    client?.release();
+  }
+}
+
 /** The page's read. Each source that cannot be read is left out rather than failing the page. */
 export async function getRelearnStatus(cards: readonly VoiceCardDTO[], now: Date = new Date()): Promise<RelearnStatusView | null> {
-  const [requestedAt, run, agents] = await Promise.all([
-    pool.query<{ relearn_requested_at: Date | string | null }>(`SELECT relearn_requested_at FROM voice_profile WHERE id = 'default'`)
-      .then(({ rows }) => (rows[0]?.relearn_requested_at ? new Date(rows[0].relearn_requested_at) : null))
-      .catch(() => null),
-    readScheduleRun(pool, VOICE_LEARN_JOB).catch(() => null),
+  const [{ requestedAt, run }, agents] = await Promise.all([
+    readRequestAndRun(),
     voiceLearnAgents().catch(() => null),
   ]);
   return relearnStatus({ requestedAt, run, agents, mailboxes: cards.filter((c) => c.id !== "default") }, now, homeTz());

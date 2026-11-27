@@ -19,18 +19,21 @@ const db = vi.hoisted(() => ({
   requestedAt: null as Date | null,
   run: null as Row | null,
   agents: [] as Row[],
+  /** What went through the one connection the page takes. */
+  onConnection: [] as string[],
 }));
-vi.mock("../lib/db", () => ({
-  pool: {
-    query: vi.fn(async (sql: string) => {
-      if (/FROM schedule_run/.test(sql)) return { rows: db.run ? [db.run] : [] };
-      if (/SELECT relearn_requested_at FROM voice_profile/.test(sql)) return { rows: [{ relearn_requested_at: db.requestedAt }] };
-      if (/FROM voice_profile/.test(sql)) return { rows: db.cards };
-      if (/FROM agent_definitions/.test(sql)) return { rows: db.agents };
-      return { rows: [] };
-    }),
-  },
-}));
+vi.mock("../lib/db", () => {
+  const query = vi.fn(async (sql: string) => {
+    if (/FROM schedule_run/.test(sql)) return { rows: db.run ? [db.run] : [] };
+    if (/SELECT relearn_requested_at FROM voice_profile/.test(sql)) return { rows: [{ relearn_requested_at: db.requestedAt }] };
+    if (/FROM voice_profile/.test(sql)) return { rows: db.cards };
+    if (/FROM agent_definitions/.test(sql)) return { rows: db.agents };
+    return { rows: [] };
+  });
+  // The request and the outcome are read on one connection, in one read-only transaction.
+  const onConnection = async (sql: string) => { db.onConnection.push(sql); return query(sql); };
+  return { pool: { query, connect: async () => ({ query: onConnection, release: () => {} }) } };
+});
 
 const card = (id: string, learn_status: string, learn_message = ""): Row => ({
   id, core: "", notes_en: "", notes_no: "", model_en: null, model_no: null, learn_key: "chief-of-staff",
@@ -57,6 +60,7 @@ beforeEach(() => {
   db.requestedAt = null;
   db.run = null;
   db.agents = [agent("example-agent", "Example Agent")];
+  db.onConnection = [];
 });
 
 describe("the Re-learn button follows the run, not the default card", () => {
@@ -117,5 +121,16 @@ describe("the status line says what is happening, in words", () => {
     const html = await render();
     expect(html).not.toContain("lares-run-status");
     expect(button(html)).toContain("Re-learn from Sent mail");
+  });
+});
+
+describe("the request and the outcome are read together", () => {
+  it("from one snapshot, so the page never falls between the schedule's claim and its start", async () => {
+    await render();
+    const seen = db.onConnection.join("\n");
+    expect(db.onConnection[0]).toBe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    expect(seen).toMatch(/SELECT relearn_requested_at FROM voice_profile/);
+    expect(seen).toMatch(/FROM schedule_run/);
+    expect(db.onConnection.at(-1)).toBe("COMMIT");
   });
 });

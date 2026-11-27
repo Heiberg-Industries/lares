@@ -215,20 +215,62 @@ describe("voice-learn: what a re-learn request becomes", () => {
     await first;
   }, 30_000);
 
-  it("an outcome write that is blocked ends on the server and never holds the request: the claim still commits", async () => {
+  it("an outcome row someone else is writing never makes this agent hold the request: it waits for the next tick", async () => {
     await pool.query("INSERT INTO schedule_run (job, state) VALUES ('chief-of-staff/voice-learn', 'finished')");
     const blocker = await pool.connect();
     try {
       await blocker.query("BEGIN");
       await blocker.query("SELECT 1 FROM schedule_run WHERE job = 'chief-of-staff/voice-learn' FOR UPDATE");
-      const tick = runOnce();
-      // Past the 4 s server-side limit, while the outcome row is still locked by someone else.
-      await new Promise((r) => setTimeout(r, 6_500));
-      expect(await pending()).toBe(false);
-      await blocker.query("COMMIT");
-      await tick;
+      const started = Date.now();
+      await runOnce();
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(seenAtMailbox).toBeNull();
+      expect(await pending()).toBe(true);
+      // The request row is free: nothing is left holding it.
+      await expect(pool.query("SELECT 1 FROM voice_profile WHERE id = 'default' FOR UPDATE NOWAIT")).resolves.toBeDefined();
     } finally {
+      await blocker.query("ROLLBACK").catch(() => {});
       blocker.release();
     }
+  }, 30_000);
+
+  it("a blocked outcome write inside the claim is cancelled on the server and the claim still commits", async () => {
+    // The outcome row is free when the claim looks, then taken by someone else before the started
+    // record is written: simulated with a trigger that waits on an advisory lock this test holds.
+    const holder = await pool.connect();
+    try {
+      await holder.query("SELECT pg_advisory_lock(4242)");
+      await pool.query(`CREATE OR REPLACE FUNCTION test_slow_outcome() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_advisory_xact_lock(4242); RETURN NEW; END $$`);
+      await pool.query(`CREATE TRIGGER test_slow_outcome BEFORE INSERT OR UPDATE ON schedule_run
+        FOR EACH ROW WHEN (NEW.state = 'running') EXECUTE FUNCTION test_slow_outcome()`);
+      const tick = runOnce();
+      await new Promise((r) => setTimeout(r, 6_500));
+      // Past the 4 s server-side limit: the started record was cancelled, the claim committed.
+      expect(await pending()).toBe(false);
+      await holder.query("SELECT pg_advisory_unlock(4242)");
+      await tick;
+    } finally {
+      await holder.query("SELECT pg_advisory_unlock_all()").catch(() => {});
+      holder.release();
+      await pool.query("DROP TRIGGER IF EXISTS test_slow_outcome ON schedule_run");
+      await pool.query("DROP FUNCTION IF EXISTS test_slow_outcome()");
+    }
   }, 40_000);
+
+  it("another agent's run that is going holds the request: no second run, and the request waits", async () => {
+    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('chief-of-staff/voice-learn', 'other-agent', 'running', now())");
+    await runOnce();
+    expect(seenAtMailbox).toBeNull();
+    expect(await pending()).toBe(true);
+    expect(await outcome()).toMatchObject({ state: "running", agent: "other-agent" });
+  }, 30_000);
+
+  it("a run that has said nothing for hours is treated as gone: the request is taken and run", async () => {
+    await pool.query(`INSERT INTO schedule_run (job, agent, state, started_at, updated_at)
+      VALUES ('chief-of-staff/voice-learn', 'other-agent', 'running', now() - interval '3 hours', now() - interval '3 hours')`);
+    await runOnce();
+    expect(seenAtMailbox).toEqual({ state: "running", pending: false });
+    expect(await pending()).toBe(false);
+  }, 30_000);
 });
