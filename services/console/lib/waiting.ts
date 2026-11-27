@@ -282,22 +282,26 @@ async function ownedAgents(member: string, deps: WaitingDeps, only?: string): Pr
 interface Conversation {
   readonly sessionId: string;
   readonly door: string;
+  /** The conversation has ended. Only a re-check of an answer asks for ended ones. */
+  readonly ended?: boolean;
 }
 
 /** Live conversations, newest first. A week back: a card older than a day can only be denied,
  *  and one older than that is not worth a page load. */
-async function conversations(agent: OwnedAgent, deps: WaitingDeps, only?: string): Promise<Conversation[]> {
+/** `ended`: also a conversation that has ended since, for a re-check that reads what an answer led to
+ *  (an action can end its session before the page asks again). Nothing is ever sent into one. */
+async function conversations(agent: OwnedAgent, deps: WaitingDeps, only?: string, opts: { ended?: boolean } = {}): Promise<Conversation[]> {
   const { rows } = await deps.query(
-    `SELECT session_id, door FROM agent_conversations c
-     WHERE agent = $1 AND incarnation = $2::uuid AND NOT terminal
+    `SELECT session_id, door, terminal FROM agent_conversations c
+     WHERE agent = $1 AND incarnation = $2::uuid AND ($4::boolean OR NOT terminal)
        AND NOT EXISTS(SELECT 1 FROM console_session_bindings b WHERE b.agent=c.agent AND b.incarnation=c.incarnation AND b.session_id=c.session_id)
        AND observed_at > now() - interval '7 days' AND ($3::text IS NULL OR session_id = $3)
      ORDER BY observed_at DESC LIMIT 50`,
-    [agent.name, agent.incarnation, only ?? null],
+    [agent.name, agent.incarnation, only ?? null, opts.ended === true],
   );
   return rows
     .filter((r) => typeof r.session_id === "string" && SESSION_ID.test(r.session_id))
-    .map((r) => ({ sessionId: r.session_id as string, door: String(r.door) }));
+    .map((r) => ({ sessionId: r.session_id as string, door: String(r.door), ...(r.terminal === true ? { ended: true } : {}) }));
 }
 
 function channelOf(door: string): WaitingItem["channel"] {
@@ -826,16 +830,21 @@ const approvals: WaitingSource = {
     if (!password) return { ok: false, reason: "unavailable", message: "The console cannot reach the agents: no route password is mounted." };
     const [agent] = await ownedAgents(member, deps, name);
     if (!agent) return { ok: false, reason: "refused", message: "Only the owner of this agent can decide its approvals." };
-    const [conversation] = await conversations(agent, deps, sessionId);
-    if (!conversation) return { ok: false, reason: "gone", message: "That conversation has ended, so what came of your answer cannot be read here." };
+    // An ended conversation is still read: the action may have finished, and ended it, since the last check.
+    const [conversation] = await conversations(agent, deps, sessionId, { ended: true });
+    if (!conversation) return { ok: false, reason: "gone", message: "That conversation can no longer be found, so what came of your answer cannot be read here." };
     let seen: ReturnType<typeof readApprovals>;
     try {
       seen = readApprovals(await sessionFacts(agent, sessionId, password, deps, { door: conversation.door }));
     } catch {
+      if (conversation.ended) return { ok: false, reason: "gone", message: "That conversation has ended and can no longer be read, so what came of your answer is not known here." };
       // Not an outcome: the page asks again on its next check.
       return { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true };
     }
     const outcome = answerOutcome(seen, interactionId, seen.calls.get(interactionId) ?? "", agent.name, conversation.door);
+    // An ended conversation will not say more: what it has not said by now is the final answer.
+    if (conversation.ended && outcome === "approved") return { ok: false, reason: "gone", message: "Approved, but the conversation ended before the agent said whether the action went through." };
+    if (conversation.ended && outcome === null) return { ok: false, reason: "gone", message: "That conversation has ended without saying what came of your answer." };
     if (outcome === "approved") return { ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true };
     return outcome ?? { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true };
   },

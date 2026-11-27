@@ -64,7 +64,7 @@ interface Fake {
 
 function fake(opts: {
   agents?: Record<string, unknown>[];
-  sessions?: Record<string, Array<{ session_id: string; door: string }>>;
+  sessions?: Record<string, Array<{ session_id: string; door: string; terminal?: boolean }>>;
   streams?: Record<string, unknown[] | string>;
   postStatus?: number;
   /** The JSON body of a refused answer. */
@@ -109,7 +109,8 @@ function fake(opts: {
       }
       if (sql.includes("agent_door_connections")) return { rows: agents.filter((a) => values[0] === null || a.name === values[0]) };
       if (sql.includes("agent_conversations")) {
-        const mine = sessions[values[0] as string] ?? [];
+        // An ended conversation is returned only when the query asks for ended ones too ($4).
+        const mine = (sessions[values[0] as string] ?? []).filter((s) => !s.terminal || values[3] === true);
         return { rows: values[2] ? mine.filter((s) => s.session_id === values[2]) : mine };
       }
       if (sql.includes("notion_sync_proposals") || sql.includes("atlas_proposals")) {
@@ -690,6 +691,25 @@ describe("deciding", () => {
     const g = fake({ streams: { wrun_tg: [...asked("req-1", "Send it", "2026-10-15T11:00:00.000Z"), resolved("req-1", "declined")] } });
     expect(await checkWaiting(OWNER, id, g.deps)).toEqual({ ok: true, outcome: "cancelled", message: "Denied. example will not do it." });
     expect(g.posts).toHaveLength(0);
+  });
+
+  it("an action that ended its conversation before the next check is still read, and says what came of it", async () => {
+    const sessions = { example: [{ session_id: "wrun_tg", door: "telegram", terminal: false }] };
+    const f = fake({ streams: waiting(), after: "resolve", sessions });
+    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toMatchObject({ unconfirmed: true });
+    sessions.example[0]!.terminal = true;
+    f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), ran("call-req-1", "completed")];
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: true, outcome: "approved", message: "Approved, and example carried it out. Its reply appears in the Telegram conversation this came from." });
+    // Ended with nothing more to read: a final answer, so the page stops asking.
+    delete f.streams.wrun_tg;
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: false, reason: "gone", message: "That conversation has ended without saying what came of your answer." });
+    // Ended after eve took the approval, with no result from the action.
+    f.streams.wrun_tg = [...asked("req-1", "Send it", "2026-10-15T11:00:00.000Z"), resolved("req-1", "accepted")];
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: false, reason: "gone", message: "Approved, but the conversation ended before the agent said whether the action went through." });
+    // Ended and its record no longer kept (HTTP 410).
+    const g = fake({ streams: waiting(), sessions: { example: [{ session_id: "wrun_tg", door: "telegram", terminal: true }] }, streamStatus: { wrun_tg: 410 } });
+    expect(await checkWaiting(OWNER, id, g.deps)).toMatchObject({ ok: false, reason: "gone", message: "That conversation has ended and can no longer be read, so what came of your answer is not known here." });
+    expect(f.posts).toHaveLength(1);
   });
 
   it("a re-check is only for the agent's owner, and only for an item this console made", async () => {
