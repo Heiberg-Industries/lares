@@ -172,7 +172,7 @@ read/search/backlink calls use that stable member as their reader. Plain note li
 aggregate counts still have legacy scope limits. Both role catalogues check authority before
 execution and request-time approval policy evaluation, retaining Eve's durable descriptors.
 Approval-only resumes of bound console sessions require the exact original-action authority
-described below. The Waiting page keeps native Slack/Telegram ownership checks and transports
+described below. The Reviews page keeps native Slack/Telegram ownership checks and transports
 a separate stable resolver identity without inventing a private console binding.
 
 Web-chat turn authority remains a designated-owner slice. The admin level opens the console's
