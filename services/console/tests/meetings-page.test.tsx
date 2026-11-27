@@ -18,7 +18,7 @@ vi.mock("../components/KeepPageFresh", () => ({ KeepPageFresh: ({ active }: { ac
 import MeetingsPage from "../app/meetings/page";
 
 const show = async () => renderToStaticMarkup(await MeetingsPage()).replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
-const status = (over: object = {}) => ({ kind: "status", status: { activeRevision: "x", state: "applied", ...over } });
+const status = (over: object = {}) => ({ kind: "status", status: { activeRevision: "x", state: "applied", consumers: [], grants: [], ...over } });
 beforeEach(() => {
   vi.clearAllMocks(); m.guard.mockResolvedValue({ id: "owner-1" });
   m.source.mockResolvedValue({ value: null, from: "none", canChange: true, chiefCount: 1 });
@@ -37,6 +37,19 @@ it("tells the source when no chief of staff answers Notion requests, so a lookup
   expect(await show()).toContain("off:chief");
   m.chiefs.mockRejectedValue(new Error("down"));
   expect(await show()).toContain("off:none");
+});
+
+it("with the key on one agent and the schedule on another, warns about the agent that has the key", async () => {
+  m.credential.mockResolvedValue(status({ grants: [{ agent: "chief", purposes: ["clipping"] }], consumers: [] }));
+  m.chiefs.mockResolvedValue([{ name: "chief", displayName: "Ada", answersRequests: false }, { name: "second", displayName: "Bea", answersRequests: true }]);
+  expect(await show()).toContain("off:chief");
+  // The agent with the key also answers requests: no warning.
+  m.chiefs.mockResolvedValue([{ name: "chief", displayName: "Ada", answersRequests: true }, { name: "second", displayName: "Bea", answersRequests: false }]);
+  expect(await show()).toContain("off:none");
+  // A key given through the installation's own settings counts the same way.
+  m.credential.mockResolvedValue(status({ grants: [], consumers: [{ name: "second", category: "owned-agent", incarnation: null }] }));
+  m.chiefs.mockResolvedValue([{ name: "chief", displayName: "Ada", answersRequests: true }, { name: "second", displayName: "Bea", answersRequests: false }]);
+  expect(await show()).toContain("off:second");
 });
 
 it("is called Meetings, opens to admins, and has its two sections in order", async () => {

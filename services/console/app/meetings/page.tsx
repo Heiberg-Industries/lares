@@ -6,6 +6,7 @@ import { getCredentialView } from "../../lib/credentials";
 import { getFollowupStatus } from "../../lib/meeting-followup-status";
 import { listAgents } from "../../lib/agents";
 import { notionAgents } from "../../lib/notion-agents";
+import { notionUsers } from "../../lib/notion-connection";
 import { MeetingSeriesRow } from "../../components/MeetingSeriesRow";
 import { MeetingsSourceControl, type NotionConnected } from "../../components/MeetingsSourceControl";
 import { KeepPageFresh } from "../../components/KeepPageFresh";
@@ -21,8 +22,13 @@ export default async function MeetingsPage() {
     getMeetingsSourceView(), getMeetingsLookupView(), getCredentialView(), getFollowupStatus(), listAutoSendSeries(), listAgents(),
     notionAgents().catch(() => null),
   ]);
-  // The lookup is answered by a chief of staff's "Clipping requests" schedule: say so when none has it on.
-  const requestsOff = chiefs && chiefs.length > 0 && !chiefs.some((c) => c.answersRequests) ? chiefs : null;
+  // The lookup is answered by a chief of staff that both has the Notion key and has its "Clipping
+  // requests" schedule on. When the key's state is known (the owner), say so when no agent that may
+  // use Notion answers requests, naming those agents; otherwise only when no chief of staff does.
+  const users = credential.kind === "status" ? notionUsers(credential.status) : null;
+  const keyed = users && chiefs ? chiefs.filter((c) => users.granted.includes(c.name) || users.byConfig.includes(c.name)) : null;
+  const candidates = keyed && keyed.length > 0 ? keyed : chiefs;
+  const requestsOff = candidates && candidates.length > 0 && !candidates.some((c) => c.answersRequests) ? candidates : null;
   // Only the owner can read the key's state; for anyone else nothing is claimed about it.
   const notion: NotionConnected = credential.kind !== "status" ? "unknown"
     : credential.status.activeRevision && credential.status.state === "applied" ? "connected" : "not-connected";
