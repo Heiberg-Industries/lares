@@ -1,5 +1,5 @@
 "use client";
-import { Field, Notice } from "@lares/ui/patterns";
+import { Field, Notice, RunStatus, type RunStatusProps } from "@lares/ui/patterns";
 import { Badge } from "@lares/ui/primitives/badge";
 import { Button } from "@lares/ui/primitives/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
@@ -8,12 +8,27 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { acceptNotionSyncPreview, runNotionSyncPreview, setNotionSync, type DefinitionActionResult } from "../app/actions/definition";
 import type { NotionSyncCounts, NotionSyncView } from "../lib/notion-sync";
-import { NOTION_KEY_UPDATED } from "./NotionCredential";
+import { NOTION_KEY_UPDATED } from "./NotionConnection";
 
 const PASS_NAMES: Record<string, string> = { attendees: "Meeting attendees", people: "People records" };
 
 const sentence = (c: NotionSyncCounts) =>
   `${c.create} new, ${c.adoptPatch} to update, ${c.skip} left alone, ${c.conflict} that need a look`;
+
+/** Where the People sync is, for its status line. Pure. */
+export function peopleSyncRunStatus(view: NotionSyncView): RunStatusProps {
+  const last = view.lastRun ? `on ${view.lastRun.slice(0, 10)} at ${view.lastRun.slice(11, 16)} UTC` : undefined;
+  switch (view.phase) {
+    case "off": return { state: "skipped", why: "Switched off." };
+    case "needs-setup": return { state: "waiting", why: "Switched on, but it cannot run yet." };
+    case "needs-key": return { state: "waiting", why: "Waiting for Notion to be connected." };
+    case "needs-preview": return { state: "waiting", why: "Waiting for a preview of what it would do." };
+    case "ready-to-accept": return { state: "waiting", why: "Waiting for you to accept the preview." };
+    case "on": return view.running !== "running"
+      ? { state: "failed", why: "The service is not running. Try switching it off and on again." }
+      : view.lastRun ? { state: "finished", when: last, why: "It runs once an hour." } : { state: "waiting", why: "On. The first run is within the hour." };
+  }
+}
 
 /** The optional Notion sync: off until switched on, and then off until the owner has seen a preview of
  * what it would do and accepted it. Only the installation owner gets the buttons. */
@@ -50,7 +65,7 @@ export function NotionSyncControl({ initial }: { initial: NotionSyncView }) {
   const status: Record<NotionSyncView["phase"], string> = {
     off: "Off.",
     "needs-setup": "Switched on, but it cannot run yet.",
-    "needs-key": "Switched on. Connect the Notion key first (under Notion key on this page); nothing runs until it is connected.",
+    "needs-key": "Switched on. Connect Notion first (under 1. Connect on this page); nothing runs until it is connected.",
     "needs-preview": "Switched on, waiting for a preview. Nothing runs until you have seen what it would do and accepted it.",
     "ready-to-accept": "Preview ready. Nothing runs until you accept it.",
     on: view.running === "running" ? "On. It runs once an hour." : "On, but the service is not running. Try switching it off and on again.",
@@ -66,6 +81,7 @@ export function NotionSyncControl({ initial }: { initial: NotionSyncView }) {
         <CardAction><Badge variant={view.phase === "on" && view.running === "running" ? "success" : view.phase === "off" ? "neutral" : "warning"}>{view.phase === "on" ? "On" : view.phase === "off" ? "Off" : "Not running yet"}</Badge></CardAction>
       </CardHeader>
       <CardContent className="lares-stack">
+      <RunStatus label="People sync" {...peopleSyncRunStatus(view)} />
       <p data-testid="sync-status">{status[view.phase]}</p>
       <p className="lares-muted" data-testid="sync-last-run">Last run: {last}</p>
       {view.phase !== "off" && view.problems.length > 0 && (

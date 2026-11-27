@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { acceptNotionSyncPreview, runNotionSyncPreview, setNotionSync } from "../app/actions/definition";
-import { NotionSyncControl } from "../components/NotionSyncControl";
+import { NotionSyncControl, peopleSyncRunStatus } from "../components/NotionSyncControl";
 import type { NotionSyncView } from "../lib/notion-sync";
 vi.mock("../app/actions/definition", () => ({ setNotionSync: vi.fn(), runNotionSyncPreview: vi.fn(), acceptNotionSyncPreview: vi.fn() }));
 const nav = vi.hoisted(() => ({ refresh: vi.fn() }));
@@ -62,7 +62,7 @@ it("lists, in plain words, what is missing, and says to connect the key first", 
   expect(screen.getByTestId("sync-problems").textContent).toContain("meetings database");
   cleanup();
   render(<NotionSyncControl initial={on({ phase: "needs-key", keyApplied: false })} />);
-  expect(screen.getByTestId("sync-status").textContent).toContain("Connect the Notion key first");
+  expect(screen.getByTestId("sync-status").textContent).toContain("Connect Notion first");
   expect(screen.queryByRole("button", { name: "Run preview" })).toBeNull();
 });
 
@@ -81,7 +81,7 @@ it("shows the keeper's refusal word for word, and is read-only for anyone but th
 it("asks the server for the page again when the Notion key card says the key changed, and shows what comes back", () => {
   const needsKey = on({ phase: "needs-key", keyApplied: false });
   const page = render(<NotionSyncControl initial={needsKey} />);
-  expect(screen.getByTestId("sync-status").textContent).toContain("Connect the Notion key first");
+  expect(screen.getByTestId("sync-status").textContent).toContain("Connect Notion first");
   expect(nav.refresh).not.toHaveBeenCalled();
   window.dispatchEvent(new CustomEvent("lares:notion-key-updated", { detail: {} }));
   expect(nav.refresh).toHaveBeenCalledOnce();
@@ -100,5 +100,16 @@ it("keeps a people database id that is typed but not saved when the page is read
   await userEvent.clear(field()); await userEvent.type(field(), "typed-3");
   page.rerender(<NotionSyncControl initial={on({ peopleDataSource: "saved-2", phase: "needs-key" })} />);
   expect(field().value).toBe("typed-3");
-  expect(screen.getByTestId("sync-status").textContent).toContain("Connect the Notion key first");
+  expect(screen.getByTestId("sync-status").textContent).toContain("Connect Notion first");
+});
+
+it("has one status line: switched off, waiting for a step, running on the hour, or not running", () => {
+  expect(peopleSyncRunStatus(view())).toEqual({ state: "skipped", why: "Switched off." });
+  expect(peopleSyncRunStatus(on({ phase: "needs-key" }))).toMatchObject({ state: "waiting", why: "Waiting for Notion to be connected." });
+  expect(peopleSyncRunStatus(on({ phase: "ready-to-accept" }))).toMatchObject({ state: "waiting" });
+  expect(peopleSyncRunStatus(on({ phase: "on", running: "running", lastRun: "2026-11-27T11:00:00.000Z" })))
+    .toEqual({ state: "finished", when: "on 2026-11-27 at 11:00 UTC", why: "It runs once an hour." });
+  expect(peopleSyncRunStatus(on({ phase: "on", running: "stopped" }))).toMatchObject({ state: "failed" });
+  render(<NotionSyncControl initial={view()} />);
+  expect(screen.getByRole("status", { name: "People sync: Skipped" })).toBeTruthy();
 });

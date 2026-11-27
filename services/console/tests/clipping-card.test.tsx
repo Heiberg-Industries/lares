@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ClippingCard, testSentence } from '../components/ClippingCard';
+import { ClippingCard, clippingRunStatus, testSentence } from '../components/ClippingCard';
 import type { CredentialStatus } from '@lares/agent-kit/credential-lifecycle';
 import type { CredentialView } from '../lib/credentials';
 import type { ClippingRequestView, ClippingSourceView, ClippingView } from '../lib/clipping';
@@ -65,12 +65,42 @@ describe('every state has its own sentence', () => {
   });
 
   describe('the Notion key line', () => {
-    it('working / saved / not saved / unavailable', () => {
-      expect(text(view())).toContain('Notion key: working.');
-      expect(text(view(), cred({ test: null }))).toContain('Notion key: saved.');
-      expect(text(view(), cred({ activeRevision: null, state: 'not-configured' }))).toContain('Notion key: not saved. Add it under Notion key above.');
+    it('may use / may not / not connected / unavailable: it points at the steps above, and has no switch of its own', () => {
+      expect(text(view(), cred(granted))).toContain('A chief of staff may use Notion, so clipping can run.');
+      expect(text(view(), cred({ consumers: granted.consumers }))).toContain('A chief of staff may use Notion, so clipping can run.');
+      // With several chiefs of staff the card cannot name one, and still says so.
+      expect(text(view({ chiefOfStaff: { kind: 'several' } }), cred(granted))).toContain('A chief of staff may use Notion, so clipping can run.');
+      expect(text(view(), cred({ grants: [{ agent: 'gone', purposes: ['clipping'], stale: true }] }))).toContain('No chief of staff may use Notion yet.');
+      expect(text(view())).toContain('No chief of staff may use Notion yet. Switch one on under 2. Which agents may use Notion.');
+      expect(text(view(), cred({ activeRevision: null, state: 'not-configured' }))).toContain('Notion is not connected yet. Connect it under 1. Connect.');
       expect(text(view(), { kind: 'unavailable' })).toContain('Notion key: status unavailable.');
       expect(text(view(), cred({ state: 'unavailable' }))).toContain('Notion key: status unavailable.');
+      for (const c of [cred(), cred(granted), cred({ activeRevision: null, state: 'not-configured' })]) expect(text(view({ source: source(), sourceCount: 1 }), c)).not.toMatch(/Switch clipping|Confirm switch/);
+    });
+    it('follows the key the connection steps on the same page report, without a reload', async () => {
+      render(<ClippingCard initial={view()} credential={cred({ activeRevision: null, state: 'not-configured' })} />);
+      expect(screen.getByText('Notion is not connected yet. Connect it under 1. Connect.')).toBeTruthy();
+      act(() => { window.dispatchEvent(new CustomEvent('lares:notion-key-updated', { detail: { not: 'a status' } })); });
+      expect(screen.getByText('Notion is not connected yet. Connect it under 1. Connect.')).toBeTruthy();
+      act(() => { window.dispatchEvent(new CustomEvent('lares:notion-key-updated', { detail: status(granted) })); });
+      await waitFor(() => expect(screen.getByText('A chief of staff may use Notion, so clipping can run.')).toBeTruthy());
+    });
+  });
+
+  describe('the status line', () => {
+    it.each([
+      ['nothing chosen', view(), { state: 'skipped', why: 'No database is chosen yet. Paste its link under Database.' }],
+      ['not fetched yet', view({ source: source({ outcome: null }), sourceCount: 1 }), { state: 'waiting' }],
+      ['a good fetch', view({ source: source(), sourceCount: 1 }), { state: 'finished', when: 'on 2026-10-09 at 11:00 UTC', why: 'Last fetch brought in 3 new links.' }],
+      ['a failed fetch', view({ source: source({ outcome: 'refused' }), sourceCount: 1 }), { state: 'failed', when: 'on 2026-10-09 at 11:00 UTC' }],
+      ['a request waiting', view({ busy: true, requests: { test: request('test', { status: 'pending', outcome: null }) } }), { state: 'requested' }],
+      ['a request being worked on', view({ busy: true, requests: { import: request('import', { status: 'claimed', outcome: null }) } }), { state: 'running' }],
+      ['two sources', view({ source: source(), sourceCount: 2 }), { state: 'skipped' }],
+    ] as const)('%s', (_name, v, expected) => {
+      expect(clippingRunStatus(v as Extract<ClippingView, { unavailable: false }>)).toMatchObject(expected);
+    });
+    it('is shown on the card with its badge', () => {
+      expect(text(view({ source: source(), sourceCount: 1 }))).toContain('Finished Finished on 2026-10-09 at 11:00 UTC. Last fetch brought in 3 new links.');
     });
   });
 
@@ -100,7 +130,7 @@ describe('every state has its own sentence', () => {
     });
     it('Notion refused the key', () => {
       const t = text(view({ requests: { schema: request('schema', { status: 'failed', outcome: 'refused', detail: 'Notion refused the connection key.' }) } }));
-      expect(t).toContain('Notion refused the key.'); expect(t).toContain('Check the Notion key above.');
+      expect(t).toContain('Notion refused the key.'); expect(t).toContain('Check the Notion key under 1. Connect.');
     });
     it.each([
       ['rate-limited', 'Notion is limiting requests'], ['unavailable', 'Notion could not be reached'], ['timeout', 'Notion did not answer in time'],
@@ -202,57 +232,6 @@ describe('every state has its own sentence', () => {
     it('more than one source is named', () => expect(text(view({ source: source(), sourceCount: 2 }))).toContain('More than one Notion source is set up.'));
   });
 
-  describe('the switch', () => {
-    const saved = { source: source(), sourceCount: 1 };
-    it('off: offers to switch on', () => {
-      const t = text(view(saved)); expect(t).toContain('Clipping is switched off: the chief of staff does not receive the Notion key yet.'); expect(t).toContain('Switch clipping on');
-      expect(t).not.toContain('Switch clipping off');
-    });
-    it('on: offers to switch off', () => {
-      const t = text(view(saved), cred(granted)); expect(t).toContain('Clipping is switched on: the chief of staff receives the Notion key.'); expect(t).toContain('Switch clipping off');
-      expect(t).not.toContain('Switch clipping on');
-    });
-    it('on through the installation configuration: no switch', () => {
-      const t = text(view(saved), cred({ consumers: granted.consumers }));
-      expect(t).toContain("already receives the Notion key through this installation's own configuration"); expect(t).not.toContain('Switch clipping');
-    });
-    it('not the administrator: the fixed sentence and no switch', () => {
-      const t = text(view(saved), { kind: 'administrator-required' });
-      expect(t).toContain("Only the installation's credential administrator can switch this."); expect(t).not.toContain('Switch clipping');
-    });
-    it('credential status unavailable, or signed out', () => {
-      expect(text(view(saved), { kind: 'unavailable' })).toContain('Credential status unavailable.');
-      expect(text(view(saved), cred({ state: 'unavailable' }))).toContain('Credential status unavailable.');
-      expect(text(view(saved), { kind: 'sign-in-required' })).toContain('Sign in again');
-    });
-    it('no key saved: the fixed sentence and no switch', () => {
-      const t = text(view(saved), cred({ activeRevision: null, state: 'not-configured' }));
-      expect(t).toContain('No Notion key is saved yet. Add it under Notion key above.'); expect(t).not.toContain('Switch clipping');
-    });
-    it('shows the switch as soon as the Notion key card on the same page says the first key was applied, without a reload', async () => {
-      render(<ClippingCard initial={view(saved)} credential={cred({ activeRevision: null, state: 'not-configured' })} />);
-      expect(screen.getByText('No Notion key is saved yet. Add it under Notion key above.')).toBeTruthy();
-      expect(screen.queryByText('Switch clipping on')).toBeNull();
-      act(() => { window.dispatchEvent(new CustomEvent('lares:notion-key-updated', { detail: { not: 'a status' } })); });
-      expect(screen.queryByText('Switch clipping on')).toBeNull();
-      act(() => { window.dispatchEvent(new CustomEvent('lares:notion-key-updated', { detail: status() })); });
-      await waitFor(() => expect(screen.getByText('Switch clipping on')).toBeTruthy());
-      expect(screen.queryByText('No Notion key is saved yet. Add it under Notion key above.')).toBeNull();
-    });
-    it('no chief of staff, or several: explained, switch hidden', () => {
-      const none = text(view({ ...saved, chiefOfStaff: { kind: 'none' } }));
-      expect(none).toContain('No chief of staff is set up'); expect(none).not.toContain('Switch clipping');
-      const many = text(view({ ...saved, chiefOfStaff: { kind: 'several' } }));
-      expect(many).toContain('More than one chief of staff is set up'); expect(many).not.toContain('Switch clipping');
-    });
-    it('a stale grant is shown as stale with a plain Remove', () => {
-      const t = text(view(saved), cred({ grants: [{ agent: 'gone', purposes: ['clipping'], stale: true }] }));
-      expect(t).toContain('The agent gone was switched on but no longer exists. Nothing restarts when you remove it.'); expect(t).toContain('Remove');
-    });
-    it('switching off is disabled until the keeper has given an inventory revision', () => {
-      expect(html(view(saved), cred({ ...granted, inventoryRevision: null }))).toMatch(/<button[^>]*disabled=""[^>]*>Switch clipping off<\/button>/);
-    });
-  });
 });
 
 describe('render makes no network call', () => {
@@ -370,87 +349,5 @@ describe('buttons', () => {
     fireEvent.click(screen.getByText('Both (changeover)'));
     await waitFor(() => expect(bodyOf(f, 0)).toEqual({ action: 'set-choice', mode: 'both' }));
     await waitFor(() => expect(screen.getByText(/Source: Both \(changeover\)\./)).toBeTruthy());
-  });
-});
-
-describe('the switch confirms before restarting anything', () => {
-  const saved = view({ source: source(), sourceCount: 1 });
-  const preview = { agent: 'chief', purpose: 'clipping', inventoryRevision: 'b'.repeat(64), consumers: [
-    { name: 'chief', category: 'owned-agent', incarnation }, { name: 'other-agent', category: 'owned-agent', incarnation }] };
-
-  it('on: previews first, lists the agents it would restart, needs the checkbox, then grants with the PREVIEW revision', async () => {
-    const f = vi.fn()
-      .mockResolvedValueOnce(json({ ok: true, preview }))
-      .mockResolvedValueOnce(json({ ok: true, status: status({ revision: 5, ...granted, inventoryRevision: 'c'.repeat(64) }) }));
-    vi.stubGlobal('fetch', f);
-    render(<ClippingCard initial={saved} credential={cred()} />);
-    fireEvent.click(screen.getByText('Switch clipping on'));
-    await waitFor(() => expect(f).toHaveBeenCalledOnce());
-    expect(f.mock.calls[0]![0]).toBe('/api/clipping'); expect(bodyOf(f, 0)).toEqual({ action: 'preview-grant' });
-    const group = await screen.findByRole('group', { name: 'Confirm clipping switch' });
-    expect(group.textContent).toContain('chief'); expect(group.textContent).toContain('other-agent'); expect(group.textContent).toContain('restart');
-    const confirm = screen.getByText('Confirm switch on') as HTMLButtonElement; expect(confirm.disabled).toBe(true);
-    fireEvent.click(confirm); expect(f).toHaveBeenCalledOnce(); // nothing sent without the checkbox
-    fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(confirm);
-    await waitFor(() => expect(f).toHaveBeenCalledTimes(2));
-    expect(f.mock.calls[1]![0]).toBe('/api/credentials/notion');
-    expect(bodyOf(f, 1)).toEqual({
-      operation: 'grant', slot: 'notion:shared', expectedRevision: 4, expectedActiveRevision: active,
-      inventoryRevision: 'b'.repeat(64), confirmRestart: true, agent: 'chief', purpose: 'clipping',
-    });
-    await waitFor(() => expect(screen.getByText(/Clipping is switched on/)).toBeTruthy());
-    expect(screen.getByText('Switch clipping off')).toBeTruthy();
-  });
-
-  it('Cancel sends nothing further', async () => {
-    const f = vi.fn().mockResolvedValue(json({ ok: true, preview })); vi.stubGlobal('fetch', f);
-    render(<ClippingCard initial={saved} credential={cred()} />);
-    fireEvent.click(screen.getByText('Switch clipping on'));
-    await screen.findByRole('group', { name: 'Confirm clipping switch' });
-    fireEvent.click(screen.getByText('Cancel'));
-    expect(screen.queryByRole('group', { name: 'Confirm clipping switch' })).toBeNull(); expect(f).toHaveBeenCalledOnce();
-  });
-
-  it('off: uses the status inventory revision, lists the current consumers, then revokes', async () => {
-    const f = vi.fn().mockResolvedValue(json({ ok: true, status: status({ revision: 6 }) })); vi.stubGlobal('fetch', f);
-    render(<ClippingCard initial={saved} credential={cred({ ...granted, consumers: [...granted.consumers, { name: 'other-agent', category: 'owned-agent', incarnation }] })} />);
-    fireEvent.click(screen.getByText('Switch clipping off'));
-    expect(f).not.toHaveBeenCalled(); // nothing is sent before the confirmation
-    const group = screen.getByRole('group', { name: 'Confirm clipping switch' });
-    expect(group.textContent).toContain('other-agent');
-    fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(screen.getByText('Confirm switch off'));
-    await waitFor(() => expect(f).toHaveBeenCalledOnce());
-    expect(bodyOf(f, 0)).toMatchObject({ operation: 'revoke', agent: 'chief', purpose: 'clipping', inventoryRevision: 'a'.repeat(64), confirmRestart: true, expectedRevision: 4 });
-    await waitFor(() => expect(screen.getByText(/Clipping is switched off/)).toBeTruthy());
-  });
-
-  it('Remove on a stale grant revokes that agent', async () => {
-    const f = vi.fn().mockResolvedValue(json({ ok: true, status: status({ grants: [] }) })); vi.stubGlobal('fetch', f);
-    render(<ClippingCard initial={saved} credential={cred({ grants: [{ agent: 'gone', purposes: ['clipping'], stale: true }] })} />);
-    fireEvent.click(screen.getByText('Remove'));
-    await waitFor(() => expect(f).toHaveBeenCalledOnce());
-    expect(bodyOf(f, 0)).toMatchObject({ operation: 'revoke', agent: 'gone', purpose: 'clipping', inventoryRevision: 'a'.repeat(64) });
-    await waitFor(() => expect(screen.queryByText(/no longer exists/)).toBeNull());
-  });
-
-  it('a keeper refusal and an unknown result are told apart; the switch state does not change on either', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ ok: false, code: 'request-refused' }, 409)));
-    render(<ClippingCard initial={saved} credential={cred(granted)} />);
-    fireEvent.click(screen.getByText('Switch clipping off')); fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(screen.getByText('Confirm switch off'));
-    await waitFor(() => expect(screen.getByText(/The Lares server helper refused this request/)).toBeTruthy());
-    expect(screen.getByText(/Clipping is switched on/)).toBeTruthy();
-    cleanup();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ ok: false, code: 'outcome-unknown' }, 503)));
-    render(<ClippingCard initial={saved} credential={cred(granted)} />);
-    fireEvent.click(screen.getByText('Switch clipping off')); fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(screen.getByText('Confirm switch off'));
-    await waitFor(() => expect(screen.getByText(/The result is unknown/)).toBeTruthy());
-  });
-
-  it('a preview that fails shows its sentence and opens no confirmation', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ ok: false, code: 'unavailable-before-send' }, 503)));
-    render(<ClippingCard initial={saved} credential={cred()} />);
-    fireEvent.click(screen.getByText('Switch clipping on'));
-    await waitFor(() => expect(screen.getByText(/could not be reached/)).toBeTruthy());
-    expect(screen.queryByRole('group', { name: 'Confirm clipping switch' })).toBeNull();
   });
 });

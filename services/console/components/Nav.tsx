@@ -72,7 +72,7 @@ export const OWNER_MENU: MenuGroup[] = [
   ] },
   { label: "Tools", pages: [
     { href: "/deadlines", label: "Deadlines", Icon: CalendarDays },
-    { href: "/meeting-follow-ups", label: "Meeting follow-ups", Icon: ListChecks },
+    { href: "/meetings", label: "Meetings", Icon: ListChecks },
     { href: "/saved-preferences", label: "Saved preferences", Icon: Bookmark },
   ] },
   { label: "Activity", pages: [

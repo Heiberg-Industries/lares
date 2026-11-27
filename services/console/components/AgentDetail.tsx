@@ -262,7 +262,7 @@ export function AgentDetail({
                 );
               })}
               <Button variant="outline" asChild>
-                <Link href="/meeting-follow-ups">Meeting follow-up controls →</Link>
+                <Link href="/meetings">Meetings →</Link>
               </Button>
             </>
           )}

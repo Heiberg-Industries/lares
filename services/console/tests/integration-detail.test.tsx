@@ -2,7 +2,7 @@ import React from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 const m = vi.hoisted(() => ({
-  guard: vi.fn(), rows: vi.fn(), board: vi.fn(), credential: vi.fn(), clipping: vi.fn(), sync: vi.fn(), proposals: vi.fn(), meetings: vi.fn(), people: vi.fn(),
+  guard: vi.fn(), rows: vi.fn(), board: vi.fn(), credential: vi.fn(), clipping: vi.fn(), sync: vi.fn(), proposals: vi.fn(), people: vi.fn(), chiefs: vi.fn(),
   inUse: vi.fn(), evidence: vi.fn(), gateway: vi.fn(), agents: vi.fn(),
 }));
 vi.mock("../lib/auth", () => ({ requirePage: m.guard, mayUse: (member: unknown, _level: string) => !!member }));
@@ -15,13 +15,15 @@ vi.mock("../lib/agents", () => ({ listAgents: m.agents }));
 vi.mock("../lib/clipping", () => ({ getClippingView: m.clipping }));
 vi.mock("../lib/queries", () => ({ getNotionSyncStatus: m.sync }));
 vi.mock("../lib/notion-proposals", () => ({ getNotionProposalsView: m.proposals }));
-vi.mock("../lib/meetings-source", () => ({ getMeetingsSourceView: m.meetings }));
+vi.mock("../lib/notion-agents", () => ({ notionAgents: m.chiefs }));
 vi.mock("../lib/notion-sync", () => ({ getNotionSyncView: m.people }));
-vi.mock("../components/MeetingsSourceControl", () => ({ MeetingsSourceControl: () => <section>MEETINGS-DATABASE</section> }));
 vi.mock("../components/NotionSyncControl", () => ({ NotionSyncControl: () => <section>PEOPLE-SYNC</section> }));
 vi.mock("../lib/outside-tools", () => ({ anyOutsideToolsInUse: m.inUse }));
 vi.mock("../components/AutonomyControl", () => ({ AutonomyControl: ({ capability }: { capability: string }) => <span>dial:{capability}</span> }));
-vi.mock("../components/NotionCredential", () => ({ NotionCredential: () => <section>NOTION-CREDENTIAL</section> }));
+vi.mock("../components/NotionConnection", () => ({
+  NotionConnection: ({ agents, names, children }: { agents: { displayName: string }[]; names: Record<string, string>; children: React.ReactNode }) =>
+    <section>NOTION-CONNECTION agents:{agents.map((a) => a.displayName).join("+")} names:{Object.values(names).join("+")}<div data-folded="">{children}</div></section>,
+}));
 vi.mock("../components/NotionProposalsCard", () => ({ NotionProposalsCard: () => <section>NOTION-PROPOSALS</section> }));
 vi.mock("../components/ClippingCard", () => ({ ClippingCard: () => <section>CLIPPING-CARD</section> }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...p }: React.ComponentProps<"a">) => <a href={href} {...p}>{children}</a> }));
@@ -51,7 +53,7 @@ beforeEach(() => {
   m.clipping.mockResolvedValue({ kind: "unavailable" });
   m.sync.mockResolvedValue({ lastRunAt: "2026-10-08T10:00:00Z", synced: 7, needsYou: 0, retrying: 0, unmatched: 0 });
   m.proposals.mockResolvedValue({ proposals: [], frozen: [] });
-  m.meetings.mockResolvedValue({ value: null, from: "none", canChange: true, chiefCount: 1 }); m.people.mockResolvedValue({ phase: "off" });
+  m.people.mockResolvedValue({ phase: "off" }); m.chiefs.mockResolvedValue([{ name: "assistant", displayName: "Assistant" }]);
 });
 
 it("refuses a non-owner the way the grid does, and finds no page for an unknown or personal id", async () => {
@@ -130,31 +132,49 @@ it("shows one block per instance of the gateway, each with its label", async () 
   expect(html).toContain("dial:studio");
 });
 
-it("holds every Notion setting on the Notion page, in order: key, meetings database, people sync, clipping, proposals", async () => {
+it("holds the Notion settings in the order a person meets them, with Clipping and People sync inside the connection's folded part, and nothing about meetings", async () => {
   const html = await show("notion");
-  const order = ["NOTION-CREDENTIAL", "MEETINGS-DATABASE", "PEOPLE-SYNC", "CLIPPING-CARD", "7 synced", "NOTION-PROPOSALS"].map(mark => html.indexOf(mark));
+  const order = ["NOTION-CONNECTION", "CLIPPING-CARD", "PEOPLE-SYNC"].map(mark => html.indexOf(mark));
   expect(order.every(at => at >= 0)).toBe(true);
   expect(order).toEqual([...order].sort((a, b) => a - b));
-  expect(html).not.toContain('href="/meeting-follow-ups"');
-  expect(html).not.toContain("<details");
+  expect(html).toMatch(/<div data-folded="">.*CLIPPING-CARD.*PEOPLE-SYNC.*<\/div><\/section>/s);
+  expect(html).toContain("agents:Assistant");
+  expect(html.toLowerCase()).not.toContain("meeting");
+  // The connection's own steps say which agents use Notion; the generic usage card is not repeated.
+  expect(html).not.toContain("Which agents use it");
   expect(html).not.toContain("lares-operational");
-  for (const mark of ["NOTION-CREDENTIAL", "MEETINGS-DATABASE", "PEOPLE-SYNC", "NOTION-PROPOSALS"]) expect(await show("twenty")).not.toContain(mark);
+  for (const mark of ["NOTION-CONNECTION", "PEOPLE-SYNC", "NOTION-PROPOSALS"]) expect(await show("twenty")).not.toContain(mark);
 });
 
-it("says so in words when a Notion setting or status cannot be read, and hides the people sync an installation does not offer", async () => {
-  m.meetings.mockResolvedValue(null); m.people.mockResolvedValue(null);
+it("hides document sync and the changes waiting for a decision unless there is something in them", async () => {
+  // A standard install runs no document sync: nothing is recorded, and nothing is said.
+  m.sync.mockResolvedValue({ lastRunAt: null, synced: 0, needsYou: 0, retrying: 0, unmatched: 0 });
+  let html = await show("notion");
+  expect(html).not.toContain("Document sync");
+  expect(html).not.toContain("No document sync run is recorded");
+  expect(html).not.toContain("NOTION-PROPOSALS");
+  // Unreadable is not "something in them" either: the sections stay hidden.
   m.sync.mockResolvedValue({ lastRunAt: null, synced: 0, needsYou: 0, retrying: 0, unmatched: 0, unavailable: true });
   m.proposals.mockResolvedValue({ proposals: [], frozen: [], unavailable: true });
-  const html = await show("notion");
-  expect(html).toContain("The meetings database setting could not be loaded.");
-  expect(html).not.toContain("PEOPLE-SYNC");
-  expect(html).toContain("The status of the document sync could not be read.");
-  expect(html).toContain("The changes waiting for you could not be read.");
+  html = await show("notion");
+  expect(html).not.toContain("document sync");
   expect(html).not.toContain("NOTION-PROPOSALS");
-  m.sync.mockResolvedValue({ lastRunAt: null, synced: 0, needsYou: 0, retrying: 0, unmatched: 0 });
-  expect(await show("notion")).toContain("No document sync run is recorded.");
   m.sync.mockResolvedValue({ lastRunAt: "2026-10-08T10:00:00Z", synced: 7, needsYou: 2, retrying: 1, unmatched: 3 });
-  expect(await show("notion")).toContain("Document sync last ran 2026-10-08 10:00 UTC: 7 synced, 2 need you, 1 retrying, 3 unmatched.");
+  m.proposals.mockResolvedValue({ proposals: [{ id: 1 }], frozen: [] });
+  html = await show("notion");
+  expect(html).toContain("Document sync last ran 2026-10-08 10:00 UTC: 7 synced, 2 need you, 1 retrying, 3 unmatched.");
+  expect(html).toContain("NOTION-PROPOSALS");
+  m.proposals.mockResolvedValue({ proposals: [], frozen: [{ id: 2 }] });
+  expect(await show("notion")).toContain("NOTION-PROPOSALS");
+});
+
+it("hides the people sync an installation does not offer, and says so when the agents cannot be read", async () => {
+  m.people.mockResolvedValue(null); m.chiefs.mockRejectedValue(new Error("down"));
+  const html = await show("notion");
+  expect(html).not.toContain("PEOPLE-SYNC");
+  expect(html).toContain("CLIPPING-CARD");
+  expect(html).toContain("The agents that may use Notion could not be read.");
+  expect(html).toContain("agents:");
 });
 
 it("holds the clipping card on the Notion page, and points there from the Readability page", async () => {

@@ -233,7 +233,6 @@
         "autonomy.setAutonomy",
         "definition.acceptNotionSyncPreview",
         "definition.runNotionSyncPreview",
-        "definition.setMeetingsSource",
         "definition.setNotionSync"
       ],
       "routes": [
@@ -242,6 +241,7 @@
         "GET /api/notion-proposals",
         "POST /api/clipping",
         "POST /api/credentials/notion",
+        "POST /api/credentials/notion/preview",
         "POST /api/notion-proposals"
       ]
     },
@@ -258,15 +258,15 @@
       "reason": "Explains a bearer invitation to a person who has no account yet; it reads no data."
     },
     {
-      "id": "/meeting-follow-ups",
+      "id": "/meetings",
       "kind": "page",
-      "file": "app/meeting-follow-ups/page.tsx",
+      "file": "app/meetings/page.tsx",
       "see": "admin",
       "act": "admin",
       "guards": ["requirePage"],
       "source": "derived",
-      "actions": ["meeting-series.revokeSeries"],
-      "routes": []
+      "actions": ["definition.setMeetingsSource", "meeting-series.revokeSeries"],
+      "routes": ["GET /api/meetings/source", "POST /api/meetings/source"]
     },
     {
       "id": "/members",
@@ -798,7 +798,7 @@
       "act": "owner",
       "guards": ["actingAddress"],
       "source": "derived",
-      "usedBy": ["/integrations/[id]"],
+      "usedBy": ["/meetings"],
       "see": "admin"
     },
     {
@@ -878,7 +878,7 @@
       "act": "admin",
       "guards": ["actingAddress"],
       "source": "derived",
-      "usedBy": ["/meeting-follow-ups"],
+      "usedBy": ["/meetings"],
       "see": "admin"
     },
     {
@@ -1607,6 +1607,17 @@
       "usedBy": ["layout (root)"]
     },
     {
+      "id": "GET /api/meetings/source",
+      "kind": "route",
+      "file": "app/api/meetings/source/route.ts",
+      "act": "admin",
+      "guards": ["actingAddress"],
+      "source": "derived",
+      "methods": "GET",
+      "changesState": false,
+      "usedBy": ["/meetings"]
+    },
+    {
       "id": "GET /api/notion-proposals",
       "kind": "route",
       "file": "app/api/notion-proposals/route.ts",
@@ -1696,6 +1707,17 @@
       "usedBy": ["/integrations/[id]"]
     },
     {
+      "id": "POST /api/credentials/notion/preview",
+      "kind": "route",
+      "file": "app/api/credentials/notion/preview/route.ts",
+      "act": "owner",
+      "guards": ["actingAddress"],
+      "source": "derived",
+      "methods": "POST",
+      "changesState": true,
+      "usedBy": ["/integrations/[id]"]
+    },
+    {
       "id": "POST /api/doors/[name]/[kind]/events",
       "kind": "route",
       "file": "app/api/doors/[name]/[kind]/events/route.ts",
@@ -1706,6 +1728,17 @@
       "changesState": true,
       "reason": "Slack and Telegram call this; the platform's own signature is checked before anything is read or changed.",
       "usedBy": []
+    },
+    {
+      "id": "POST /api/meetings/source",
+      "kind": "route",
+      "file": "app/api/meetings/source/route.ts",
+      "act": "owner",
+      "guards": ["actingAddress"],
+      "source": "derived",
+      "methods": "POST",
+      "changesState": true,
+      "usedBy": ["/meetings"]
     },
     {
       "id": "POST /api/notion-proposals",

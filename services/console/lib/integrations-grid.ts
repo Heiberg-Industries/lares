@@ -15,7 +15,7 @@ export const STATUS_BADGE: Record<CardStatus, "success" | "neutral" | "warning">
 /** Catalogue entries that are personal accounts live on "Your accounts", not here. */
 const PERSONAL = new Set(["google", "microsoft"]);
 const ENTRIES: Entry[] = [
-  { id: "notion", name: "Notion", line: "Meeting notes and databases your agents read and write.", logo: { kind: "letter", text: "N" } },
+  { id: "notion", name: "Notion", line: "Pages and databases your agents read and write.", logo: { kind: "letter", text: "N" } },
   { id: "twenty", name: "Twenty CRM", line: "Keep people and conversations in your CRM.", logo: { kind: "letter", text: "20" } },
   { id: "slack", name: "Slack (bot)", line: "Agents answer and post in your Slack.", logo: { kind: "letter", text: "S" } },
   { id: "telegram", name: "Telegram (bot)", line: "Talk to your agents from Telegram.", logo: { kind: "letter", text: "T" } },

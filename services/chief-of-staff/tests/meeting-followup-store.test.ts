@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import {
   claimMeeting, releaseClaim, recordSent, recordOutcome, getOutcome, lastRecipientsFingerprint,
-  fingerprintRecipients, MAX_ATTEMPTS, resetClaimForRedraft, seriesKeyFor, recordDenial,
+  fingerprintRecipients, MAX_ATTEMPTS, resetClaimForRedraft, seriesKeyFor, recordDenial, countWaitingForApproval,
 } from "../lib/meeting-followup-store.js";
 import { makeFollowupTick, type FollowupDeps, type MeetingRow } from "../agent/schedules/meeting-followup.js";
 
@@ -42,6 +42,17 @@ describe("meeting-followup-store", () => {
     await claimMeeting(db, "page-b", "hash-1");
     await recordSent(db, "page-b", "series-1", ["a@x.co", "b@y.co"]);
     expect((await claimMeeting(db, "page-b", "hash-1")).claimed).toBe(false);
+  });
+
+  it("counts the cards still out across passes: queued rows in the window, not sent, denied or older ones", async () => {
+    for (const [page, outcome] of [["q1", "queued"], ["q2", "queued"], ["s1", "sent"], ["d1", "denied"]] as const) {
+      await claimMeeting(db, page, "hash-1");
+      await recordOutcome(db, page, outcome);
+    }
+    await claimMeeting(db, "old", "hash-1");
+    await recordOutcome(db, "old", "queued");
+    await db.query("UPDATE meeting_followup_sent SET processed_at = now() - interval '3 days' WHERE notion_page_id = 'old'");
+    expect(await countWaitingForApproval(db, 2)).toBe(2);
   });
 
   it("fingerprints recipients order- and case-insensitively", () => {

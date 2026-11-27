@@ -367,6 +367,20 @@ export async function getOutcome(db: Pool, notionPageId: string): Promise<string
   return rows[0]?.outcome ?? null;
 }
 
+/** How many follow-ups have a card out that nobody has answered yet: `queued` rows written in the last
+ *  `withinDays` days. A `queued` row can also be a card that lapsed unanswered (see the module header),
+ *  which is why the window is the follow-up's own recency bound; an older one is not counted. For the
+ *  Meetings page's status line, so the count does not drop to zero on the next pass, which claims
+ *  nothing new for an unchanged page. */
+export async function countWaitingForApproval(db: Pick<Pool, "query">, withinDays: number): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM meeting_followup_sent
+      WHERE outcome = 'queued' AND processed_at > now() - make_interval(days => $1)`,
+    [withinDays],
+  );
+  return rows[0]?.n ?? 0;
+}
+
 /** This table must not become the unbounded-growth problem it exists to prevent. */
 export async function pruneOldFollowups(db: Pool): Promise<void> {
   await db.query(

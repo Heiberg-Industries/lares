@@ -144,10 +144,11 @@ any other link; the same link saved twice, or a pass that runs twice, never make
 Edits and trashing in Notion follow the clip only while it still waits in the inbox, never after it is
 filed. The database needs a title column and one URL column. Only links are copied, never the pages.
 
-Set it up on the Notion page under Integrations, in the Clipping card (below the Notion key card):
+Set it up on the Notion page under Integrations, in the Clipping card (in the folded part below
+**1. Connect** and **2. Which agents may use Notion**):
 
-1. Add the Notion key in the Notion key card above, and share the database with your Lares connection
-   in Notion (the three dots, then Connections).
+1. Connect Notion under 1. Connect, switch the chief of staff on under 2. Which agents may use Notion,
+   and share the database with your Lares connection in Notion (the three dots, then Connections).
 2. Paste the database's link and press Read database. The chief of staff reads it within a minute and
    the card lists the columns it found, with the URL column already chosen when there is one clear
    choice.
@@ -157,21 +158,24 @@ Set it up on the Notion page under Integrations, in the Clipping card (below the
 4. Optionally press Add Status, For and Origin columns. It adds only the columns that are missing and
    never changes one that already exists; a column with the same name but another type is reported
    and left alone.
-5. Press Test, then switch clipping on, then press Import now (or wait for the next digest).
+5. Press Test, then press Import now (or wait for the next digest).
 
 **Test** reads one page of rows and says how many links would be imported, how many came from the URL
 column and how many from the title, how many rows have no link, and how many were already imported.
 It writes nothing. **Import now** runs one import pass, the same one the digest runs; the two never
-run at the same time. **Switch clipping on** lets the chief of staff receive the Notion key (the
-keeper restarts that one agent after you confirm the list shown); **Switch clipping off** takes it
-away again. Only the installation's credential administrator sees the switch. The Source buttons
+run at the same time. The switch that lets the chief of staff receive the Notion key is not on this
+card any more: it is the agent's switch under **2. Which agents may use Notion** (the keeper restarts
+that one agent after you confirm the list shown; switching it off takes the key away again). Only the
+installation's owner sees the switches. A line at the top of the card says how clipping last went:
+waiting for a request, last fetch finished (with how many new links), failed and why, or not set up.
+The Source buttons
 (Notion, Karakeep, Both) choose which source the digest reads; Both is for the changeover, and nothing
 in Karakeep is deleted.
 
 The buttons that read Notion work through requests the chief of staff answers within a minute (the
 card checks every 5 seconds while one is waiting). If the chief of staff has not picked a request up,
 or not finished it, within ten minutes the card says "The chief of staff did not pick this up." or
-"The chief of staff did not finish this."; that means the agent is not running or the switch is off,
+"The chief of staff did not finish this."; that means the agent is not running or is not switched on for Notion,
 not that Notion said no. "Clipping status unavailable." means Lares could not read its own records.
 If Notion cannot be read (not shared with the connection, key refused, column changed, rate limit,
 timeout) the card and the digest message say so in one line, a repair entry is opened, and the last

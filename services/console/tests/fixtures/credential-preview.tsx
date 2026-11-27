@@ -1,10 +1,10 @@
 /** Local Vite screenshot fixture only; never a production route or provider test.
  * pnpm -C services/console exec vite --host 127.0.0.1
- * Open /tests/fixtures/credential-preview.html?state=applied|pending|failed|recovery|host|unavailable|unknown
+ * Open /tests/fixtures/credential-preview.html?state=none|applied|pending|failed|undone|recovery|host|unavailable|unknown
  */
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { NotionCredential } from '../../components/NotionCredential';
+import { NotionConnection } from '../../components/NotionConnection';
 import type { CredentialView } from '../../lib/credentials';
 import type { CredentialStatus } from '@lares/agent-kit/credential-lifecycle';
 import '@lares/ui/theme.css';
@@ -16,9 +16,12 @@ const state = new URLSearchParams(location.search).get('state') ?? 'applied';
 const base: CredentialStatus = { slot: 'notion:shared', state: 'applied', phase: 'applied', guidance: null, revision: 1, activeRevision: active,
   candidateRevision: null, consumers: [{ name: 'example', category: 'owned-agent', incarnation: active }],
   test: { revision: active, outcome: 'passed', at: '2026-10-08T12:00:00.000Z' },
-  activation: [{ name: 'example', revision: active, state: 'complete' }], rollback: [], inventoryRevision: 'a'.repeat(64) };
+  activation: [{ name: 'example', revision: active, state: 'complete' }], rollback: [], inventoryRevision: 'a'.repeat(64),
+  grants: [{ agent: 'example', purposes: ['clipping'] }] };
 const cases: Record<string, CredentialView> = {
+  none: { kind: 'status', status: { ...base, state: 'not-configured', phase: null, activeRevision: null, test: null, consumers: [], activation: [], grants: [] } },
   applied: { kind: 'status', status: base },
+  undone: { kind: 'status', status: { ...base, rollback: [{ name: 'example', revision: active, state: 'complete' }] } },
   pending: { kind: 'status', status: { ...base, state: 'pending-apply', phase: 'pending-apply', candidateRevision: candidate, test: { ...base.test!, revision: candidate }, activation: [] } },
   failed: { kind: 'status', status: { ...base, state: 'test-failed', phase: 'test-failed', candidateRevision: candidate, test: { revision: candidate, outcome: 'refused', at: base.test!.at } } },
   recovery: { kind: 'status', status: { ...base, state: 'recovery-required', phase: 'recovery-required', guidance: 'inspect-journal', activation: [{ name: 'example', revision: candidate, state: 'failed' }], rollback: [{ name: 'example', revision: active, state: 'failed' }] } },
@@ -32,6 +35,8 @@ createRoot(document.getElementById('root')!).render(<main className="lares-page 
   <h1>Connections</h1><p className="lares-muted">Synthetic review data · no providers or installation credentials</p>
   <section className="lares-surface lares-surface-compact"><h2 className="lares-section-title">Google · example</h2>
     <p>Enrolled · 1 mailbox enrolled · provider health not tested</p><p className="lares-muted">Agent access: example</p></section>
-  <NotionCredential initial={cases[state] ?? cases.unavailable} />
+  <NotionConnection initial={cases[state] ?? cases.unavailable} agents={[{ name: 'example', displayName: 'Example agent' }]} names={{ example: 'Example agent' }}>
+    <p>Clipping and People sync would be here.</p>
+  </NotionConnection>
   <h2>Service sync status</h2><p>Independent recorded evidence: 7 items synced.</p>
 </main>);

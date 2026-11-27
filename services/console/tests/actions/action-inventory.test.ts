@@ -29,7 +29,7 @@ const ADMIN_PAGES = [
   "/", "/reviews",
   "/agents", "/agents/[name]", "/writing-style",
   "/integrations", "/integrations/[id]", "/outside-tools", "/outside-tools/[id]", "/outside-tools/new",
-  "/deadlines", "/meeting-follow-ups", "/saved-preferences",
+  "/deadlines", "/meetings", "/saved-preferences",
   "/permission-checks", "/alerts",
   "/quiet-hours-and-delivery", "/alert-routing", "/alert-routing/catalogue",
 ];
@@ -102,6 +102,10 @@ const ROUTE_LEVELS: Record<string, "member" | "admin" | "owner"> = {
   "GET /api/notion-proposals": "admin",
   "POST /api/notion-proposals": "owner",
   "GET /api/credentials/notion": "owner", "POST /api/credentials/notion": "owner",
+  // Read-only, but the keeper answers its administrator only: what switching one agent on for Notion would restart.
+  "POST /api/credentials/notion/preview": "owner",
+  // The Meetings page's lookup of a pasted database: anyone on the page may follow it; only the owner may ask.
+  "GET /api/meetings/source": "admin", "POST /api/meetings/source": "owner",
   "GET /api/inbox": "owner",
   "POST /api/provider-key": "owner",
 };

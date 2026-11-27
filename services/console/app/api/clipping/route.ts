@@ -1,12 +1,11 @@
 import { withConsoleAdmission } from "../../../lib/admission-error";
 import { clippingActionInput } from '@lares/agent-kit/clipping-console';
-import { CREDENTIAL_SLOT, credentialGrantPreviewSchema } from '@lares/agent-kit/credential-lifecycle';
 import { actingAddress } from '../../../lib/auth';
-import { keeper, KeeperRefusedError, KeeperUnavailableError } from '../../../lib/keeper-client';
 import {
-  chiefOfStaffForSwitch, enqueueRequest, getClippingView, hasSavedSource, saveMapping, setChoice,
+  enqueueRequest, getClippingView, hasSavedSource, saveMapping, setChoice,
   type WriteResult,
 } from '../../../lib/clipping';
+import { jsonBody, sameOrigin } from '../../../lib/same-origin-json';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,30 +17,6 @@ async function handleGET(req: Request): Promise<Response> {
   if (!actor) return failed('sign-in-required', 401);
   if (new URL(req.url).search) return failed('invalid-request', 400);
   return response({ ok: true, view: await getClippingView() });
-}
-
-// Same exact-origin rule as app/api/credentials/notion/route.ts (kept as a copy: that route stays untouched).
-function sameOrigin(req: Request): boolean {
-  try {
-    const configured = process.env.CONSOLE_OAUTH_REDIRECT;
-    const origin = configured ? new URL(configured).origin : process.env.NODE_ENV !== 'production' ? new URL(req.url).origin : null;
-    return !!origin && req.headers.get('origin') === origin;
-  } catch { return false; }
-}
-async function input(req: Request): Promise<unknown> {
-  if (new URL(req.url).search || req.headers.get('content-type')?.split(';')[0] !== 'application/json' || !req.body) throw new Error('Invalid request');
-  const reader = req.body.getReader(); const chunks: Uint8Array[] = []; let length = 0;
-  try {
-    for (;;) {
-      const chunk = await reader.read(); if (chunk.done) break;
-      length += chunk.value.length;
-      if (length > 16_384) throw new Error('Invalid request');
-      chunks.push(chunk.value);
-    }
-    const bytes = new Uint8Array(length); let offset = 0;
-    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
 const STATUS_FOR: Record<string, number> = {
@@ -63,7 +38,7 @@ async function handlePOST(req: Request): Promise<Response> {
   if (!actor) return failed('sign-in-required', 401);
   if (!sameOrigin(req)) return failed('origin-refused', 403);
   let parsed;
-  try { parsed = clippingActionInput.safeParse(await input(req)); } catch { return failed('invalid-request', 400); }
+  try { parsed = clippingActionInput.safeParse(await jsonBody(req)); } catch { return failed('invalid-request', 400); }
   if (!parsed.success) return failed('invalid-request', 400);
   const command = parsed.data;
   switch (command.action) {
@@ -80,22 +55,6 @@ async function handlePOST(req: Request): Promise<Response> {
     }
     case 'set-choice':
       return written(await setChoice(command.mode, actor));
-    case 'preview-grant': {
-      // Read-only: what switching clipping on would restart, and the inventory revision to confirm.
-      const chief = await chiefOfStaffForSwitch();
-      if (!chief) return failed('unavailable', 503);
-      if (chief.kind !== 'one') return failed('chief-of-staff-not-found', 409);
-      try {
-        const preview = credentialGrantPreviewSchema.safeParse(
-          await keeper('credential.preview_grant', { slot: CREDENTIAL_SLOT, agent: chief.name, purpose: 'clipping' }, actor));
-        if (!preview.success) return failed('unavailable', 503);
-        return response({ ok: true, preview: preview.data });
-      } catch (error) {
-        if (error instanceof KeeperRefusedError) return failed('request-refused', 409);
-        if (error instanceof KeeperUnavailableError) return failed('unavailable-before-send', 503);
-        return failed('unavailable', 503);
-      }
-    }
   }
 }
 

@@ -624,30 +624,39 @@ or e-mail address has been connected, the signed-in owner (the administrator of 
 may approve; once a door is connected, that door's strict rules apply. (Telegram's one-tap
 Approve and Reject buttons on proposals stay Telegram-only; Slack and web chat get the text.)
 
-### Meeting follow-ups and Notion
+### Meetings and Notion
 
 The meeting follow-up schedule reads your meeting notes from a Notion database and has no built-in
-default. It needs the id of your Meetings data source and a Notion key (**Integrations**, Notion, Notion
-key). Set the id in the console under **Integrations**, Notion, Meetings database: paste the id (with or
-without dashes) and Save. Only the installation's owner can change it. Saving restarts the agents
-that read it, so a conversation in progress is interrupted for a moment; an agent with other
-changes waiting is left alone and picks the id up when you apply them. Leave the field empty and
-Save to clear it. Until it is set, the follow-up schedule stops with "NOTION_MEETINGS_DATA_SOURCE_ID is not set"
-each time it runs, and nothing else is affected.
+default. It needs Notion connected, a chief-of-staff agent allowed to use it, and your meetings
+database chosen:
 
-**The Notion key itself.** On the Notion page under **Integrations**, in the Notion key card, you paste the key, choose **Test**,
-then **Apply**. The installer makes the page ready for this on every run, so a new installation has
+1. Connect Notion under **Integrations**, Notion (below).
+2. On the same page, under **Which agents may use Notion**, switch on the chief-of-staff agent that
+   writes your follow-ups.
+3. Under **Meetings**, in "Where your meeting notes come from", paste your meetings database's link
+   from Notion (Share, then Copy link) and choose **Find database**. The chief of staff looks the
+   link up in Notion within a minute and shows the database it found; choose **Use this database**.
+
+Only the installation's owner can choose it. Choosing restarts the agents that read it, so a
+conversation in progress is interrupted for a moment; an agent with other changes waiting is left
+alone and picks it up when you apply them. **Stop reading meeting notes** clears it. Until one is
+chosen, the follow-up schedule skips each pass and the Meetings page says why; nothing else is
+affected. The Meetings page also says how the follow-ups last went: when they last checked the
+notes, what was sent, what waits for your approval or for a summary, or why they did not run.
+
+**The Notion key itself.** On the Notion page under **Integrations**, under **1. Connect**, you paste the key and choose
+**Save and check**, then **Start using this key**. The installer makes the page ready for this on every run, so a new installation has
 the key field from the start, and an installation that was set up before this was possible gets it
 after the next `lares update`. If the page still says it is not ready to store a key, the earlier
 configuration shows that Notion is already used another way (a service outside Lares allowed to
 reach Notion, or an agent with its own key file); the installer prints one line saying which and
 leaves it as it was for you to review. A key that is ready is never switched back by a later run.
 
-The id is stored in the installation's database, so running the installer again keeps it. An older
-installation may still carry it in `/etc/lares/keeper.json` under
+The choice is stored in the installation's database (as the meetings data source id), so running the
+installer again keeps it. An older installation may still carry it in `/etc/lares/keeper.json` under
 `defaultBindings["chief-of-staff"].environment.NOTION_MEETINGS_DATA_SOURCE_ID`; that value is used
-until you save one in the console, but the installer rewrites that file on every run, so set it in
-the console instead.
+until you choose one in the console, but the installer rewrites that file on every run, so choose it
+in the console instead.
 
 ### The Notion sync (optional)
 
@@ -656,8 +665,8 @@ meetings (read from the Google calendar) and your **People** records (read from 
 connection). It is off on every new installation and it needs no file edits. You set it up in the
 console under **Integrations**, Notion, People sync:
 
-1. Set the Meetings database (above) and connect the Notion key (both on the Notion page under
-   **Integrations**). Meeting attendees also need a connected Google calendar; People records need
+1. Choose the meetings database (on the **Meetings** page, above) and connect Notion (on the Notion
+   page under **Integrations**). Meeting attendees also need a connected Google calendar; People records need
    the contacts connection and a People database id, which you paste into the field there and
    Save. The card lists, in plain
    words, whatever is still missing.
@@ -671,7 +680,7 @@ The acceptance belongs to the exact settings you previewed. If you change the Me
 the People database, or the installation changes, the sync stops until you run and accept a new
 preview. **Switch off** stops it and forgets the acceptance. The card shows when it last ran.
 
-Changing the Notion key (apply, replace or disconnect it on the Notion page under **Integrations**) stops the sync,
+Changing the Notion key (starting a new one, or stopping Notion, on the Notion page under **Integrations**) stops the sync,
 moves the key and starts it again, the same way it restarts agents. A restored installation never
 starts syncing by itself: a restore removes the sync, switches it off and forgets the acceptance, so
 you run and accept a new preview. This release syncs only attendees and People records; pages and
@@ -691,7 +700,7 @@ editing `/etc/lares/keeper.json`:
 | Console address | The https address where you open the console |
 
 Only the installation's owner can change them. A value that does not fit is refused with a sentence
-saying why. Saving restarts the agents that read it, as for the meetings database above; an empty
+saying why. Saving restarts the agents that read it, as choosing the meetings database does; an empty
 value cleared on purpose stays cleared. Each value is stored in the installation's database, so
 running the installer again keeps it. A value an older installation carries in `keeper.json`
 (`defaultBindings["chief-of-staff"].environment`) is used until you save one in the console, and

@@ -2,23 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   actingAddress: vi.fn(), keeper: vi.fn(), cookie: vi.fn(),
   getClippingView: vi.fn(), enqueueRequest: vi.fn(), saveMapping: vi.fn(), setChoice: vi.fn(),
-  hasSavedSource: vi.fn(), chiefOfStaffForSwitch: vi.fn(),
+  hasSavedSource: vi.fn(),
 }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: mocks.cookie }) }));
 vi.mock('../lib/auth', () => ({ actingAddress: mocks.actingAddress }));
 vi.mock('../lib/keeper-client', async original => ({ ...await original<typeof import('../lib/keeper-client')>(), keeper: mocks.keeper }));
 vi.mock('../lib/clipping', () => ({
   getClippingView: mocks.getClippingView, enqueueRequest: mocks.enqueueRequest, saveMapping: mocks.saveMapping,
-  setChoice: mocks.setChoice, hasSavedSource: mocks.hasSavedSource, chiefOfStaffForSwitch: mocks.chiefOfStaffForSwitch,
+  setChoice: mocks.setChoice, hasSavedSource: mocks.hasSavedSource,
 }));
 import { GET, POST } from '../app/api/clipping/route';
-import { KeeperRefusedError, KeeperUnavailableError } from '../lib/keeper-client';
 
 const origin = 'https://console.example.test', url = `${origin}/api/clipping`;
 const view = { unavailable: false, source: null, sourceCount: 0, requests: {}, choice: null, chiefOfStaff: { kind: 'one', name: 'chief' }, busy: false };
 const post = (body: unknown, from: string | null = origin, contentType = 'application/json') =>
   POST(new Request(url, { method: 'POST', headers: { 'content-type': contentType, ...(from ? { origin: from } : {}) }, body: typeof body === 'string' ? body : JSON.stringify(body) }));
-const preview = { agent: 'chief', purpose: 'clipping', inventoryRevision: 'b'.repeat(64), consumers: [{ name: 'chief', category: 'owned-agent', incarnation: '11111111-1111-4111-8111-111111111111' }] };
 
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubEnv('CONSOLE_OAUTH_REDIRECT', `${origin}/api/auth/callback`); vi.stubEnv('NODE_ENV', 'production');
@@ -26,7 +24,6 @@ beforeEach(() => {
   mocks.getClippingView.mockResolvedValue(view);
   mocks.enqueueRequest.mockResolvedValue({ ok: true }); mocks.saveMapping.mockResolvedValue({ ok: true });
   mocks.setChoice.mockResolvedValue({ ok: true }); mocks.hasSavedSource.mockResolvedValue(true);
-  mocks.chiefOfStaffForSwitch.mockResolvedValue({ kind: 'one', name: 'chief' }); mocks.keeper.mockResolvedValue(preview);
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -67,7 +64,7 @@ describe('input is strict and size-limited', () => {
     [{ action: 'read-database', link: 'x'.repeat(2049) }], [{ action: 'read-database', link: 5 }],
     [{ action: 'save-mapping', dataSourceId: 'ds' }], [{ action: 'save-mapping', dataSourceId: 'ds', urlPropertyId: 'u', owner: 'someone' }],
     [{ action: 'save-mapping', dataSourceId: 'ds', urlPropertyId: 'u', visibility: 'private' }],
-    [{ action: 'set-choice', mode: 'all' }], [{ action: 'import', agent: 'x' }], [{ action: 'preview-grant', agent: 'other' }],
+    [{ action: 'set-choice', mode: 'all' }], [{ action: 'import', agent: 'x' }], [{ action: 'preview-grant' }],
     ['not json'], [''], [null], [[]],
   ])('rejects %j with no write', async body => {
     expect((await post(typeof body === 'string' ? body : body)).status).toBe(400);
@@ -122,37 +119,5 @@ describe('actions', () => {
     const waiting = { ...view, busy: true };
     mocks.getClippingView.mockResolvedValue(waiting);
     expect(await (await post({ action: 'test' })).json()).toEqual({ ok: true, view: waiting });
-  });
-});
-
-describe('preview-grant (read-only, through the keeper)', () => {
-  it('asks the keeper to preview the grant for the one chief of staff, purpose clipping, as the actor', async () => {
-    const res = await post({ action: 'preview-grant' });
-    expect(res.status).toBe(200); expect(await res.json()).toEqual({ ok: true, preview });
-    expect(mocks.keeper).toHaveBeenCalledOnce();
-    expect(mocks.keeper).toHaveBeenCalledWith('credential.preview_grant', { slot: 'notion:shared', agent: 'chief', purpose: 'clipping' }, 'owner@example.test');
-  });
-  it.each([{ kind: 'none' }, { kind: 'several' }])('refuses without exactly one chief of staff (%j) and calls no keeper', async chief => {
-    mocks.chiefOfStaffForSwitch.mockResolvedValue(chief);
-    const res = await post({ action: 'preview-grant' });
-    expect(res.status).toBe(409); expect(await res.json()).toEqual({ ok: false, code: 'chief-of-staff-not-found' });
-    expect(mocks.keeper).not.toHaveBeenCalled();
-  });
-  it('an unreadable agent list is unavailable', async () => {
-    mocks.chiefOfStaffForSwitch.mockResolvedValue(null);
-    expect((await post({ action: 'preview-grant' })).status).toBe(503); expect(mocks.keeper).not.toHaveBeenCalled();
-  });
-  it('a keeper refusal and a keeper outage are told apart, and neither echoes the keeper message', async () => {
-    mocks.keeper.mockRejectedValue(new KeeperRefusedError('Credential administrator required synthetic-leak'));
-    const refused = await post({ action: 'preview-grant' });
-    expect(refused.status).toBe(409); expect(await refused.json()).toEqual({ ok: false, code: 'request-refused' });
-    mocks.keeper.mockRejectedValue(new KeeperUnavailableError('socket synthetic-leak', true));
-    const down = await post({ action: 'preview-grant' });
-    expect(down.status).toBe(503); expect(await down.json()).toEqual({ ok: false, code: 'unavailable-before-send' });
-  });
-  it.each([null, {}, { ...preview, token: 'x' }, { ...preview, inventoryRevision: 'short' }])('a keeper answer in the wrong shape is unavailable, never shown: %j', async answer => {
-    mocks.keeper.mockResolvedValue(answer);
-    const res = await post({ action: 'preview-grant' });
-    expect(res.status).toBe(503); expect(await res.json()).toEqual({ ok: false, code: 'unavailable' });
   });
 });

@@ -145,7 +145,12 @@ import telegram from "../channels/telegram.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
-import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
+import {
+  recordRunFailed, recordRunFinished, recordRunSkipped, recordRunStarted, recordSchedulePass, type HeartbeatDb,
+} from "@lares/agent-kit/schedule-heartbeat";
+import {
+  MEETING_FOLLOWUP_SKIPS, meetingFollowupJob, type MeetingFollowupCounts, type MeetingFollowupSkip,
+} from "@lares/agent-kit/meeting-followup-outcome";
 import { KitRatchet } from "@lares/agent-kit/ratchet";
 import { logSlackNotConnected } from "../../lib/slack-allowlist.js";
 import { listAliases, configuredOwnerId, getDisplayName } from "../../lib/identity-client.js";
@@ -172,6 +177,7 @@ import {
   recordSeriesKey as storeRecordSeriesKey,
   getOutcome as storeGetOutcome,
   pruneOldFollowups,
+  countWaitingForApproval,
   lastRecipientsFingerprint,
   fingerprintRecipients,
   MAX_ATTEMPTS,
@@ -382,6 +388,12 @@ export interface FollowupTickResult {
    *  `scanned=N, composed=0` with no reason given is exactly that shape again. A row dropped
    *  for age must be counted AND logged, never merely absent. */
   agedOut: number;
+  /** Follow-ups confirmed sent without a card this tick (a subset of `queued`): only the
+   *  autonomous branch, once `getOutcome` read back "sent". */
+  sent: number;
+  /** Recent rows not ready yet: no summary block or no attendees. Never claimed (see the ready
+   *  filter in `tick`), so they are simply waiting for Notion to finish the meeting's notes. */
+  waitingForSummary: number;
 }
 
 // The trigger. No Status, no property-diffing — see the module header.
@@ -424,7 +436,7 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
   return {
     async tick(now: Date) {
       const result: FollowupTickResult = {
-        scanned: 0, composed: 0, queued: 0, skipped: 0, errored: 0, agedOut: 0, held: 0,
+        scanned: 0, composed: 0, queued: 0, skipped: 0, errored: 0, agedOut: 0, held: 0, sent: 0, waitingForSummary: 0,
       };
 
       const rows = await deps.listMeetings();
@@ -453,6 +465,7 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
       // at all. Oldest-first so a backfill drains in the order the meetings actually happened,
       // rather than starving the oldest behind a wall of newer ones.
       const ordered = recent.filter(isReady).sort((a, b) => startsAtMillis(a) - startsAtMillis(b));
+      result.waitingForSummary = recent.length - ordered.length;
 
       for (const row of ordered) {
         // Cap first — a tick that has already spent its billed-call budget must not claim
@@ -602,6 +615,7 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
             if (outcome === "sent") {
               // Confirmed: the tool's execute genuinely sent and recorded it.
               result.queued += 1;
+              result.sent += 1;
               try {
                 await deps.notify(
                   `Sent the meeting follow-up for "${row.title}" (${row.startsAt}) to ${recipients.join(", ")}.`,
@@ -689,6 +703,12 @@ function meetingsDataSourceId(): string {
   const id = process.env["NOTION_MEETINGS_DATA_SOURCE_ID"];
   if (!id) throw new Error("meeting-followup: NOTION_MEETINGS_DATA_SOURCE_ID is not set");
   return id;
+}
+
+/** Whether this agent is given a Notion key at all (a file path or a value). Reads nothing from disk;
+ *  `readNotionToken` below still fails loudly if a delivered file cannot be read. */
+export function notionKeyDelivered(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !!(env["NOTION_TOKEN_FILE"]?.trim() || env["NOTION_TOKEN"]?.trim());
 }
 
 /** `<NAME>_FILE` (Docker secret) preferred over `<NAME>` — same convention as
@@ -950,7 +970,12 @@ const signaledMismatchPages = new Set<string>();
  * recency bound below, stage 2) can be driven by a fixed clock in tests instead of racing
  * `Date.now`.
  */
-export async function liveListMeetings(pool: Pool, now: Date = new Date()): Promise<MeetingRow[]> {
+/** What `liveListMeetings` saw but did not return, for the Meetings page's status line. */
+export interface ListedMeetings { waitingForSummary: number }
+
+/** `seen`, when given, is filled with how many recent meetings are not handled yet and still have no
+ *  Summary or no Attendees in Notion: they are filtered out here, before the tick could count them. */
+export async function liveListMeetings(pool: Pool, now: Date = new Date(), seen?: ListedMeetings): Promise<MeetingRow[]> {
   const [candidates, doneRows, seriesRows] = await Promise.all([
     queryMeetingCandidates(),
     pool.query<{ notion_page_id: string }>(
@@ -963,6 +988,11 @@ export async function liveListMeetings(pool: Pool, now: Date = new Date()): Prom
   const eligible = candidates.filter(
     (c) => c.summaryPropertyFilled && c.attendees.trim() !== "" && !done.has(c.pageId),
   );
+  if (seen) {
+    seen.waitingForSummary = withinFollowupAge(
+      candidates.filter((c) => !done.has(c.pageId) && !(c.summaryPropertyFilled && c.attendees.trim() !== "")), now,
+    ).length;
+  }
   // Recency bound BEFORE the markdown-read ceiling (deliberately — see FOLLOWUP_MAX_AGE_DAYS):
   // an ancient row must never cost a Notion page read, let alone occupy one of the
   // MARKDOWN_READ_CEILING slots ahead of a genuinely recent one.
@@ -1354,10 +1384,56 @@ export function skipWithoutMeetingsDatabase(
   return true;
 }
 
+// ─── What the Meetings page shows (ADR 0031) ───────────────────────────────────────────────
+//
+// Each pass records its outcome under `<agent name>/meeting-followup` (`meetingFollowupJob`): running,
+// then finished with counts, or failed with the error's message. A pass that does not run records a
+// skip with its reason code (`MEETING_FOLLOWUP_SKIPS`). The heartbeat's rule is untouched: a skip
+// stamps no heartbeat, so a dark schedule still pages; the skip only touches the outcome record.
+
+/** The skip this process last recorded, so a switched-off schedule writes its reason once instead of
+ *  every five minutes. A pass that runs (or fails) clears it, so the next skip is recorded again. */
+export interface SkipMemo { last: MeetingFollowupSkip | null }
+const skipMemo: SkipMemo = { last: null };
+
+/** Record a skip, unless this process already recorded the same one. Never throws (the record call
+ *  itself never does); a write that did not land is tried again on the next pass. */
+export async function recordSkipOnce(
+  db: () => HeartbeatDb, agent: string, reason: MeetingFollowupSkip, sentence: string, memo: SkipMemo = skipMemo,
+): Promise<void> {
+  if (memo.last === reason) return;
+  try {
+    if (await recordRunSkipped(db(), meetingFollowupJob(agent), reason, sentence, { agent })) memo.last = reason;
+  } catch (err) {
+    // No database to write to (a run with no pool): the skip is only logged, as before.
+    console.warn(`meeting-followup: could not record the ${reason} skip`, err);
+  }
+}
+
+/** The counts a finished pass records. `waitingForApproval` is every card still out (read from the
+ *  store, `countWaitingForApproval`), not only the ones this pass sent: an unchanged page is not
+ *  claimed again, so a per-pass count would read zero on the next pass while the card still waits.
+ *  The rest are this pass's own. Pure. */
+export function finishedCounts(r: FollowupTickResult, waitingForApproval: number): Required<MeetingFollowupCounts> {
+  return {
+    sent: r.sent,
+    waitingForApproval,
+    waitingForSummary: r.waitingForSummary,
+    heldBack: r.held,
+    failed: r.errored,
+  };
+}
+
 export default defineSchedule({
   cron: "*/5 * * * *",
   async run({ to, waitUntil, appAuth }) {
     const { loaded } = await thisAgent(undefined);
+    const agent = loaded.definition.name;
+    // Switched off: the Meetings page says so (once), and the pass stops at the switch below as before.
+    if (!scheduleEnabled(loaded.definition, "meeting-followup")) {
+      await recordSkipOnce(getPool, agent, MEETING_FOLLOWUP_SKIPS.switchedOff,
+        "Meeting follow-ups are switched off for this agent.");
+    }
     if (!scheduleEnabled(loaded.definition, "meeting-followup")) return;
     if (running) return;
 
@@ -1365,14 +1441,31 @@ export default defineSchedule({
     const routed = routeDelivery("meeting-followup", loaded);
     if (!routed) {
       logSlackNotConnected("meeting-followup");
+      await recordSkipOnce(getPool, agent, MEETING_FOLLOWUP_SKIPS.noDelivery,
+        "There is nowhere to send follow-ups: the agent's chosen door is not connected.");
       return;
     }
 
-    if (skipWithoutMeetingsDatabase(process.env["NOTION_MEETINGS_DATA_SOURCE_ID"], meetingsDatabaseState)) return;
+    // An agent that may not use Notion (switched off under "Which agents may use Notion") is given no
+    // key: it has nothing to read the notes with, so it skips quietly instead of failing every pass.
+    if (!notionKeyDelivered()) {
+      await recordSkipOnce(getPool, agent, MEETING_FOLLOWUP_SKIPS.noNotion,
+        "This agent may not use Notion, so it cannot read the meeting notes.");
+      return;
+    }
+
+    if (skipWithoutMeetingsDatabase(process.env["NOTION_MEETINGS_DATA_SOURCE_ID"], meetingsDatabaseState)) {
+      await recordSkipOnce(getPool, agent, MEETING_FOLLOWUP_SKIPS.noMeetingsDatabase,
+        "No meetings database is chosen, so there are no meeting notes to read.");
+      return;
+    }
 
     running = true;
+    const job = meetingFollowupJob(agent);
     try {
       const pool = getPool();
+      skipMemo.last = null;
+      await recordRunStarted(pool, job, { agent, detail: "Reading the meeting notes." });
 
       // The mailbox the agent's owner chose is both the mailbox this schedule sends AS and the
       // voice corpus it composes from. Falls back to the identity registry's own alias list
@@ -1380,8 +1473,9 @@ export default defineSchedule({
       const selfEmails = await listAliases(pool, configuredOwnerId(), "email");
       const fromMailbox = (await listEnrolledMailboxes())[0] ?? selfEmails[0] ?? "";
 
+      const listed: ListedMeetings = { waitingForSummary: 0 };
       const deps: FollowupDeps = {
-        listMeetings: () => liveListMeetings(pool),
+        listMeetings: () => liveListMeetings(pool, new Date(), listed),
         claim: (pageId, summaryHash) => claimMeeting(pool, pageId, summaryHash),
         precheck: makeLivePrecheck(pool, routed),
         recordSeriesKey: (pageId, seriesKey) => storeRecordSeriesKey(pool, pageId, seriesKey),
@@ -1406,12 +1500,23 @@ export default defineSchedule({
         selfEmails: [fromMailbox, ...selfEmails].filter((e, i, arr) => e !== "" && arr.indexOf(e) === i),
       };
 
-      await makeFollowupTick(deps).tick(new Date());
+      const result = await makeFollowupTick(deps).tick(new Date());
       // Once per tick, after the loop.
       await pruneOldFollowups(pool);
       await recordSchedulePass(pool, HEARTBEAT_KEY);
+      const waiting = await countWaitingForApproval(pool, FOLLOWUP_MAX_AGE_DAYS).catch((err) => {
+        console.error("meeting-followup: could not count the cards waiting for approval", err);
+        return Math.max(0, result.queued - result.sent);
+      });
+      // Not-ready meetings are dropped while listing, before the tick: add the ones it never saw.
+      const counted = { ...result, waitingForSummary: result.waitingForSummary + listed.waitingForSummary };
+      await recordRunFinished(pool, job, { agent, counts: { ...finishedCounts(counted, waiting) } });
     } catch (err) {
       console.error("meeting-followup: tick failed", err);
+      skipMemo.last = null;
+      try {
+        await recordRunFailed(getPool(), job, err instanceof Error ? err.message : String(err), { agent });
+      } catch { /* no pool: the failure is logged above and signalled below */ }
       await emitSignal("schedule-tick-failed", "meeting-followup: tick failed", errorDetail(err));
     } finally {
       running = false;

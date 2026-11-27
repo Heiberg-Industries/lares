@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { makeFollowupTick, skipWithoutMeetingsDatabase, type FollowupDeps } from "../agent/schedules/meeting-followup.js";
+import { finishedCounts, makeFollowupTick, notionKeyDelivered, recordSkipOnce, skipWithoutMeetingsDatabase, type FollowupDeps } from "../agent/schedules/meeting-followup.js";
+import { MEETING_FOLLOWUP_SKIPS, meetingFollowupJob } from "@lares/agent-kit/meeting-followup-outcome";
 import { hashSummaryBlock } from "../lib/meeting-followup.js";
 
 const NOW = new Date("2026-08-24T11:00:00.000Z");
@@ -357,5 +358,50 @@ describe("skipWithoutMeetingsDatabase", () => {
     const state = { toldNoMeetingsDatabase: false }, log = vi.fn();
     expect(skipWithoutMeetingsDatabase("source-1", state, log)).toBe(false);
     expect(log).not.toHaveBeenCalled();
+  });
+});
+
+describe("what a pass records for the Meetings page", () => {
+  it("counts recent meetings still waiting for a summary, and the follow-ups sent on their own", async () => {
+    const d = deps({
+      listMeetings: async () => [meetingRow(), meetingRow({ pageId: "page-2", summaryBlock: "" }), meetingRow({ pageId: "page-3", attendees: "" })],
+      send: async () => ({ autonomous: true }),
+    });
+    const res = await makeFollowupTick(d.impl).tick(NOW);
+    expect(res).toMatchObject({ queued: 1, sent: 1, waitingForSummary: 2 });
+    expect(finishedCounts(res, 4)).toEqual({ sent: 1, waitingForApproval: 4, waitingForSummary: 2, heldBack: 0, failed: 0 });
+  });
+
+  it("a card waiting for approval is not counted as sent; the waiting count is the store's, not this pass's", async () => {
+    const res = await makeFollowupTick(deps().impl).tick(NOW);
+    expect(finishedCounts(res, 3)).toMatchObject({ sent: 0, waitingForApproval: 3 });
+  });
+
+  it("an agent given no Notion key is told apart from one that has one", () => {
+    expect(notionKeyDelivered({})).toBe(false);
+    expect(notionKeyDelivered({ NOTION_TOKEN_FILE: " " })).toBe(false);
+    expect(notionKeyDelivered({ NOTION_TOKEN_FILE: "/run/secrets/example" })).toBe(true);
+    expect(notionKeyDelivered({ NOTION_TOKEN: "x" })).toBe(true);
+  });
+
+  it("records a skip once per reason under the agent's own key, and again once the reason changes", async () => {
+    const calls: unknown[][] = [];
+    const db = { query: async (...args: unknown[]) => { calls.push(args); return { rows: [], rowCount: 1 }; } };
+    const memo = { last: null };
+    await recordSkipOnce(() => db as never, "example-agent", MEETING_FOLLOWUP_SKIPS.switchedOff, "Off.", memo);
+    await recordSkipOnce(() => db as never, "example-agent", MEETING_FOLLOWUP_SKIPS.switchedOff, "Off.", memo);
+    expect(calls).toHaveLength(1);
+    expect((calls[0]![1] as unknown[]).slice(0, 4)).toEqual([meetingFollowupJob("example-agent"), "example-agent", "skipped", "switched-off"]);
+    await recordSkipOnce(() => db as never, "example-agent", MEETING_FOLLOWUP_SKIPS.noMeetingsDatabase, "None.", memo);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("a skip with no database to write to is only logged, and tried again next time", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const memo = { last: null };
+    await recordSkipOnce(() => { throw new Error("no pool"); }, "example-agent", MEETING_FOLLOWUP_SKIPS.noDelivery, "Nowhere.", memo);
+    expect(memo.last).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

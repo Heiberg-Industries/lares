@@ -2,11 +2,13 @@
  * The clipping request queue (child b): what the console's Clipping card asks the chief
  * of staff to do, because only the chief of staff holds the Notion key.
  *
- * Four kinds, each answered into `clipping_requests` (box/sql/001_baseline.sql):
- *   schema          read a pasted database: its data sources and their columns, with a suggestion
- *   test            try the saved (or proposed) mapping on one page of rows; writes nothing
- *   import          run one clipping pass now (the same code the digest runs)
- *   add-properties  add only the missing Status, For and Origin columns; never change an existing one
+ * Five kinds, each answered into `clipping_requests` (box/sql/001_baseline.sql, 042):
+ *   schema             read a pasted database: its data sources and their columns, with a suggestion
+ *   test               try the saved (or proposed) mapping on one page of rows; writes nothing
+ *   import             run one clipping pass now (the same code the digest runs)
+ *   add-properties     add only the missing Status, For and Origin columns; never change an existing one
+ *   meetings-database  the Meetings page's lookup: a pasted meetings database's data sources (ids and
+ *                      names only), so the owner can save one as the meetings source; writes nothing
  *
  * Same discipline as the digest's step: every failure keeps its own outcome and a one-line owner
  * sentence (never a vendor body, never a token), a request is never left "claimed" for ever, and
@@ -22,7 +24,7 @@ import {
   findDuplicate, getItem, loadNotionSources, readClippingChoice, type Queryable,
 } from "./store.js";
 
-export type RequestKind = "schema" | "test" | "import" | "add-properties";
+export type RequestKind = "schema" | "test" | "import" | "add-properties" | "meetings-database";
 
 export interface ClippingRequest {
   id: string;
@@ -58,13 +60,21 @@ export async function failStaleClaims(db: Queryable, olderThanMs = CLAIM_STALE_M
   return rowCount ?? 0;
 }
 
-/** Take the oldest pending request. Two workers never get the same one. */
-export async function claimRequest(db: Queryable): Promise<ClippingRequest | null> {
+/** An agent with no Notion key leaves a request this long, so an agent that has the key (one switched
+ *  on under "Which agents may use Notion") answers it first. The schedule looks every minute, so this is
+ *  two of its passes. After that the keyless agent answers it with "not set up", which says what to do,
+ *  instead of letting it sit until it reads as not picked up. */
+export const HOLD_BACK_WITHOUT_KEY_MS = 2 * 60_000;
+
+/** Take the oldest pending request at least `minAgeMs` old. Two workers never get the same one. */
+export async function claimRequest(db: Queryable, minAgeMs = 0): Promise<ClippingRequest | null> {
   const { rows } = await db.query(
     `UPDATE clipping_requests SET status = 'claimed', claimed_at = now()
       WHERE id = (SELECT id FROM clipping_requests WHERE status = 'pending'
+                     AND created_at <= now() - make_interval(secs => $1)
                    ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 1)
       RETURNING id, kind, params`,
+    [minAgeMs / 1000],
   );
   const r = rows[0] as { id: string; kind: RequestKind; params: unknown } | undefined;
   if (!r) return null;
@@ -102,7 +112,7 @@ function propsOf(dataSource: unknown): [string, RawProp][] {
 
 const NO_KEY = new ClippingFailure(
   "not-configured", "The chief of staff has no Notion key yet.",
-  "Add the Notion key and switch clipping on first.",
+  "Add the Notion key, then switch Notion on for this agent on the Notion page under Integrations.",
 );
 
 function keyFor(deps: RequestDeps): string {
@@ -119,7 +129,10 @@ function keyFor(deps: RequestDeps): string {
 
 // --- schema ----------------------------------------------------------------------------------
 
-async function runSchema(client: NotionLike, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+/** The data sources a pasted database link lists, ids and names only. Shared by both lookups. */
+async function listDataSources(client: NotionLike, params: Record<string, unknown>): Promise<{
+  databaseId: string; listed: { id: string; name: string }[];
+}> {
   const link = str(params["link"]);
   const databaseId = link ? parseDatabaseRef(link) : null;
   if (!databaseId) {
@@ -139,14 +152,22 @@ async function runSchema(client: NotionLike, params: Record<string, unknown>): P
       "Check the link points at a database, not a page.",
     );
   }
+  return {
+    databaseId,
+    listed: listed.map((d) => ({ id: d.id as string, name: typeof d.name === "string" && d.name ? d.name : "Untitled" })),
+  };
+}
+
+async function runSchema(client: NotionLike, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const { databaseId, listed } = await listDataSources(client, params);
   const dataSources: { id: string; name: string; columns: { id: string; name: string; type: string }[] }[] = [];
   for (const d of listed) {
     let ds: unknown;
-    try { ds = await client.dataSources.retrieve({ data_source_id: d.id as string }); }
+    try { ds = await client.dataSources.retrieve({ data_source_id: d.id }); }
     catch (e) { throw classifyNotionError(e); }
     dataSources.push({
-      id: d.id as string,
-      name: typeof d.name === "string" && d.name ? d.name : "Untitled",
+      id: d.id,
+      name: d.name,
       columns: propsOf(ds).map(([key, p]) => ({ id: p.id!, name: p.name || key, type: p.type! })),
     });
   }
@@ -327,6 +348,11 @@ export async function runRequest(deps: RequestDeps, req: ClippingRequest): Promi
         case "schema": return runSchema(client, req.params);
         case "test": return runTest(deps, client, req.params);
         case "add-properties": return runAddProperties(deps, client, req.params);
+        // The meetings source is the owner's choice of one of these; nothing is saved here.
+        case "meetings-database": {
+          const { databaseId, listed } = await listDataSources(client, req.params);
+          return { databaseId, dataSources: listed };
+        }
       }
     });
     return { status: "done", outcome: "ok", detail: null, result: result ?? {} };
@@ -337,12 +363,15 @@ export async function runRequest(deps: RequestDeps, req: ClippingRequest): Promi
   }
 }
 
-/** Answer up to `max` pending requests, oldest first. Returns how many were answered. */
+/** Answer up to `max` pending requests, oldest first. Returns how many were answered. An agent with no
+ *  Notion key holds back (`HOLD_BACK_WITHOUT_KEY_MS`), so with several chief-of-staff agents the one
+ *  that may use Notion answers. */
 export async function drainRequests(deps: RequestDeps, max = MAX_PER_TICK): Promise<number> {
   await failStaleClaims(deps.db);
+  const holdBack = deps.token().kind === "key" ? 0 : HOLD_BACK_WITHOUT_KEY_MS;
   let handled = 0;
   while (handled < max) {
-    const req = await claimRequest(deps.db);
+    const req = await claimRequest(deps.db, holdBack);
     if (!req) break;
     handled++;
     await finishRequest(deps.db, req.id, await runRequest(deps, req));
