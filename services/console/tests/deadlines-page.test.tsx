@@ -1,4 +1,5 @@
 vi.mock("../lib/auth", () => ({ requirePage: async () => ({ id: "owner-1" }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }) }));
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -64,6 +65,41 @@ beforeEach(() => {
 });
 
 describe("/deadlines", () => {
+  /** The mail scan's facts as the page reads them: one chief-of-staff agent and its last scan outcome. */
+  async function scanRows(outcome: Record<string, unknown> | null): Promise<void> {
+    const { pool } = await import("../lib/db");
+    vi.mocked(pool.query).mockImplementation((async (sql: string) => {
+      if (sql.includes("FROM agent_definitions")) return { rows: [{ name: "chief-of-staff", definition: { role: "chief-of-staff", display: "Example" } }] };
+      if (sql.includes("FROM schedule_run")) return { rows: outcome ? [{ job: "chief-of-staff/deadline-scan", agent: "chief-of-staff", reason: "", detail: "", counts: {}, started_at: null, updated_at: new Date(), ...outcome }] : [] };
+      return { rows: [] };
+    }) as never);
+  }
+
+  it("tells an empty candidate list from a scan that did not run, and says why with where to fix it", async () => {
+    await scanRows({ state: "skipped", reason: "no-mailbox", detail: "No mailbox is chosen for this agent." });
+    const html = await render(view({ candidates: [] }));
+    expect(html).toContain('data-state="skipped"');
+    expect(html).toContain("No mailbox chosen for Example, so there was no mail to scan.");
+    expect(html).toContain('href="/agents/chief-of-staff"');
+    expect(html).not.toContain("No unresolved candidates.");
+    expect(html).toContain("No candidates to show. The mail scan&#x27;s status above says why.");
+  });
+
+  it("says No unresolved candidates only after a scan finished", async () => {
+    await scanRows({ state: "finished", counts: { found: 0 }, started_at: new Date() });
+    const html = await render(view({ candidates: [] }));
+    expect(html).toContain('data-state="finished"');
+    expect(html).toContain("No due notices in mail.");
+    expect(html).toContain("No unresolved candidates.");
+  });
+
+  it("says the scanner has not run yet when there is no outcome", async () => {
+    await scanRows(null);
+    const html = await render(view({ candidates: [] }));
+    expect(html).toContain("The mail scan has not run yet.");
+    expect(html).not.toContain("No unresolved candidates.");
+  });
+
   it("shows the reminders-off note when reminders are off", async () => {
     const html = await render(view({ ladderEnabled: false }));
     expect(html).toMatch(/Reminders are off: the brief still lists deadlines; nothing is sent on its own/);

@@ -101,6 +101,11 @@ export async function agentRuntime(name:string):Promise<DefinitionActionResult<R
   const read=await call<{runtime?:RuntimeState}>('definition.get',{name},await ownerActor());
   return read.ok?{ok:true,result:read.result.runtime}:read;
 }
+/** The saved definition files and the runtime state, read again: after a door switch saved a new definition, the
+ *  edit page shows the saved one instead of asking for a reload (when nothing on the page is unsaved). */
+export async function savedDefinition(name:string):Promise<DefinitionActionResult<{definition:string;duties:string;voice:string;runtime?:RuntimeState}>> {
+  return call('definition.get',{name},await ownerActor());
+}
 export async function doorStatus(name:string):Promise<DefinitionActionResult<import('../../components/DoorSetup').DoorStatus[]>> {
   return call('door.status',{name},await ownerActor());
 }

@@ -7,7 +7,7 @@ import { Input } from "@lares/ui/primitives/input";
 import { Select } from "@lares/ui/primitives/select";
 import { Textarea } from "@lares/ui/primitives/textarea";
 import { Checkbox, Radio } from "@lares/ui/primitives/checkbox";
-import { Choice, Field, FieldGroup, Notice } from "@lares/ui/patterns";
+import { Choice, Field, FieldGroup, Notice, RunStatus } from "@lares/ui/patterns";
 import { Card, CardContent, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import {
   Dialog,
@@ -36,9 +36,10 @@ import {
   saveDefinition,
   retireAgent,
   deleteAgent,
-  applyConnections,
-  agentRuntime,
+  savedDefinition,
 } from "../app/actions/definition";
+import { ApplyFailedError, useAgentRuntime } from "../lib/use-agent-runtime";
+import { STARTING_WHY } from "../lib/agent-apply-status";
 import { ConversationControl } from "./ConversationControl";
 import { AutonomyControl } from "./AutonomyControl";
 import { TakesEffect } from "./TakesEffect";
@@ -110,7 +111,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
   const [error, setError] = useState("");
   const [uncertain, setUncertain] = useState(false);
   const [creating, setCreating] = useState<"idle" | "working" | "done" | "failed">("idle");
-  const [runtime, setRuntime] = useState(p.initial?.runtime);
+  // Apply and Start, the runtime state, and following a restart until the agent answers: one owner.
+  const agentRun = useAgentRuntime(p.initial?.definition.name, p.initial?.runtime);
+  const runtime = agentRun.runtime;
   const nativeHeld = !runtime?.pending && runtime?.reason === "Native budget activation required";
   const [hash, setHash] = useState(p.initial?.hash ?? "");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
@@ -121,6 +124,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
   const snapshot = JSON.stringify({ definition, duties, voice });
   const [savedSnapshot, setSavedSnapshot] = useState(snapshot);
   const dirty = snapshot !== savedSnapshot;
+  // Read by the door section's callbacks, which can finish long after the render that started them.
+  const dirtyNow = useRef(dirty);
+  useEffect(() => { dirtyNow.current = dirty; }, [dirty]);
   const running = useRef(false);
   useEffect(() => {
     // Once a write's outcome is unknown the page asks for a reload, so it must not also block one.
@@ -242,7 +248,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
   }
   function saved(result: DefinitionResult) {
     setHash(result.hash);
-    setRuntime(result.runtime);
+    agentRun.saved(result.runtime);
     setSavedSnapshot(snapshot);
     setMessage(
       `Definition saved.${result.backup.ok ? "" : ` ${result.backup.message ?? "Git backup failed; the definition remains saved."}`}`,
@@ -289,6 +295,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
             <CardTitle role="heading" aria-level={2}>Status</CardTitle>
           </CardHeader>
           <CardContent className="lares-stack">
+          {active && agentRun.status ? (
+            <RunStatus label="The agent" state={agentRun.status.state} when={agentRun.status.when} why={agentRun.status.why} />
+          ) : (
           <p>
             {!active
               ? "Agent stopped."
@@ -299,13 +308,14 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 : runtime?.running === false
                   ? "Agent stopped."
                   : runtime?.running && runtime.healthy === false
-                    ? "Started, not answering yet. A first start after an upgrade can take several minutes; reload to check. If it stays like this, its log says why."
+                    ? STARTING_WHY
                     : runtime?.running && runtime.healthy
                       ? "Running. Saved connections are applied."
                       : runtime
                         ? "Saved connections are applied."
                         : "Whether this agent is running could not be read."}
           </p>
+          )}
           {!nativeHeld && (runtime?.pending ||
             (active &&
               runtime?.running === false &&
@@ -316,16 +326,20 @@ export function DefinitionForm(p: DefinitionFormProps) {
               disabled={busy || uncertain || !hash || !active}
               onClick={() =>
                 void run(async () => {
-                  const response = await applyConnections({
-                    name: definition.name,
-                    hash,
-                  });
-                  if (!response.ok) throw new Error(response.error.message);
-                  setMessage(
-                    "Connection changes applied. Reload to see the agent’s current state.",
-                  );
+                  // The status line above says Running, then Finished or Failed with why; the page
+                  // follows a start that is not answering yet by itself.
+                  try {
+                    await agentRun.apply(hash, {
+                      from: "status",
+                      ...(runtime?.pending ? {} : { label: "Starting the agent with the saved definition. This takes about a minute. Keep this page open." }),
+                    });
+                  } catch (e) {
+                    // The status line carries the reason. A failed Apply may have put the earlier
+                    // definition back, so the form is only trusted again after a fresh read.
+                    if (e instanceof ApplyFailedError) { setUncertain(e.outcomeMayBeUnknown); return; }
+                    throw e;
+                  }
                   router.refresh();
-                  setUncertain(true);
                 })
               }
             >
@@ -925,16 +939,27 @@ export function DefinitionForm(p: DefinitionFormProps) {
           origin={p.publicDoorOrigin ?? ""}
           hash={hash}
           running={runtime?.running}
+          apply={(next, label) => agentRun.apply(next, { label, from: "doors" })}
+          applyStatus={agentRun.from === "doors" ? agentRun.status : null}
+          appliedAt={agentRun.appliedAt}
           onDefinitionChanged={(next) => {
             setHash(next);
-            setUncertain(true);
+            // A door switch saved a new definition. With nothing unsaved on the page, show the saved
+            // one; with unsaved edits, the page must not guess, so it asks for a fresh read first.
+            if (dirtyNow.current) { setUncertain(true); return; }
+            void savedDefinition(p.initial!.definition.name)
+              .then((read) => {
+                // Edited while the read was on its way: never overwrite those edits; ask for a fresh read instead.
+                if (!read.ok || dirtyNow.current) { setUncertain(true); return; }
+                const nextDefinition = JSON.parse(read.result.definition) as AgentDefinition;
+                setDefinition(nextDefinition);
+                setDuties(read.result.duties);
+                setVoice(read.result.voice);
+                setSavedSnapshot(JSON.stringify({ definition: nextDefinition, duties: read.result.duties, voice: read.result.voice }));
+              })
+              .catch(() => setUncertain(true));
           }}
-          onRuntimeChanged={() => {
-            // Re-read, never assume: an unreadable state shows as unavailable rather than as the old "Running".
-            void agentRuntime(p.initial!.definition.name)
-              .then((read) => setRuntime(read.ok ? read.result : undefined))
-              .catch(() => setRuntime(undefined));
-          }}
+          onRuntimeChanged={() => { void agentRun.reread(); }}
         />
       )}
       {!editing && creating !== "idle" && (

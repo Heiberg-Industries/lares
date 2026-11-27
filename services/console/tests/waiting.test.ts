@@ -5,7 +5,7 @@
 // agent's next step.
 import { beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { createStreamChecker } from "eve/events";
-import { APPROVED_PENDING, classifyReadFailure, decideWaiting, EXPIRED_NOTE, itemId, kindOfStatus, listWaiting, ownedFrom, readApprovals, readStreamLines, type WaitingDeps } from "../lib/waiting";
+import { APPROVED_PENDING, checkWaiting, classifyReadFailure, decideWaiting, EXPIRED_NOTE, itemId, kindOfStatus, listWaiting, ownedFrom, readApprovals, readStreamLines, SENT_UNCONFIRMED, type WaitingDeps } from "../lib/waiting";
 
 const grantAccess=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
 vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=grantAccess.captureUse;async captureUseWithExpiry(){const revision=await grantAccess.captureUse();return revision===undefined?undefined:{accessRevision:revision,validUntil:null};}}}));
@@ -64,7 +64,7 @@ interface Fake {
 
 function fake(opts: {
   agents?: Record<string, unknown>[];
-  sessions?: Record<string, Array<{ session_id: string; door: string }>>;
+  sessions?: Record<string, Array<{ session_id: string; door: string; terminal?: boolean }>>;
   streams?: Record<string, unknown[] | string>;
   postStatus?: number;
   /** The JSON body of a refused answer. */
@@ -109,7 +109,8 @@ function fake(opts: {
       }
       if (sql.includes("agent_door_connections")) return { rows: agents.filter((a) => values[0] === null || a.name === values[0]) };
       if (sql.includes("agent_conversations")) {
-        const mine = sessions[values[0] as string] ?? [];
+        // An ended conversation is returned only when the query asks for ended ones too ($4).
+        const mine = (sessions[values[0] as string] ?? []).filter((s) => !s.terminal || values[3] === true);
         return { rows: values[2] ? mine.filter((s) => s.session_id === values[2]) : mine };
       }
       if (sql.includes("notion_sync_proposals") || sql.includes("atlas_proposals")) {
@@ -668,9 +669,78 @@ describe("deciding", () => {
     });
   });
 
+  it("an answer not confirmed yet is read again until it is: sends nothing more, and says what came of it", async () => {
+    const f = fake({ streams: waiting(), after: "nothing" });
+    const sent = await decideWaiting(OWNER, id, "approve", f.deps);
+    // The call the approval is about comes back, so each re-check reads only the stream's tail.
+    expect(sent).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true, callId: "call-req-1" });
+    const hint = { callId: "call-req-1" };
+    // Still nothing in the conversation: still unconfirmed, and nothing is sent again.
+    expect(await checkWaiting(OWNER, id, f.deps, hint)).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true, callId: "call-req-1" });
+    // eve accepted it: approved, the action not reported yet.
+    f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), resolved("req-1", "accepted")];
+    expect(await checkWaiting(OWNER, id, f.deps, hint)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true, callId: "call-req-1" });
+    // The action ran.
+    f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), ran("call-req-1", "completed")];
+    expect(await checkWaiting(OWNER, id, f.deps, hint)).toEqual({ ok: true, outcome: "approved", message: "Approved, and example carried it out. Its reply appears in the Telegram conversation this came from." });
+    expect(f.posts).toHaveLength(1);
+    // Every re-check read the tail only, never the whole conversation again.
+    const checks = f.streamUrls.slice(-3);
+    for (const url of checks) expect(url).toMatch(/\/stream\?includeTailIndex=1&follow=false&startIndex=-500$/);
+  });
+
+  it("a re-check finds the action's result in the tail with the call id it was handed, and ignores a malformed one", async () => {
+    // A conversation so long that the card itself is out of the tail: only the call id finds the result.
+    const filler = Array.from({ length: 600 }, (_, i) => line("2026-10-15T11:05:00.000Z", { type: "message.appended", data: { n: i } } as Line["facts"][number]));
+    const f = fake({ streams: { wrun_tg: [...asked("req-1", "Send it", "2026-10-15T11:00:00.000Z"), ...filler, resolved("req-1", "accepted"), ran("call-req-1", "completed")] } });
+    expect(await checkWaiting(OWNER, id, f.deps, { callId: "call-req-1" })).toMatchObject({ ok: true, outcome: "approved", message: expect.stringContaining("carried it out") });
+    expect(await checkWaiting(OWNER, id, f.deps, { callId: "bad id\n" })).toMatchObject({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true });
+  });
+
+  it("a re-check whose read fails keeps the call id it was handed, so the next check can still find the result", async () => {
+    const f = fake({ streams: waiting(), streamStatus: { wrun_tg: 500 } });
+    expect(await checkWaiting(OWNER, id, f.deps, { callId: "call-req-1" })).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true, callId: "call-req-1" });
+  });
+
+  it("a re-check that finds the action failed says so, and a denial reads as denied", async () => {
+    const f = fake({ streams: waiting(), after: "resolve" });
+    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toMatchObject({ unconfirmed: true });
+    f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), ran("call-req-1", "failed", "the mail server said no")];
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: false, reason: "action-failed", message: "Your approval arrived, but the action did not go through: the mail server said no" });
+    const g = fake({ streams: { wrun_tg: [...asked("req-1", "Send it", "2026-10-15T11:00:00.000Z"), resolved("req-1", "declined")] } });
+    expect(await checkWaiting(OWNER, id, g.deps)).toEqual({ ok: true, outcome: "cancelled", message: "Denied. example will not do it." });
+    expect(g.posts).toHaveLength(0);
+  });
+
+  it("an action that ended its conversation before the next check is still read, and says what came of it", async () => {
+    const sessions = { example: [{ session_id: "wrun_tg", door: "telegram", terminal: false }] };
+    const f = fake({ streams: waiting(), after: "resolve", sessions });
+    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toMatchObject({ unconfirmed: true });
+    sessions.example[0]!.terminal = true;
+    f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), ran("call-req-1", "completed")];
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: true, outcome: "approved", message: "Approved, and example carried it out. Its reply appears in the Telegram conversation this came from." });
+    // Ended with nothing more to read: a final answer, so the page stops asking.
+    delete f.streams.wrun_tg;
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: false, reason: "gone", message: "That conversation has ended without saying what came of your answer." });
+    // Ended after eve took the approval, with no result from the action.
+    f.streams.wrun_tg = [...asked("req-1", "Send it", "2026-10-15T11:00:00.000Z"), resolved("req-1", "accepted")];
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: false, reason: "gone", message: "Approved, but the conversation ended before the agent said whether the action went through." });
+    // Ended and its record no longer kept (HTTP 410).
+    const g = fake({ streams: waiting(), sessions: { example: [{ session_id: "wrun_tg", door: "telegram", terminal: true }] }, streamStatus: { wrun_tg: 410 } });
+    expect(await checkWaiting(OWNER, id, g.deps)).toMatchObject({ ok: false, reason: "gone", message: "That conversation has ended and can no longer be read, so what came of your answer is not known here." });
+    expect(f.posts).toHaveLength(1);
+  });
+
+  it("a re-check is only for the agent's owner, and only for an item this console made", async () => {
+    const f = fake({ streams: waiting(), agents: [] });
+    expect(await checkWaiting(OWNER, id, f.deps)).toMatchObject({ ok: false, reason: "refused" });
+    expect(await checkWaiting(OWNER, "approval:not-a-key", f.deps)).toMatchObject({ ok: false, reason: "gone" });
+    expect(await checkWaiting(OWNER, itemId("proposal", ["notion", "1"]), f.deps)).toMatchObject({ ok: false, reason: "gone" });
+  });
+
   it("Approve accepted and nothing run yet: the careful sentence, not a claim of success", async () => {
     const f = fake({ streams: waiting(), after: "resolve" });
-    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING });
+    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true, callId: "call-req-1" });
   });
 
   it("Deny: answers with the framework's own 'deny', and says the agent will not do it", async () => {

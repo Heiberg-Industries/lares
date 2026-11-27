@@ -117,7 +117,16 @@ export interface WaitingList {
 }
 
 export type DecideResult =
-  | { readonly ok: true; readonly outcome: "approved" | "cancelled" | "sent"; readonly message: string }
+  | {
+      readonly ok: true;
+      readonly outcome: "approved" | "cancelled" | "sent";
+      readonly message: string;
+      /** The answer arrived, and the agent has not confirmed what came of it yet: the page keeps checking
+       *  (`checkWaiting`) until it has, or the action failed. */
+      readonly unconfirmed?: true;
+      /** The call the approval is about, handed back so each re-check reads only the stream's tail. */
+      readonly callId?: string;
+    }
   | {
       readonly ok: false;
       /** `action-failed`: the answer was accepted, and the action then failed or was refused. */
@@ -150,6 +159,27 @@ interface WaitingSource {
   /** Must return by the time `signal` aborts (the page's overall deadline). */
   list(member: string, deps: WaitingDeps, signal: AbortSignal): Promise<WaitingList>;
   decide(member: string, key: string, actionId: string, deps: WaitingDeps): Promise<DecideResult>;
+  /** Read again what came of an answer this member sent, without sending anything. Only a kind whose answers can
+   *  come back `unconfirmed` has it. */
+  check?(member: string, key: string, deps: WaitingDeps, hint?: CheckHint): Promise<DecideResult>;
+}
+
+/** What the page hands back on a re-check: the call id `decide` returned. Only a pointer into the
+ *  member's own conversation, read and never trusted for anything else. */
+export interface CheckHint { readonly callId?: string }
+const CALL_ID = /^[^\s\u0000-\u001f]{1,256}$/;
+
+/** An approval's key: agent, conversation, request. null when it is not one this console made. */
+function approvalKey(key: string): [string, string, string] | null {
+  let parts: unknown;
+  try {
+    parts = JSON.parse(Buffer.from(key, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parts) || parts.length !== 3 || !parts.every((p) => typeof p === "string")) return null;
+  const [name, sessionId, interactionId] = parts as [string, string, string];
+  return AGENT_NAME.test(name) && SESSION_ID.test(sessionId) && INTERACTION_ID.test(interactionId) ? [name, sessionId, interactionId] : null;
 }
 
 // ── Item ids ────────────────────────────────────────────────────────────────────────────────────
@@ -259,22 +289,26 @@ async function ownedAgents(member: string, deps: WaitingDeps, only?: string): Pr
 interface Conversation {
   readonly sessionId: string;
   readonly door: string;
+  /** The conversation has ended. Only a re-check of an answer asks for ended ones. */
+  readonly ended?: boolean;
 }
 
 /** Live conversations, newest first. A week back: a card older than a day can only be denied,
  *  and one older than that is not worth a page load. */
-async function conversations(agent: OwnedAgent, deps: WaitingDeps, only?: string): Promise<Conversation[]> {
+/** `ended`: also a conversation that has ended since, for a re-check that reads what an answer led to
+ *  (an action can end its session before the page asks again). Nothing is ever sent into one. */
+async function conversations(agent: OwnedAgent, deps: WaitingDeps, only?: string, opts: { ended?: boolean } = {}): Promise<Conversation[]> {
   const { rows } = await deps.query(
-    `SELECT session_id, door FROM agent_conversations c
-     WHERE agent = $1 AND incarnation = $2::uuid AND NOT terminal
+    `SELECT session_id, door, terminal FROM agent_conversations c
+     WHERE agent = $1 AND incarnation = $2::uuid AND ($4::boolean OR NOT terminal)
        AND NOT EXISTS(SELECT 1 FROM console_session_bindings b WHERE b.agent=c.agent AND b.incarnation=c.incarnation AND b.session_id=c.session_id)
        AND observed_at > now() - interval '7 days' AND ($3::text IS NULL OR session_id = $3)
      ORDER BY observed_at DESC LIMIT 50`,
-    [agent.name, agent.incarnation, only ?? null],
+    [agent.name, agent.incarnation, only ?? null, opts.ended === true],
   );
   return rows
     .filter((r) => typeof r.session_id === "string" && SESSION_ID.test(r.session_id))
-    .map((r) => ({ sessionId: r.session_id as string, door: String(r.door) }));
+    .map((r) => ({ sessionId: r.session_id as string, door: String(r.door), ...(r.terminal === true ? { ended: true } : {}) }));
 }
 
 function channelOf(door: string): WaitingItem["channel"] {
@@ -504,6 +538,8 @@ export function readApprovals(facts: readonly unknown[]): {
   pending: PendingApproval[];
   resolved: Map<string, Resolution>;
   results: Map<string, ActionOutcome>;
+  /** Every approval asked in this conversation, answered or not, and the call it is about ("" when relayed). */
+  calls: Map<string, string>;
 } {
   const calls = new Map<string, { name: string; input: unknown }>();
   const asked = new Map<string, { approval: Omit<PendingApproval, "toolName" | "input">; subjectCallId: string; relayed: { name: string; input: unknown } | null }>();
@@ -558,8 +594,27 @@ export function readApprovals(facts: readonly unknown[]): {
           const call = a.relayed ?? calls.get(a.subjectCallId);
           return { ...a.approval, toolName: call?.name ?? "", input: call?.input };
         });
-  return { pending, resolved, results };
+  return { pending, resolved, results, calls: new Map([...asked].map(([id, a]) => [id, a.approval.callId])) };
 }
+
+/** What the conversation says came of an answer: denied, refused, approved and carried out, or failed; null
+ *  while nothing is known yet, and `approved` once eve accepted the approval but the action has not reported. */
+function answerOutcome(seen: ReturnType<typeof readApprovals>, interactionId: string, callId: string, agent: string, door: string): DecideResult | "approved" | null {
+  const outcome = seen.resolved.get(interactionId);
+  if (outcome === "cancelled") return { ok: true, outcome: "cancelled", message: `Denied. ${agent} will not do it.` };
+  if (outcome === "other") return { ok: false, reason: "refused", message: `${agent} did not accept the answer. Nothing was done.` };
+  const result = callId === "" ? undefined : seen.results.get(callId);
+  if (result?.status === "completed") {
+    return { ok: true, outcome: "approved", message: `Approved, and ${agent} carried it out. Its reply appears in the ${channelOf(door)} conversation this came from.` };
+  }
+  if (result !== undefined) {
+    return { ok: false, reason: "action-failed", message: `Your approval arrived, but the action did not go through${result.error ? `: ${result.error}` : "."}` };
+  }
+  return outcome === "approved" ? "approved" : null;
+}
+
+/** Said while the answer has arrived and the agent has not confirmed it. The page keeps checking by itself. */
+export const SENT_UNCONFIRMED = (agent: string): string => `Your answer reached ${agent}. Waiting for it to confirm.`;
 
 function isExpired(approval: PendingApproval, now: number): boolean {
   const at = approval.at === null ? NaN : Date.parse(approval.at);
@@ -692,19 +747,9 @@ const approvals: WaitingSource = {
   },
 
   async decide(member, key, actionId, deps) {
-    let parts: unknown;
-    try {
-      parts = JSON.parse(Buffer.from(key, "base64url").toString("utf8"));
-    } catch {
-      return { ok: false, reason: "gone", message: "That item could not be found." };
-    }
-    if (!Array.isArray(parts) || parts.length !== 3 || !parts.every((p) => typeof p === "string")) {
-      return { ok: false, reason: "gone", message: "That item could not be found." };
-    }
-    const [name, sessionId, interactionId] = parts as [string, string, string];
-    if (!AGENT_NAME.test(name) || !SESSION_ID.test(sessionId) || !INTERACTION_ID.test(interactionId) || !["approve", "deny"].includes(actionId)) {
-      return { ok: false, reason: "gone", message: "That item could not be found." };
-    }
+    const parts = approvalKey(key);
+    if (!parts || !["approve", "deny"].includes(actionId)) return { ok: false, reason: "gone", message: "That item could not be found." };
+    const [name, sessionId, interactionId] = parts;
     const password = deps.routePassword();
     if (!password) return { ok: false, reason: "unavailable", message: "The console cannot reach the agents: no route password is mounted." };
 
@@ -774,26 +819,47 @@ const approvals: WaitingSource = {
       } catch {
         break;
       }
-      const outcome = seen.resolved.get(interactionId);
-      if (outcome === "cancelled") return { ok: true, outcome: "cancelled", message: `Denied. ${agent.name} will not do it.` };
-      if (outcome === "other") return { ok: false, reason: "refused", message: `${agent.name} did not accept the answer. Nothing was done.` };
+      const outcome = answerOutcome(seen, interactionId, approval.callId, agent.name, conversation.door);
       if (outcome === "approved") approved = true;
-      const result = approval.callId === "" ? undefined : seen.results.get(approval.callId);
-      if (result?.status === "completed") {
-        return { ok: true, outcome: "approved", message: `Approved, and ${agent.name} carried it out. Its reply appears in the ${channelOf(conversation.door)} conversation this came from.` };
-      }
-      if (result !== undefined) {
-        return {
-          ok: false,
-          reason: "action-failed",
-          message: `Your approval arrived, but the action did not go through${result.error ? `: ${result.error}` : "."}`,
-        };
-      }
+      else if (outcome !== null) return outcome;
     }
+    const follow = approval.callId ? { callId: approval.callId } : {};
     if (approved) {
-      return { ok: true, outcome: "approved", message: APPROVED_PENDING };
+      return { ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true, ...follow };
     }
-    return { ok: true, outcome: "sent", message: `Your answer reached ${agent.name}; it has not confirmed it yet. Reload in a moment to see.` };
+    return { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true, ...follow };
+  },
+
+  async check(member, key, deps, hint = {}) {
+    const parts = approvalKey(key);
+    if (!parts) return { ok: false, reason: "gone", message: "That item could not be found." };
+    const [name, sessionId, interactionId] = parts;
+    const password = deps.routePassword();
+    if (!password) return { ok: false, reason: "unavailable", message: "The console cannot reach the agents: no route password is mounted." };
+    const [agent] = await ownedAgents(member, deps, name);
+    if (!agent) return { ok: false, reason: "refused", message: "Only the owner of this agent can decide its approvals." };
+    // An ended conversation is still read: the action may have finished, and ended it, since the last check.
+    const [conversation] = await conversations(agent, deps, sessionId, { ended: true });
+    if (!conversation) return { ok: false, reason: "gone", message: "That conversation can no longer be found, so what came of your answer cannot be read here." };
+    // Only the stream's tail, as `decide` reads its outcome: a check every few seconds must not fetch
+    // the whole conversation each time. The call id comes back from `decide`.
+    const callHint = typeof hint.callId === "string" && CALL_ID.test(hint.callId) ? hint.callId : undefined;
+    let seen: ReturnType<typeof readApprovals>;
+    try {
+      seen = readApprovals(await sessionFacts(agent, sessionId, password, deps, { startIndex: OUTCOME_TAIL, door: conversation.door }));
+    } catch {
+      if (conversation.ended) return { ok: false, reason: "gone", message: "That conversation has ended and can no longer be read, so what came of your answer is not known here." };
+      // Not an outcome: the page asks again on its next check, with the call id it was handed.
+      return { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true, ...(callHint ? { callId: callHint } : {}) };
+    }
+    const callId = callHint ?? seen.calls.get(interactionId) ?? "";
+    const follow = callId ? { callId } : {};
+    const outcome = answerOutcome(seen, interactionId, callId, agent.name, conversation.door);
+    // An ended conversation will not say more: what it has not said by now is the final answer.
+    if (conversation.ended && outcome === "approved") return { ok: false, reason: "gone", message: "Approved, but the conversation ended before the agent said whether the action went through." };
+    if (conversation.ended && outcome === null) return { ok: false, reason: "gone", message: "That conversation has ended without saying what came of your answer." };
+    if (outcome === "approved") return { ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true, ...follow };
+    return outcome ?? { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true, ...follow };
   },
 };
 
@@ -844,4 +910,12 @@ export async function decideWaiting(member: string, id: string, actionId: string
   const parsed = parseItemId(id);
   if (!parsed) return { ok: false, reason: "gone", message: "That item could not be found." };
   return SOURCES[parsed.kind].decide(member, parsed.key, actionId, deps);
+}
+
+/** What came of an answer that was `unconfirmed`, read again. Sends nothing. */
+export async function checkWaiting(member: string, id: string, deps: WaitingDeps, hint: CheckHint = {}): Promise<DecideResult> {
+  const parsed = parseItemId(id);
+  const check = parsed ? SOURCES[parsed.kind].check : undefined;
+  if (!parsed || !check) return { ok: false, reason: "gone", message: "That item could not be found." };
+  return check(member, parsed.key, deps, hint);
 }

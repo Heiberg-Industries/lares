@@ -13,10 +13,11 @@
  * An attachment links only to a same-origin path.
  */
 import { useState, useTransition } from "react";
+import { useKeepFresh } from "../lib/use-keep-fresh";
 import { Badge } from "@lares/ui/primitives/badge";
 import { Button } from "@lares/ui/primitives/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
-import { Col, EmptyState, Notice, Row, Rows } from "@lares/ui/patterns";
+import { Col, EmptyState, Notice, Row, Rows, RunStatus } from "@lares/ui/patterns";
 import type { DecideResult, Unreadable, UnreadableKind, WaitingBody, WaitingItem } from "../lib/waiting";
 
 export interface WaitingListProps {
@@ -27,6 +28,8 @@ export interface WaitingListProps {
   readonly selectedRef?: string;
   readonly now: number;
   readonly onDecide: (input: { id: string; actionId: string }) => Promise<DecideResult>;
+  /** Reads again what came of an answer that came back `unconfirmed`. Without it the page does not follow up. */
+  readonly onCheck?: (input: { id: string; callId?: string }) => Promise<DecideResult>;
   /** Said instead of the usual words when nothing is listed. For a person who is not the owner. */
   readonly emptyNote?: string;
 }
@@ -89,9 +92,19 @@ function Body({ part }: { part: WaitingBody }) {
 interface Decided {
   readonly item: WaitingItem;
   readonly result: DecideResult;
+  /** When the answer was sent, on this browser's clock: the follow-up stops after `CONFIRM_FOLLOW_MS`. */
+  readonly at: number;
 }
 
-export function WaitingList({ items, unreadable, selectedRef, now, onDecide, emptyNote }: WaitingListProps) {
+/** How long the page keeps checking an answer the agent has not confirmed. */
+export const CONFIRM_FOLLOW_MS = 10 * 60_000;
+
+/** Still to be confirmed, and still worth asking about. */
+export function following(d: Decided | undefined, now: number): boolean {
+  return Boolean(d && d.result.ok && d.result.unconfirmed && now - d.at < CONFIRM_FOLLOW_MS);
+}
+
+export function WaitingList({ items, unreadable, selectedRef, now, onDecide, onCheck, emptyNote }: WaitingListProps) {
   // A decided item drops out of the server's list on the next render; it stays here, with what came
   // back, until the page is reloaded — so the owner sees the result instead of a vanishing row.
   const [decided, setDecided] = useState<Record<string, Decided>>({});
@@ -102,6 +115,25 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide, emp
   const initial = shown.find((i) => i.ref === selectedRef)?.id ?? shown[0]?.id ?? null;
   const [selectedId, setSelectedId] = useState<string | null>(initial);
   const selected = shown.find((i) => i.id === selectedId) ?? shown[0];
+
+  // An answer the agent has not confirmed yet is asked about again every few seconds, until it is
+  // confirmed, the action failed, or ten minutes have passed (ADR 0031). Sends nothing.
+  const open = Object.values(decided).filter((d) => following(d, Date.now()));
+  useKeepFresh(Boolean(onCheck) && open.length > 0, async () => {
+    if (!onCheck) return;
+    for (const d of open) {
+      let result: DecideResult;
+      const callId = d.result.ok ? d.result.callId : undefined;
+      try { result = await onCheck({ id: d.item.id, ...(callId ? { callId } : {}) }); } catch {
+        // Nothing learned, but the page must still see the time pass, or the ten-minute limit never ends it.
+        setDecided((all) => (all[d.item.id] ? { ...all, [d.item.id]: { ...all[d.item.id]! } } : all));
+        continue;
+      }
+      // A later answer that does not carry the call id keeps the one this item already has.
+      const kept = result.ok && !result.callId && callId ? { ...result, callId } : result;
+      setDecided((all) => (all[d.item.id] ? { ...all, [d.item.id]: { ...all[d.item.id]!, result: kept } } : all));
+    }
+  });
 
   function act(item: WaitingItem, actionId: string) {
     if (busy !== null) return;
@@ -116,7 +148,7 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide, emp
       // Done when it succeeded, was already decided, has gone, or was accepted and then failed:
       // there is nothing left to press. Otherwise the buttons stay, with the reason beside them.
       if (result.ok || result.reason === "decided-elsewhere" || result.reason === "gone" || result.reason === "action-failed") {
-        setDecided((d) => ({ ...d, [item.id]: { item, result } }));
+        setDecided((d) => ({ ...d, [item.id]: { item, result, at: Date.now() } }));
       } else {
         setFailure((f) => ({ ...f, [item.id]: result }));
       }
@@ -126,6 +158,7 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide, emp
 
   const meta = (item: WaitingItem) => `${labelOf(item)} · ${item.agent} · ${item.channel} · ${age(item.createdAt, now)}`;
   const outcome = selected ? decided[selected.id]?.result : undefined;
+  const followed = selected ? decided[selected.id] : undefined;
 
   return (
     <>
@@ -183,7 +216,12 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide, emp
                     {selected.body.map((part, i) => (
                       <Body key={i} part={part} />
                     ))}
-                    {outcome ? (
+                    {outcome && outcome.ok && outcome.unconfirmed ? (
+                      // Approved and being carried out reads as running; an answer not yet taken up, as waiting.
+                      following(followed, Date.now()) && onCheck
+                        ? <RunStatus label="Your answer" state={outcome.outcome === "approved" ? "running" : "waiting"} why={outcome.message} />
+                        : <RunStatus label="Your answer" state={outcome.outcome === "approved" ? "running" : "waiting"} why={`${outcome.message} It has not confirmed it after ten minutes; its reply, when it comes, appears in the conversation this came from.`} />
+                    ) : outcome ? (
                       <Notice tone={outcome.ok ? "success" : outcome.reason === "action-failed" ? "error" : "info"}>{outcome.message}</Notice>
                     ) : (
                       <>

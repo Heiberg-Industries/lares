@@ -36,6 +36,11 @@ const recordSchedulePass = vi.fn(async () => true);
 vi.mock("@lares/agent-kit/schedule-heartbeat", () => ({
   recordSchedulePass,
   recordScheduleTick: async () => true,
+  // The deadline scan's outcome record (ADR 0031): written beside the brief, never in its way.
+  recordRunStarted: async () => true,
+  recordRunFinished: async () => true,
+  recordRunFailed: async () => true,
+  recordRunSkipped: async () => true,
   scheduleKey: (agent: string, schedule: string) => `${agent}/${schedule}`,
   tickKey: (key: string) => `${key}#tick`,
 }));

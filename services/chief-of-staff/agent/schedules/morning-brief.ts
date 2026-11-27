@@ -36,7 +36,10 @@ import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { isGranted } from "@lares/agent-kit/manifest";
 import { thisAgent } from "../../lib/definition.js";
-import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedule-heartbeat";
+import {
+  recordRunFailed, recordRunFinished, recordRunSkipped, recordRunStarted, recordSchedulePass, recordScheduleTick,
+} from "@lares/agent-kit/schedule-heartbeat";
+import { DEADLINE_SCAN_SKIPS, deadlineScanJob } from "@lares/agent-kit/deadline-scan-outcome";
 import { configuredOwnerId, listAliases } from "../../lib/identity-client.js";
 import { ownerId } from "../../lib/principals.js";
 import { alreadySentToday, type InitiationOutcome } from "../../lib/initiation.js";
@@ -55,6 +58,8 @@ import { ownerTz } from "../../lib/owner-clock.js";
 import { homeTzFromEnv } from "@lares/agent-kit/owner-clock";
 import { deferredSince } from "@lares/agent-kit/proactivity";
 import { googleClients, listEnrolledMailboxes } from "../../lib/google.js";
+import { chosenMailbox, noMailbox } from "../../lib/chosen-mailbox.js";
+import { mailboxRefusalSentence } from "../../lib/agent-mailbox.js";
 import { listEventsEverywhere, sourceGapLine } from "../../lib/calendar-fanout.js";
 import { resolveConflicts } from "../../lib/conflict-resolution.js";
 import { dateIn, slotIn } from "../../lib/recurrence.js";
@@ -176,6 +181,8 @@ let warnedNoPrincipal = false;
  * should double whatever they add before deciding it is affordable.
  */
 const OBLIGATION_TIMEOUT_MS = Number(process.env["OBLIGATION_TIMEOUT_MS"]) || 43_000;
+/** The deadline scan's look at the chosen mailbox before the gather: only to say why it is skipped. */
+const MAILBOX_CHECK_TIMEOUT_MS = 10_000;
 
 /**
  * The Slack scan's OWN budget, well under
@@ -863,6 +870,23 @@ async function briefPass(mode: PassMode, c: PassContext): Promise<TestPassResult
   // list; the same reasoning as 's `slackScan.failed`, one layer in.
   let unreadableSources: string[] = [];
   let obligations: Obligation[];
+  // The deadline scan's outcome (`<agent name>/deadline-scan`, ADR 0031), for real passes only: a
+  // test brief is not the day's scan. Recorded beside the work, never in its way: a write that fails
+  // only warns. A mailbox that is missing or unusable is a skip with its reason, said before the
+  // gather tries (and fails) on its own; the gather still runs exactly as before.
+  const scan = mode.kind === "slot" ? { job: deadlineScanJob(loaded.definition.name), agent: loaded.definition.name, found: 0, unsaved: 0, skipped: false } : null;
+  if (scan) {
+    // Bounded like every other read in this pass: a lookup that stalls (no free database connection,
+    // say) must not hold the brief up. Unknown here, the gather below tries and records what happens.
+    const chosen = await withTimeout(chosenMailbox(), MAILBOX_CHECK_TIMEOUT_MS, "morning-brief: mailbox check").catch(() => null);
+    if (chosen && !chosen.ok) {
+      scan.skipped = true;
+      if (noMailbox(chosen)) await recordRunSkipped(pool, scan.job, DEADLINE_SCAN_SKIPS.noMailbox, "No mailbox is chosen for this agent, so there was no mail to scan.", { agent: scan.agent });
+      else await recordRunSkipped(pool, scan.job, DEADLINE_SCAN_SKIPS.mailboxUnusable, `The chosen mailbox cannot be used right now: ${mailboxRefusalSentence(chosen.reason)}.`, { agent: scan.agent });
+    } else {
+      await recordRunStarted(pool, scan.job, { agent: scan.agent, detail: "Scanning mail for due notices." });
+    }
+  }
   try {
     obligations = await withTimeout(
       (async () => {
@@ -927,7 +951,17 @@ async function briefPass(mode: PassMode, c: PassContext): Promise<TestPassResult
             // this line is not it.) The store's own `ON CONFLICT DO NOTHING` makes a
             // re-sighting a no-op, so this runs on every tick without ever re-offering a mail
             // the owner already answered.
-            recordCandidate: (c) => upsertCandidate(pool, { ...c, owner: ownerId() }),
+            recordCandidate: async (c) => {
+              // Every due notice seen this pass, new or already listed: the scan's count. One that
+              // could not be saved is counted apart, so the pass is not recorded as a clean scan.
+              if (scan) scan.found += 1;
+              try {
+                await upsertCandidate(pool, { ...c, owner: ownerId() });
+              } catch (err) {
+                if (scan) scan.unsaved += 1;
+                throw err;
+              }
+            },
             // Slack obligations reach the morning brief ONLY — this is the
             // one and only call site across the three obligation schedules that supplies
             // `slack`. gatherOpenObligations treats a Slack failure as best-effort (caught,
@@ -941,8 +975,14 @@ async function briefPass(mode: PassMode, c: PassContext): Promise<TestPassResult
       OBLIGATION_TIMEOUT_MS,
       "morning-brief: obligations",
     );
+    if (scan && !scan.skipped && scan.unsaved > 0) {
+      await recordRunFailed(pool, scan.job, `Saw ${scan.found} due ${scan.found === 1 ? "notice" : "notices"} in mail, but ${scan.unsaved} could not be saved to the list.`, { agent: scan.agent });
+    } else if (scan && !scan.skipped) {
+      await recordRunFinished(pool, scan.job, { agent: scan.agent, counts: { found: scan.found } });
+    }
   } catch (e) {
     console.error(`morning-brief: could not gather obligations (slot ${slot}) — the brief goes out without them`, e);
+    if (scan && !scan.skipped) await recordRunFailed(pool, scan.job, e instanceof Error ? e.message : String(e), { agent: scan.agent });
     unavailable.push(sourceGapLine("Email", e));
     obligations = [];
   }

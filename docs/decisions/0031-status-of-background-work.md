@@ -1,7 +1,7 @@
 # ADR 0031 — Background work says where it is: one outcome record, one status part, one way to keep a page up to date
 
 **Date:** 2026-11-27
-**Status:** Accepted 2026-11-27, built for Writing style; the other pages follow
+**Status:** Accepted 2026-11-27, built for Writing style; rolled out to Edit agent, Outside tools, Deadlines, an agent's Schedules tab and Reviews
 **Supersedes:** —
 **Amends / reconciles:** nothing. The heartbeat and its monitoring rules (`packages/agent-kit/src/schedule-heartbeat.ts`) are unchanged.
 
@@ -24,6 +24,12 @@
 
 ## Consequences
 
-- Writing style is the first page on it. The other pages that start background work move to it in a later change, one page at a time.
+- Writing style is the first page on it. The rollout that followed moved these to the same part and the same hook:
+  - Edit agent (Apply and Start): Running while the agent restarts, then Finished or Failed with why, read from the keeper's runtime state; a start that is not answering yet is followed for ten minutes (`services/console/lib/agent-apply-status.ts`, `use-agent-runtime.ts`).
+  - Outside tools: Connected only when the keeper says the agent runs the connection as saved; Waiting and Failed with why otherwise (`connectorReach` in `services/console/lib/outside-connector-words.ts`).
+  - Deadlines: the mail scan for due notices records its outcome per agent under `<agent name>/deadline-scan` from the morning brief's mail pass, which is where candidates are written; its reason codes are in `packages/agent-kit/src/deadline-scan-outcome.ts`. Switched off is read from the definition (the morning brief's switch), not recorded.
+  - An agent's Schedules tab: each schedule that is on shows its last run, from its outcome record where it writes one and otherwise from its heartbeat's last pass, which is shared by every agent of the same kind.
+  - Reviews: an answer the agent has not confirmed is read again (sending nothing) until it is confirmed or failed, for ten minutes.
+- Backups did not move: the box's backup scripts write their result only when they end, so "running now" would need a start time they do not record today.
 - A new scheduled job that a person can start or wait for records its outcome with these four calls and names its reason codes in the shared kit.
 - The engine has one application database login for every service, so the chief of staff (writes) and the console (reads) share the ordinary grant on `schedule_run`.

@@ -16,8 +16,10 @@ import { checkOutsideUrl, outsideToolsInEffect } from "@lares/agent-kit/outside-
 import { AgentDetail } from "../../../components/AgentDetail";
 import { getOutsideToolEvidence } from "../../../lib/outside-tools";
 import { liveDangerTools } from "../../../lib/outside-connector-view";
+import { connectApplicationStates } from "../../actions/outside-connect";
 import { fallbackNotes } from "../../../lib/delivery-notes";
 import { agentStatus, getPromptCacheLine } from "../../../lib/agent-detail";
+import { readScheduleLastRuns } from "../../../lib/schedule-runs";
 export const dynamic = "force-dynamic";
 export default async function AgentPage({
   params,
@@ -59,6 +61,10 @@ export default async function AgentPage({
         // Asked only when there is something to show; never throws (each half can be unavailable).
         evidence: saved.outsideTools?.length ? await getOutsideToolEvidence(name) : undefined,
         dangerLive: await liveDangerTools(name, saved.outsideTools ?? []),
+        // Whether each connection reached the agent (the keeper's read), for its badge.
+        applied: saved.outsideTools?.length
+          ? await connectApplicationStates({ agents: [name] }).then((r) => (r.ok ? r.value[name] ?? null : null)).catch(() => null)
+          : undefined,
       }
     : undefined;
   // The delivery grid belongs to agents that start messages on their own (the chief of staff).
@@ -82,6 +88,13 @@ export default async function AgentPage({
   const sessionToken = (await cookies()).get("lares_session")?.value;
   const auditAddress = owner ? await memberAuditAddress(actor.id) : null;
   const providerKey = owner ? sessionToken && auditAddress ? await providerKeyStatusFor(sessionToken, name, auditAddress) : { kind: "unavailable" as const } : undefined;
+  // Each schedule that is on, with its last run: the outcome record where the schedule writes one,
+  // otherwise its heartbeat. Never fails the page: when it cannot be read, the tab shows the switches only.
+  const savedSchedules = saved ? Object.entries(saved.schedules).map(([schedule, s]) => ({ name: schedule, on: s.on })) : [];
+  const lastRuns = saved?.role
+    ? await readScheduleLastRuns({ name, role: saved.role, started: Boolean(agent.startedAt) },
+        savedSchedules.filter((s) => s.on).map((s) => s.name)).catch(() => undefined)
+    : undefined;
   const mailbox = saved?.role === "chief-of-staff" ? await agentMailboxView(actor, name, saved).catch(() => mailboxUnavailableView(name)) : undefined;
   return (
     <Page>
@@ -115,9 +128,7 @@ export default async function AgentPage({
         definition.status === "fulfilled" && definition.value.initial
           ? {
               available: true,
-              value: Object.entries(
-                definition.value.initial.definition.schedules,
-              ).map(([name, s]) => ({ name, on: s.on })),
+              value: savedSchedules.map((s) => ({ ...s, ...(lastRuns ? { lastRun: lastRuns[s.name] ?? null } : {}) })),
             }
           : { available: false }
       }

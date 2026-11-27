@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Notice, Page, PageHeader, StatusBadge } from "@lares/ui/patterns";
+import { Notice, Page, PageHeader, RunStatus, StatusBadge } from "@lares/ui/patterns";
 import { mayUse, requirePage } from "../../../lib/auth";
 import { listConnectors } from "../../actions/outside-connectors";
 import { listAgents } from "../../../lib/agents";
 import { getOutsideToolEvidence } from "../../../lib/outside-tools";
 import { agentUsesByConnector, knownToolNames } from "../../../lib/outside-connector-view";
 import { dangerCount, keyLine } from "../../../lib/outside-tools-words";
-import { authWords, foundSentence, stateTone, stateWords } from "../../../lib/outside-connector-words";
+import { authWords, connectorReach, foundSentence, stateTone, stateWords } from "../../../lib/outside-connector-words";
+import { connectApplicationStates } from "../../actions/outside-connect";
 import { ConnectorAccess } from "../../../components/ConnectorAccess";
 import { ConnectorActions } from "../../../components/ConnectorActions";
 import { DangerZone } from "../../../components/DangerZone";
@@ -30,10 +31,16 @@ export default async function ConnectorPage({ params, searchParams }: { params: 
   const known = await knownToolNames(mine.map(u => u.agent), c.slug);
   const foundKind = (Array.isArray(found) ? found[0] : found) as "none" | "token" | "signin" | undefined;
   const tools = new Set(mine.flatMap(u => u.tools.map(t => t.name))).size;
+  // Connected means the change reached the agent (the keeper's own read), not that an agent has it saved.
+  const applied = mine.length ? await connectApplicationStates({ agents: mine.map(u => u.agent) }) : { ok: true as const, value: {} };
+  const reach = connectorReach(c.slug, mine, applied.ok ? applied.value : null);
   return <Page width="narrow" className="lares-stack">
     <Link href="/outside-tools">← Outside tools</Link>
     <PageHeader title={c.displayName} description={<><span className="mono">{c.url}</span></>}
-      actions={<StatusBadge tone={stateTone(c.state, c.authKind, mine.length)}>{stateWords(c.state, c.authKind, mine.length)}</StatusBadge>} />
+      actions={<StatusBadge tone={stateTone(c.state, c.authKind, mine.length, reach)}>{stateWords(c.state, c.authKind, mine.length, reach)}</StatusBadge>} />
+    {c.authKind !== "signin" && mine.length > 0 && (reach.state === "waiting" || reach.state === "failed") &&
+      <RunStatus label="Whether it reached the agents" state={reach.state} why={reach.why} />}
+    {c.authKind !== "signin" && mine.length > 0 && reach.state === "unknown" && reach.why && <p className="lares-muted">{reach.why}</p>}
     {foundKind && ["none", "token", "signin"].includes(foundKind) && <Notice tone={foundKind === "signin" ? "needs-you" : "success"}>{foundSentence(foundKind)}</Notice>}
     {uses === null && <Notice tone="needs-you">Could not read which agents use this connector, so changes are switched off here. Reload the page to try again.</Notice>}
     <p className="lares-muted">{authWords(c.authKind)} · {tools} tool{tools === 1 ? "" : "s"} · {mine.length} agent{mine.length === 1 ? "" : "s"}{dangerCount(mine) > 0 && <> · <StatusBadge tone="error">{dangerCount(mine)} run{dangerCount(mine) === 1 ? "s" : ""} without asking and change{dangerCount(mine) === 1 ? "s" : ""} something</StatusBadge></>}</p>

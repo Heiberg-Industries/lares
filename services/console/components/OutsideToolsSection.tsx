@@ -1,7 +1,8 @@
 "use client";
 import { useRef, useState } from "react";
 import type { OutsideToolDeclaration } from "@lares/agent-kit/definition";
-import { Notice, StatusBadge, ToolList, ToolRow } from "@lares/ui/patterns";
+import { Notice, RunStatus, StatusBadge, ToolList, ToolRow } from "@lares/ui/patterns";
+import { connectorReach, reachTone, reachWords, type ConnectionApplication } from "../lib/outside-connector-words";
 import { Button } from "@lares/ui/primitives/button";
 import { acceptOutsideDescriptions } from "../app/actions/definition";
 import type { DescribedTool, OutsideToolEvidence, OutsideToolLock } from "../lib/outside-tools";
@@ -111,6 +112,7 @@ export function OutsideToolsSection({
   inEffect,
   evidence,
   dangerLive,
+  applied,
 }: {
   agent: string;
   tools: OutsideToolView[];
@@ -120,8 +122,12 @@ export function OutsideToolsSection({
   evidence?: OutsideToolEvidence;
   /** Per connection, the danger-zone tools whose fingerprint still matches the stored description. Absent: none shown as live. */
   dangerLive?: Record<string, string[]>;
+  /** Per connection, whether it reached this agent (the keeper's read). Absent: not read, so no badge is shown;
+   *  null: it could not be read. */
+  applied?: Record<string, ConnectionApplication> | null;
 }) {
   if (tools.length === 0) return null;
+  const reachOf = (name: string) => connectorReach(name, [{ agent, displayName: "this agent" }], applied ? { [agent]: applied } : null);
   const locks = evidence?.locks;
   return (
     <section className="lares-surface" aria-label="Outside tools">
@@ -145,6 +151,13 @@ export function OutsideToolsSection({
           return (
             <li key={t.name}>
               <strong>{t.name}</strong>
+              {applied !== undefined && (() => {
+                const reach = reachOf(t.name);
+                return <>
+                  {" "}<StatusBadge tone={reachTone(reach)}>{reachWords(reach)}</StatusBadge>
+                  {(reach.state === "waiting" || reach.state === "failed") && <RunStatus label={`Whether ${t.name} reached this agent`} state={reach.state} why={reach.why} />}
+                </>;
+              })()}
               <p className="lares-muted">{t.description}</p>
               <p>Address: <span className="mono">{t.host ?? t.url}</span></p>
               <p>
