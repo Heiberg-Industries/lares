@@ -179,4 +179,23 @@ describe("voice-learn: what a re-learn request becomes", () => {
     expect(await pending()).toBe(false);
     expect(await outcome()).toBeNull();
   }, 30_000);
+
+  it("switched off here while another agent takes the request: the other agent's run is not overwritten with a skip", async () => {
+    voiceLearnOn = false;
+    // The other agent claims and records its run in a transaction that is still open while this
+    // agent looks: this agent must wait for it, see the request gone, and write nothing.
+    const other = await pool.connect();
+    try {
+      await other.query("BEGIN");
+      await other.query("UPDATE voice_profile SET relearn_requested_at = NULL WHERE id = 'default'");
+      await other.query("INSERT INTO schedule_run (job, agent, state) VALUES ('chief-of-staff/voice-learn', 'other-agent', 'running')");
+      const tick = runOnce();
+      await new Promise((r) => setTimeout(r, 750));
+      await other.query("COMMIT");
+      await tick;
+    } finally {
+      other.release();
+    }
+    expect(await outcome()).toMatchObject({ state: "running", agent: "other-agent" });
+  }, 30_000);
 });

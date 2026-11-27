@@ -261,14 +261,36 @@ let offWarning = "";
 async function answerRequestWhileOff(definition: AgentDefinition): Promise<void> {
   if (scheduleEnabled(definition, "voice-learn")) return;
   try {
-    const requestedAt = await pendingRequestAt();
-    if (!requestedAt) return;
+    // A cheap look first, so a quiet minute opens no transaction.
+    if (!(await pendingRequestAt())) return;
     const [reason, sentence] = scheduleGate()
       ? [VOICE_LEARN_SKIPS.switchedOff, "Voice Learn is switched off for this agent, so it did not run."]
       : [VOICE_LEARN_SKIPS.schedulesOff, "Schedules are switched off on this server, so it did not run."];
-    const last = await readScheduleRun(getPool(), HEARTBEAT_KEY);
-    if (last?.state === "skipped" && last.reason === reason && last.updatedAt >= requestedAt) return;
-    await recordRunSkipped(getPool(), HEARTBEAT_KEY, reason, sentence, { agent: definition.name });
+    // Decided under the request row's lock: another agent that has the schedule on claims through the
+    // same row (`claimAndRecordStart`), so it either went first (the request is gone, and its run is
+    // not overwritten) or waits until this skip is written and then records its run over it.
+    const client = await getPool().connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query<{ relearn_requested_at: Date | string | null }>(
+        `SELECT relearn_requested_at FROM voice_profile WHERE id = 'default' FOR UPDATE`,
+      );
+      const at = rows[0]?.relearn_requested_at;
+      if (!at) { await client.query("ROLLBACK"); return; }
+      const requestedAt = new Date(at);
+      const last = await readScheduleRun(client, HEARTBEAT_KEY);
+      if (last?.state === "skipped" && last.reason === reason && last.updatedAt >= requestedAt) { await client.query("ROLLBACK"); return; }
+      await client.query("SAVEPOINT run_outcome");
+      if (!(await recordRunSkipped(client, HEARTBEAT_KEY, reason, sentence, { agent: definition.name }))) {
+        await client.query("ROLLBACK TO SAVEPOINT run_outcome");
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
     offWarning = "";
   } catch (err) {
     // Said once per different failure, not every minute: a dark box may have no database at all.
