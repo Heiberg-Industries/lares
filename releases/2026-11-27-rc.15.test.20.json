@@ -1,0 +1,31 @@
+{
+  "release": "2026-11-27-rc.15.test.20",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:5d10e84df100483538e3dd13dee8da28581457ae6425d6816bbc73872c4354a0",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:4b04a39956e932d27445491d956c6fda9326b9d92241e128339cce34feafa53c",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:ad8a78cba6460d7c04559d22ce2a1c6241a52bdc3bebdc486f1092fcd2630344",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:90538fe6083369a0fb2739472bda4f6b9a1ada01e857b67792f51b1e6af0c22c",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:00686b414ac50412dba3f5cce7610c7133a7161cc412d32b4047cc1732ed5d98",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:a06ba4bd409c90c5aef989d79f7039012408ada6a3e185364aac95cffdb5b58b",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:331f0d9676a8df57f1de38565df73f1cea4564af61831a680b89d817744f5a7e"
+  },
+  "sources": {
+    "console": "4ae92750a1b4439531af1c86a8bf07bf3912c5e2",
+    "lares-keeper": "4ae92750a1b4439531af1c86a8bf07bf3912c5e2",
+    "lares-egress-proxy": "4ae92750a1b4439531af1c86a8bf07bf3912c5e2",
+    "lares-firewall-helper": "4ae92750a1b4439531af1c86a8bf07bf3912c5e2",
+    "chief-of-staff": "4ae92750a1b4439531af1c86a8bf07bf3912c5e2",
+    "creative": "4ae92750a1b4439531af1c86a8bf07bf3912c5e2",
+    "sync-jobs": "4ae92750a1b4439531af1c86a8bf07bf3912c5e2"
+  },
+  "migrations": {
+    "box": "040_admin_role.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "TO BE WRITTEN BY A PERSON: replace this line with one sentence for each change an operator updating from the previous release must know, or delete it if there is none."
+  ]
+}
