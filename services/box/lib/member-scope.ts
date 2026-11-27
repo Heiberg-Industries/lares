@@ -406,6 +406,12 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     createdBy: `${BOX}/001_baseline.sql`,
     reason: "one row per schedule name; liveness only.",
   },
+  {
+    table: "schedule_run",
+    scope: "operational",
+    createdBy: `${BOX}/041_schedule_run.sql`,
+    reason: "one row per scheduled job: its last outcome (running, finished, failed or skipped), a reason code, a plain sentence or an error message, whole-number counts and the agent's definition name; no person column and no message text.",
+  },
 
   {
     table: "proactivity_settings",

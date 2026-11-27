@@ -1,6 +1,7 @@
 import React, { type ReactNode } from "react";
 import { Check, LoaderCircle } from "./icons";
 import { Alert } from "./primitives/alert";
+import { Badge } from "./primitives/badge";
 
 export function Mark() {
   return (
@@ -304,6 +305,60 @@ export function StatusBadge({
       <span aria-hidden="true" />
       {children}
     </span>
+  );
+}
+/** Where a piece of background work is: asked for, waiting, running, finished, failed, or skipped. */
+export type RunState = "requested" | "waiting" | "running" | "finished" | "failed" | "skipped";
+
+/** Each state's word, its badge colour, its sentence when nothing more is known, and whether the work is
+    still on its way (a page keeps itself up to date while it is). The words match the console's state
+    vocabulary (`services/console/lib/state-colours.ts`) where the two share a state. */
+export const RUN_STATES: Record<RunState, {
+  label: string;
+  variant: "info" | "warning" | "success" | "error" | "neutral";
+  sentence: string;
+  active: boolean;
+}> = {
+  requested: { label: "Requested", variant: "info", sentence: "Asked for. It starts within a minute or two.", active: true },
+  waiting: { label: "Waiting", variant: "warning", sentence: "Not started yet.", active: true },
+  running: { label: "Running", variant: "info", sentence: "Working on it now.", active: true },
+  finished: { label: "Finished", variant: "success", sentence: "Finished.", active: false },
+  failed: { label: "Failed", variant: "error", sentence: "It did not finish.", active: false },
+  skipped: { label: "Skipped", variant: "warning", sentence: "It did not run.", active: false },
+};
+
+/** True while the work is asked for, waiting or running: the states a page keeps polling for. */
+export function runStateIsActive(state: RunState | null | undefined): boolean {
+  return state ? RUN_STATES[state].active : false;
+}
+
+/** What `RunStatus` shows. Everything but `state` is optional; each is already written for people. */
+export interface RunStatusProps {
+  state: RunState;
+  /** When it finished, failed or was skipped, already formatted ("today at 14:03"). */
+  when?: string;
+  /** Why it failed or was skipped, or what is happening now, as a plain sentence. */
+  why?: string;
+  /** The switch or setting that fixes a skip (or a failure), as a link. */
+  fix?: { href: string; label: string };
+  /** What the work is, for screen readers ("Learning from Sent mail"). */
+  label?: string;
+}
+
+/** One line that says where a piece of background work is, in plain words: a badge with the state, a
+    sentence, and, when something must be switched on or chosen first, a link to where that is done. */
+export function RunStatus({ state, when, why, fix, label }: RunStatusProps) {
+  const s = RUN_STATES[state];
+  const lead = when && (state === "finished" || state === "failed" || state === "skipped")
+    ? { finished: `Finished ${when}.`, failed: `Failed ${when}.`, skipped: `Did not run ${when}.` }[state]
+    : why && (state === "failed" || state === "skipped") ? "" : s.sentence;
+  const text = [lead, why].filter(Boolean).join(" ");
+  return (
+    <div className="lares-run-status" data-state={state} role="status" aria-live="polite" aria-label={label ? `${label}: ${s.label}` : undefined}>
+      <Badge variant={s.variant}>{s.label}</Badge>
+      {text && <span className="lares-run-status-text">{text}</span>}
+      {fix && <a className="lares-run-status-fix" href={fix.href}>{fix.label}</a>}
+    </div>
   );
 }
 /** A labelled control. The label wraps the control, so clicking the words focuses it. */

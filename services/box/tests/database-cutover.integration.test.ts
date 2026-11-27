@@ -222,6 +222,8 @@ it('an update whose migration adds a table gives the engine logins that table\'s
     // columns and constraints to an existing table, and every statement in it can run again, so
     // its columns stay and only its ledger row goes.
     // 040 only swaps a check on users for a wider one and can run again, so only its ledger row goes.
+    await engine.query('DROP TABLE schedule_run');
+    await engine.query("DELETE FROM schema_migrations WHERE filename='041_schedule_run.sql'");
     await engine.query("DELETE FROM schema_migrations WHERE filename='040_admin_role.sql'");
     await engine.query('DROP TABLE outside_connectors');
     await engine.query("DELETE FROM schema_migrations WHERE filename='039_outside_connectors.sql'");

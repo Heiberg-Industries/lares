@@ -23,7 +23,10 @@ vi.mock("@lares/agent-kit/db", () => ({
   }),
 }));
 let agentMailboxMock: ReturnType<typeof vi.fn>;
-vi.mock("../lib/agent-mailbox.js", () => ({ agentMailbox: (...args: unknown[]) => agentMailboxMock(...args) }));
+vi.mock("../lib/agent-mailbox.js", () => ({
+  agentMailbox: (...args: unknown[]) => agentMailboxMock(...args),
+  mailboxRefusalSentence: (reason: string) => `refused (${reason})`,
+}));
 vi.mock("../lib/voice-learn.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/voice-learn.js")>();
   return { ...actual, runVoiceLearn: (...args: unknown[]) => runVoiceLearnMock(...args) };
@@ -104,6 +107,59 @@ describe("learnAllMailboxes", () => {
     process.env["EMBED_MODEL"] = "custom-embed";
     await learnAllMailboxes();
     expect(embedMock.mock.calls[1]![0]).toBe("custom-embed");
+  });
+});
+
+/** What `learnAllMailboxes` leaves as the job's last outcome (the console's Writing style page reads it). */
+describe("learnAllMailboxes records the job's outcome with its reason", () => {
+  beforeEach(() => { poolQueries.length = 0; });
+  const outcomes = () => poolQueries
+    .filter((q) => /INSERT INTO schedule_run/.test(q.sql))
+    .map((q) => ({ job: q.params?.[0], agent: q.params?.[1], state: q.params?.[2], reason: q.params?.[3], detail: q.params?.[4], counts: JSON.parse(String(q.params?.[5])) }));
+
+  it("running, then finished with the kept and dropped counts", async () => {
+    runVoiceLearnMock = vi.fn(async () => ({ kept: 7, dropped: 2 }));
+    await learnAllMailboxes({ agent: "example-agent" });
+    expect(outcomes().map((o) => o.state)).toEqual(["running", "finished"]);
+    expect(outcomes()[1]).toMatchObject({ job: "chief-of-staff/voice-learn", agent: "example-agent", reason: "", counts: { kept: 7, dropped: 2 } });
+  });
+
+  it("never writes the mailbox address into the outcome", async () => {
+    await learnAllMailboxes();
+    expect(JSON.stringify(outcomes())).not.toContain("chosen@example.com");
+  });
+
+  it("failed with the message when the mailbox fails", async () => {
+    runVoiceLearnMock = vi.fn(async () => { throw new Error("gateway 500"); });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await learnAllMailboxes();
+    expect(outcomes().at(-1)).toMatchObject({ state: "failed", detail: "gateway 500" });
+  });
+
+  it("skipped: no mailbox chosen", async () => {
+    agentMailboxMock = vi.fn(async () => ({ ok: false, reason: "none" }));
+    await learnAllMailboxes();
+    expect(outcomes()).toEqual([expect.objectContaining({ state: "skipped", reason: "no-mailbox" })]);
+  });
+
+  it("skipped: the chosen mailbox cannot be used, with the plain reason", async () => {
+    agentMailboxMock = vi.fn(async () => ({ ok: false, reason: "account-not-ok" }));
+    await learnAllMailboxes();
+    expect(outcomes()).toEqual([expect.objectContaining({ state: "skipped", reason: "mailbox-unusable", detail: "The chosen mailbox cannot be used right now: refused (account-not-ok)." })]);
+  });
+
+  it("skipped: no model for comparing texts", async () => {
+    embedMock = vi.fn(async () => { throw new Error("no such model"); });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await learnAllMailboxes();
+    expect(outcomes()).toEqual([expect.objectContaining({ state: "skipped", reason: "no-compare-model" })]);
+    expect(runVoiceLearnMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the same job key and reason codes as the console", async () => {
+    const kit = await import("@lares/agent-kit/voice-learn-outcome");
+    const schedule = await import("../agent/schedules/voice-learn.js");
+    expect(kit.VOICE_LEARN_JOB).toBe(schedule.HEARTBEAT_KEY);
   });
 });
 
