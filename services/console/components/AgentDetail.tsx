@@ -30,6 +30,7 @@ import type { OutsideToolEvidence } from "../lib/outside-tools";
 import type { AgentStatus } from "../lib/agent-detail";
 import { scheduleExplanation, scheduleLabel } from "../lib/schedule-labels";
 import type { ScheduleLastRun } from "../lib/schedule-runs";
+import { RefreshWhileRunning } from "./RefreshWhileRunning";
 import styles from "./AgentDetail.module.css";
 
 // One badge and one sentence per status. "Running" is only said when the server reports the agent as started and answering.
@@ -278,6 +279,8 @@ export function AgentDetail({
           )}
         </TabsContent>
         <TabsContent value="schedules" className="lares-stack">
+          {/* A schedule that is running now: the page follows it until its run is recorded as done. */}
+          {schedules.available && schedules.value.some((s) => s.on && s.lastRun?.state === "running") && <RefreshWhileRunning active />}
           <Card>
             <CardHeader>
               <CardTitle role="heading" aria-level={2}>Recurring work</CardTitle>

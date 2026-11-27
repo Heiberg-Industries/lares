@@ -8,6 +8,8 @@ vi.mock("../app/actions/definition", () => ({ acceptOutsideDescriptions: vi.fn()
 vi.mock("../app/actions/autonomy", () => ({ setAutonomy: vi.fn() }));
 vi.mock("../app/actions/delivery", () => ({ saveDelivery: vi.fn() }));
 vi.mock("../lib/db", () => ({ pool: { query: vi.fn() } }));
+const refresh = vi.hoisted(() => vi.fn());
+vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh, push: vi.fn() }) }));
 import type { ScheduleRunRow } from "@lares/agent-kit/schedule-heartbeat";
 import { AgentDetail } from "../components/AgentDetail";
 import type { AgentFolder } from "../lib/agents";
@@ -90,6 +92,17 @@ describe("the Schedules tab", () => {
     expect(html).not.toContain("On means the setting is saved.");
     expect(html).toContain("Each schedule that is on shows when it last ran, from what it recorded.");
   });
+  // Real time: the page asks again after its own five seconds (`useKeepFresh`).
+  it("a schedule that is running keeps the page up to date until it is not", { timeout: 15_000 }, async () => {
+    refresh.mockClear();
+    render(<AgentDetail owner agent={agent} board={{ available: true, value: [] }} events={{ available: false }} schedules={{ available: true, value: [
+      { name: "voice-learn", on: true, lastRun: { state: "running" } },
+    ] }} />);
+    await userEvent.click(screen.getByRole("tab", { name: "Schedules" }));
+    expect(document.body.innerHTML).toContain('data-state="running"');
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalled(), { timeout: 7_000 });
+  });
+
   it("keeps the caveat when the runs could not be read", async () => {
     render(<AgentDetail owner agent={agent} board={{ available: true, value: [] }} events={{ available: false }} schedules={{ available: true, value: [{ name: "digest", on: true }] }} />);
     await userEvent.click(screen.getByRole("tab", { name: "Schedules" }));
