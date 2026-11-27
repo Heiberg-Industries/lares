@@ -355,7 +355,9 @@ async function testBrief(page, kind) {
       save();
     }
     if (now && await button.isEnabled().catch(() => false)) {
-      seen.final = now;
+      // The sentence was read before the button: the page may have moved on in between, so its final word is read again.
+      seen.final = (await said()) || now;
+      if (seen.final !== last) seen.sentences.push({ at: new Date().toISOString(), said: seen.final });
       break;
     }
     if (Date.now() > deadline) break;
