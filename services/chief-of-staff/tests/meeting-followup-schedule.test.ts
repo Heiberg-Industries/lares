@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { finishedCounts, makeFollowupTick, recordSkipOnce, skipWithoutMeetingsDatabase, type FollowupDeps } from "../agent/schedules/meeting-followup.js";
+import { finishedCounts, makeFollowupTick, notionKeyDelivered, recordSkipOnce, skipWithoutMeetingsDatabase, type FollowupDeps } from "../agent/schedules/meeting-followup.js";
 import { MEETING_FOLLOWUP_SKIPS, meetingFollowupJob } from "@lares/agent-kit/meeting-followup-outcome";
 import { hashSummaryBlock } from "../lib/meeting-followup.js";
 
@@ -369,12 +369,19 @@ describe("what a pass records for the Meetings page", () => {
     });
     const res = await makeFollowupTick(d.impl).tick(NOW);
     expect(res).toMatchObject({ queued: 1, sent: 1, waitingForSummary: 2 });
-    expect(finishedCounts(res)).toEqual({ sent: 1, waitingForApproval: 0, waitingForSummary: 2, heldBack: 0, failed: 0 });
+    expect(finishedCounts(res, 4)).toEqual({ sent: 1, waitingForApproval: 4, waitingForSummary: 2, heldBack: 0, failed: 0 });
   });
 
-  it("a card waiting for approval is counted as waiting, not as sent", async () => {
+  it("a card waiting for approval is not counted as sent; the waiting count is the store's, not this pass's", async () => {
     const res = await makeFollowupTick(deps().impl).tick(NOW);
-    expect(finishedCounts(res)).toMatchObject({ sent: 0, waitingForApproval: 1 });
+    expect(finishedCounts(res, 3)).toMatchObject({ sent: 0, waitingForApproval: 3 });
+  });
+
+  it("an agent given no Notion key is told apart from one that has one", () => {
+    expect(notionKeyDelivered({})).toBe(false);
+    expect(notionKeyDelivered({ NOTION_TOKEN_FILE: " " })).toBe(false);
+    expect(notionKeyDelivered({ NOTION_TOKEN_FILE: "/run/secrets/example" })).toBe(true);
+    expect(notionKeyDelivered({ NOTION_TOKEN: "x" })).toBe(true);
   });
 
   it("records a skip once per reason under the agent's own key, and again once the reason changes", async () => {

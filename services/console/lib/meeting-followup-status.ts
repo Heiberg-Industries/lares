@@ -38,6 +38,7 @@ const recordAgent = (r: ScheduleRunRow): string => r.job.slice(0, r.job.indexOf(
 export function countsSentence(counts: Record<string, number>): string {
   const parts: string[] = [];
   if (counts.sent) parts.push(`${plural(counts.sent, "follow-up", "follow-ups")} sent`);
+  // Every card still out, not only this pass's (the schedule reads them from its store).
   if (counts.waitingForApproval) parts.push(`${plural(counts.waitingForApproval, "follow-up", "follow-ups")} waiting for your approval`);
   if (counts.waitingForSummary) parts.push(`${plural(counts.waitingForSummary, "meeting", "meetings")} waiting for a summary`);
   if (counts.heldBack) parts.push(`${plural(counts.heldBack, "follow-up", "follow-ups")} held back for now (quiet hours or a daily limit)`);
@@ -68,6 +69,8 @@ export function followupStatus(runs: readonly ScheduleRunRow[], agents: readonly
       return { state: "skipped", when, why: `Meeting follow-ups are switched off for ${named}.`, ...(agentPage ? { fix: { href: `${agentPage}/edit`, label: "Switch them on in Edit agent" } } : {}), active: false };
     case MEETING_FOLLOWUP_SKIPS.noDelivery:
       return { state: "skipped", when, why: `${named[0]!.toUpperCase()}${named.slice(1)} has nowhere to send follow-ups: the chat it uses is not connected.`, ...(agentPage ? { fix: { href: agentPage, label: "Open the agent" } } : {}), active: false };
+    case MEETING_FOLLOWUP_SKIPS.noNotion:
+      return { state: "skipped", when, why: `${named[0]!.toUpperCase()}${named.slice(1)} may not use Notion, so it cannot read the meeting notes.`, fix: { href: "/integrations/notion", label: "Switch it on on the Notion page" }, active: false };
     case MEETING_FOLLOWUP_SKIPS.noMeetingsDatabase:
       return { state: "skipped", when, why: "No meetings database is chosen yet. Choose one above.", active: false };
     default:

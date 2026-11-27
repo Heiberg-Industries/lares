@@ -29,6 +29,8 @@ export const MEETING_FOLLOWUP_SKIPS = {
   noDelivery: "no-delivery",
   /** No meetings database is chosen on the Meetings page. */
   noMeetingsDatabase: "no-meetings-database",
+  /** The agent may not use Notion (switched off on the Notion page), so it has no key to read with. */
+  noNotion: "no-notion",
 } as const;
 
 export type MeetingFollowupSkip = (typeof MEETING_FOLLOWUP_SKIPS)[keyof typeof MEETING_FOLLOWUP_SKIPS];
@@ -38,7 +40,7 @@ export type MeetingFollowupSkip = (typeof MEETING_FOLLOWUP_SKIPS)[keyof typeof M
 export interface MeetingFollowupCounts {
   /** Follow-ups sent without asking (a series the owner let send on its own). */
   sent?: number;
-  /** Follow-ups drafted and waiting for the owner's approval. */
+  /** Follow-ups with a card out that nobody has answered yet (from the last two days), not only this pass's. */
   waitingForApproval?: number;
   /** Recent meetings whose notes have no summary (or no attendees) yet. */
   waitingForSummary?: number;

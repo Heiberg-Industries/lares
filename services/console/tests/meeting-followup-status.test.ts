@@ -37,6 +37,7 @@ describe("the follow-up status line", () => {
     [MEETING_FOLLOWUP_SKIPS.switchedOff, "Meeting follow-ups are switched off for Ada.", "/agents/chief/edit"],
     [MEETING_FOLLOWUP_SKIPS.noDelivery, "Ada has nowhere to send follow-ups", "/agents/chief"],
     [MEETING_FOLLOWUP_SKIPS.noMeetingsDatabase, "No meetings database is chosen yet.", undefined],
+    [MEETING_FOLLOWUP_SKIPS.noNotion, "Ada may not use Notion, so it cannot read the meeting notes.", "/integrations/notion"],
   ])("a skip (%s) says why, and links to what fixes it", (reason, why, href) => {
     const s = followupStatus([run({ state: "skipped", reason, detail: "the schedule's own sentence", startedAt: null })], one, NOW, TZ)!;
     expect(s.state).toBe("skipped"); expect(s.why).toContain(why); expect(s.fix?.href).toBe(href);

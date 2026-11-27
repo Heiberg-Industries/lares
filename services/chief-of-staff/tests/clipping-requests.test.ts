@@ -15,7 +15,7 @@ import type { Pool } from "pg";
 import { quietPool } from "./helpers/quiet-pool.js";
 import { DATABASE_ID, fakeNotion, memInbox, mkPage } from "./helpers/fake-notion.js";
 import {
-  claimRequest, drainRequests, failStaleClaims, finishRequest, runRequest, CLAIM_STALE_MS,
+  claimRequest, drainRequests, failStaleClaims, finishRequest, runRequest, CLAIM_STALE_MS, HOLD_BACK_WITHOUT_KEY_MS,
   type RequestKind,
 } from "../lib/clipping/requests.js";
 import { parseDatabaseRef, type KeyState } from "../lib/clipping/notion-reader.js";
@@ -66,6 +66,8 @@ async function enqueue(kind: RequestKind, params: Record<string, unknown> = {}):
 }
 async function answer(kind: RequestKind, params: Record<string, unknown> = {}, d = deps()) {
   const id = await enqueue(kind, params);
+  // Older than the hold-back an agent with no key keeps, so every agent answers it here.
+  await db.query(`UPDATE clipping_requests SET created_at = now() - interval '3 minutes' WHERE id = $1`, [id]);
   await drainRequests(d);
   return (await db.query(`SELECT * FROM clipping_requests WHERE id = $1`, [id])).rows[0];
 }
@@ -228,6 +230,18 @@ describe("meetings-database (the Meetings page's lookup)", () => {
     expect(bad).toMatchObject({ status: "failed", outcome: "schema-mismatch", result: {} });
     const unshared = await answer("meetings-database", { link: "99999222-3333-4444-5555-666677778888" });
     expect(unshared).toMatchObject({ status: "failed", outcome: "not-shared" });
+  });
+
+  it("an agent with no Notion key leaves a fresh request for one that has the key, and answers it once it has waited", async () => {
+    const id = await enqueue("meetings-database", { link: DATABASE_ID });
+    expect(await drainRequests(deps({ key: { kind: "none" } }))).toBe(0);
+    expect((await db.query("SELECT status FROM clipping_requests WHERE id = $1", [id])).rows[0].status).toBe("pending");
+    expect(await drainRequests(deps())).toBe(1);
+    expect((await db.query("SELECT status FROM clipping_requests WHERE id = $1", [id])).rows[0].status).toBe("done");
+    const late = await enqueue("meetings-database", { link: DATABASE_ID });
+    await db.query(`UPDATE clipping_requests SET created_at = now() - make_interval(secs => $2) WHERE id = $1`, [late, HOLD_BACK_WITHOUT_KEY_MS / 1000 + 1]);
+    expect(await drainRequests(deps({ key: { kind: "none" } }))).toBe(1);
+    expect((await db.query("SELECT outcome FROM clipping_requests WHERE id = $1", [late])).rows[0].outcome).toBe("not-configured");
   });
 
   it("with no Notion key, fails as not set up, which the page turns into its own sentence and link", async () => {

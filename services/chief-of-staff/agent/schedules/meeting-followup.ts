@@ -177,6 +177,7 @@ import {
   recordSeriesKey as storeRecordSeriesKey,
   getOutcome as storeGetOutcome,
   pruneOldFollowups,
+  countWaitingForApproval,
   lastRecipientsFingerprint,
   fingerprintRecipients,
   MAX_ATTEMPTS,
@@ -702,6 +703,12 @@ function meetingsDataSourceId(): string {
   const id = process.env["NOTION_MEETINGS_DATA_SOURCE_ID"];
   if (!id) throw new Error("meeting-followup: NOTION_MEETINGS_DATA_SOURCE_ID is not set");
   return id;
+}
+
+/** Whether this agent is given a Notion key at all (a file path or a value). Reads nothing from disk;
+ *  `readNotionToken` below still fails loudly if a delivered file cannot be read. */
+export function notionKeyDelivered(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !!(env["NOTION_TOKEN_FILE"]?.trim() || env["NOTION_TOKEN"]?.trim());
 }
 
 /** `<NAME>_FILE` (Docker secret) preferred over `<NAME>` — same convention as
@@ -1393,11 +1400,14 @@ export async function recordSkipOnce(
   }
 }
 
-/** The counts a finished pass records, from the tick's own result. Pure. */
-export function finishedCounts(r: FollowupTickResult): Required<MeetingFollowupCounts> {
+/** The counts a finished pass records. `waitingForApproval` is every card still out (read from the
+ *  store, `countWaitingForApproval`), not only the ones this pass sent: an unchanged page is not
+ *  claimed again, so a per-pass count would read zero on the next pass while the card still waits.
+ *  The rest are this pass's own. Pure. */
+export function finishedCounts(r: FollowupTickResult, waitingForApproval: number): Required<MeetingFollowupCounts> {
   return {
     sent: r.sent,
-    waitingForApproval: Math.max(0, r.queued - r.sent),
+    waitingForApproval,
     waitingForSummary: r.waitingForSummary,
     heldBack: r.held,
     failed: r.errored,
@@ -1423,6 +1433,14 @@ export default defineSchedule({
       logSlackNotConnected("meeting-followup");
       await recordSkipOnce(getPool, agent, MEETING_FOLLOWUP_SKIPS.noDelivery,
         "There is nowhere to send follow-ups: the agent's chosen door is not connected.");
+      return;
+    }
+
+    // An agent that may not use Notion (switched off under "Which agents may use Notion") is given no
+    // key: it has nothing to read the notes with, so it skips quietly instead of failing every pass.
+    if (!notionKeyDelivered()) {
+      await recordSkipOnce(getPool, agent, MEETING_FOLLOWUP_SKIPS.noNotion,
+        "This agent may not use Notion, so it cannot read the meeting notes.");
       return;
     }
 
@@ -1475,7 +1493,11 @@ export default defineSchedule({
       // Once per tick, after the loop.
       await pruneOldFollowups(pool);
       await recordSchedulePass(pool, HEARTBEAT_KEY);
-      await recordRunFinished(pool, job, { agent, counts: { ...finishedCounts(result) } });
+      const waiting = await countWaitingForApproval(pool, FOLLOWUP_MAX_AGE_DAYS).catch((err) => {
+        console.error("meeting-followup: could not count the cards waiting for approval", err);
+        return Math.max(0, result.queued - result.sent);
+      });
+      await recordRunFinished(pool, job, { agent, counts: { ...finishedCounts(result, waiting) } });
     } catch (err) {
       console.error("meeting-followup: tick failed", err);
       skipMemo.last = null;

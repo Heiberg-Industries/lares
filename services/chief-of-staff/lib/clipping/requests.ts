@@ -60,13 +60,21 @@ export async function failStaleClaims(db: Queryable, olderThanMs = CLAIM_STALE_M
   return rowCount ?? 0;
 }
 
-/** Take the oldest pending request. Two workers never get the same one. */
-export async function claimRequest(db: Queryable): Promise<ClippingRequest | null> {
+/** An agent with no Notion key leaves a request this long, so an agent that has the key (one switched
+ *  on under "Which agents may use Notion") answers it first. The schedule looks every minute, so this is
+ *  two of its passes. After that the keyless agent answers it with "not set up", which says what to do,
+ *  instead of letting it sit until it reads as not picked up. */
+export const HOLD_BACK_WITHOUT_KEY_MS = 2 * 60_000;
+
+/** Take the oldest pending request at least `minAgeMs` old. Two workers never get the same one. */
+export async function claimRequest(db: Queryable, minAgeMs = 0): Promise<ClippingRequest | null> {
   const { rows } = await db.query(
     `UPDATE clipping_requests SET status = 'claimed', claimed_at = now()
       WHERE id = (SELECT id FROM clipping_requests WHERE status = 'pending'
+                     AND created_at <= now() - make_interval(secs => $1)
                    ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 1)
       RETURNING id, kind, params`,
+    [minAgeMs / 1000],
   );
   const r = rows[0] as { id: string; kind: RequestKind; params: unknown } | undefined;
   if (!r) return null;
@@ -355,12 +363,15 @@ export async function runRequest(deps: RequestDeps, req: ClippingRequest): Promi
   }
 }
 
-/** Answer up to `max` pending requests, oldest first. Returns how many were answered. */
+/** Answer up to `max` pending requests, oldest first. Returns how many were answered. An agent with no
+ *  Notion key holds back (`HOLD_BACK_WITHOUT_KEY_MS`), so with several chief-of-staff agents the one
+ *  that may use Notion answers. */
 export async function drainRequests(deps: RequestDeps, max = MAX_PER_TICK): Promise<number> {
   await failStaleClaims(deps.db);
+  const holdBack = deps.token().kind === "key" ? 0 : HOLD_BACK_WITHOUT_KEY_MS;
   let handled = 0;
   while (handled < max) {
-    const req = await claimRequest(deps.db);
+    const req = await claimRequest(deps.db, holdBack);
     if (!req) break;
     handled++;
     await finishRequest(deps.db, req.id, await runRequest(deps, req));
