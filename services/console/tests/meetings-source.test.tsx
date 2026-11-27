@@ -98,6 +98,19 @@ it("stops reading meeting notes when asked, by saving the setting empty", async 
   await waitFor(() => expect(document.body.textContent).toContain("no meetings database is chosen now"));
 });
 
+it("after a reload, still offers the other tables of a database whose one table is in use, choosing another by default", async () => {
+  vi.mocked(setMeetingsSource).mockResolvedValue({ ok: true, result: { value: "ds-2", restarted: [], waiting: [], stopped: [] } } as never);
+  const two = request({ result: { databaseId: "db", dataSources: [{ id: "ds-1", name: "Notes" }, { id: "ds-2", name: "Meetings" }] } });
+  show({ view: view({ value: "ds-1", from: "console" }), initialLookup: lookup(two) });
+  expect((screen.getByLabelText(/more than one table/) as HTMLSelectElement).value).toBe("ds-2");
+  fireEvent.click(screen.getByRole("button", { name: "Use this database" }));
+  await waitFor(() => expect(setMeetingsSource).toHaveBeenCalledWith({ dataSource: "ds-2" }));
+  cleanup();
+  // A lookup that found only the table already in use is not offered again.
+  show({ view: view({ value: "ds-1", from: "console" }), initialLookup: lookup(request({ result: { databaseId: "db", dataSources: [{ id: "ds-1", name: "Notes" }] } })) });
+  expect(screen.queryByRole("button", { name: "Use this database" })).toBeNull();
+});
+
 it("keeps Stop reading meeting notes while a lookup found another database that was not chosen", () => {
   show({ view: view({ value: "ds-old", from: "console" }), initialLookup: lookup(request()) });
   expect(screen.getByRole("button", { name: "Use this database" })).toBeTruthy();

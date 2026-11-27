@@ -108,8 +108,11 @@ export function MeetingsSourceControl({ view, initialLookup, notion, names = {},
   const done = !lookup.unavailable && lookup.request?.status === "done" ? lookup.request : null;
   const found = done && isFound(done.result) ? done.result : null;
   // A finished lookup is offered when it was asked for here, or when it found something other than the saved one.
-  const offer = found && (asked || !found.dataSources.some((d) => d.id.replaceAll("-", "") === current?.replaceAll("-", ""))) ? found : null;
-  const picked = offer ? (offer.dataSources.find((d) => d.id === choice) ?? offer.dataSources[0]!) : null;
+  // Kept after a reload while any table it found is not the one in use, so another table of the same
+  // database can still be chosen; the first such table is chosen by default.
+  const same = (id: string) => id.replaceAll("-", "") === current?.replaceAll("-", "");
+  const offer = found && (asked || found.dataSources.some((d) => !same(d.id))) ? found : null;
+  const picked = offer ? (offer.dataSources.find((d) => d.id === choice) ?? offer.dataSources.find((d) => !same(d.id)) ?? offer.dataSources[0]!) : null;
   const line = lookupLine(lookup);
   const notionName = (id: string | null) => {
     const hit = found?.dataSources.find((d) => d.id.replaceAll("-", "") === id?.replaceAll("-", ""));
