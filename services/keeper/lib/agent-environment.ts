@@ -15,6 +15,14 @@ export interface ConsoleEnvironmentSetting {
     description: string;
     /** Checks what was typed (already trimmed, never empty); returns the one form that is stored. */
     check(raw: string): EnvironmentCheck;
+    /** What the agent gets when neither the console nor the installation file sets a value (or the
+     * console field was saved empty), from facts the keeper already holds. Undefined: nothing. */
+    defaultValue?(installation: InstallationFacts): string | undefined;
+}
+/** What the keeper knows about the installation itself, from keeper.json. */
+export interface InstallationFacts {
+    /** `https://<install domain>`: the console is served at the root of the installation's domain. */
+    publicOrigin?: string;
 }
 const bad = (error: string): EnvironmentCheck => ({ error });
 const json = (raw: string): { parsed: unknown } | { error: string } => {
@@ -98,6 +106,7 @@ export const CONSOLE_ENVIRONMENT: readonly ConsoleEnvironmentSetting[] = [
     { key: 'TELEGRAM_BOT_USERNAME', setting: 'agent_env.telegram_bot_username', roles: CHIEF, section: 'Telegram', check: telegramBot,
         label: 'Telegram bot username', description: 'The username of your Telegram bot, so the agent can tell when it is mentioned in a group.' },
     { key: 'LARES_CONSOLE_URL', setting: 'agent_env.console_url', roles: CHIEF, section: 'Console address', check: consoleUrl,
-        label: 'Console address', description: 'Where you open the console, for example https://console.example.com. A Telegram approval card too long for one message links to it.' },
+        defaultValue: ({ publicOrigin }) => { const checked = publicOrigin ? consoleUrl(publicOrigin) : undefined; return checked && 'value' in checked ? checked.value : undefined; },
+        label: 'Console address', description: "Where you open the console, for example https://console.example.com. Empty means the installation's own address. Every Slack approval card links to its request in the console, and so does a Telegram approval card too long for one message." },
 ];
 export const CONSOLE_ENVIRONMENT_BY_KEY: ReadonlyMap<string, ConsoleEnvironmentSetting> = new Map(CONSOLE_ENVIRONMENT.map(s => [s.key, s]));

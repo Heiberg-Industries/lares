@@ -8,9 +8,19 @@
  * generates an invalid value and does not read any credential file. No traffic floods to
  * manufacture rate limits/outages. Other branches remain outstanding until observed safely.
  * Never put tokens in command arguments, URLs, logs or tracker comments.
+ *
+ * Proxy route only (no token, no provider request, no TLS): --tunnel asks the proxy at
+ * NOTION_TEST_PROXY_URL for a CONNECT to api.notion.com:443 and prints the proxy's answer
+ * (200 = the proxy lets this source address through, 403 = it does not). It needs
+ * LARES_NOTION_PROBE_APPROVED=1 like the authorised run, because it opens a connection to Notion.
+ *
+ * The keeper's own key check is allowed only from the keeper's address, so on a server run it
+ * INSIDE the keeper container, with NOTION_TEST_PROXY_URL=http://lares-egress-proxy:8888 (the
+ * proxy URL in keeper.json). From anywhere else the proxy answers 403 by design.
  */
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { connect } from 'node:net';
 import { z } from 'zod';
 import { notionCredentialTester, NOTION_CREDENTIAL_ENDPOINT, NOTION_CREDENTIAL_VERSION, NOTION_CREDENTIAL_TIMEOUT_MS } from '../../lib/notion-credential.js';
 
@@ -22,6 +32,12 @@ async function main() {
     console.log(JSON.stringify({ ...metadata, outcome: 'probe-ready', providerRequests: 0 })); return;
   }
   if (process.env.LARES_NOTION_PROBE_APPROVED !== '1') throw new Error('Separate owner approval required');
+  if (args.length === 1 && args[0] === '--tunnel') {
+    const status = await tunnel(process.env.NOTION_TEST_PROXY_URL);
+    console.log(JSON.stringify({ ...metadata, outcome: status === 200 ? 'tunnel-open' : 'tunnel-refused', proxyStatus: status, providerRequests: 0 }));
+    if (status !== 200) process.exitCode = 1;
+    return;
+  }
   const invalid = args.includes('--synthetic-invalid');
   const rest = args.filter(arg => arg !== '--synthetic-invalid');
   const expected = z.enum(['passed', 'refused', 'rate-limited', 'unavailable', 'unexpected']).safeParse(rest[1]);
@@ -52,6 +68,28 @@ async function main() {
   console.log(JSON.stringify({ ...metadata, outcome: result.outcome, identityKind: result.identity?.kind ?? null,
     requestsInitiated: requests, responseStatus, evidence: responseStatus === null ? 'transport-only' : 'provider-response' }));
   if (requests !== 1 || result.outcome !== expected.data) process.exitCode = 1;
+}
+/** One CONNECT to the host the key check reads, through the proxy; returns the proxy's status
+ * code and closes the tunnel before any TLS, so Notion receives no request. */
+function tunnel(proxyUrl: string | undefined): Promise<number> {
+  const target = `${new URL(NOTION_CREDENTIAL_ENDPOINT).hostname}:443`;
+  let proxy: URL;
+  try { proxy = new URL(proxyUrl!); } catch { return Promise.reject(new Error('Approved egress proxy required')); }
+  if (proxy.protocol !== 'http:' || proxy.username || proxy.password) return Promise.reject(new Error('Approved egress proxy required'));
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: proxy.hostname, port: Number(proxy.port || 80) });
+    let head = '';
+    socket.setTimeout(NOTION_CREDENTIAL_TIMEOUT_MS, () => { socket.destroy(); reject(new Error('Proxy did not answer')); });
+    socket.on('error', reject);
+    socket.on('connect', () => socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`));
+    socket.on('data', chunk => {
+      head += chunk.toString('latin1');
+      if (!head.includes('\r\n') && head.length < 4096) return;
+      socket.destroy();
+      const status = /^HTTP\/1\.[01] (\d{3}) /.exec(head);
+      status ? resolve(Number(status[1])) : reject(new Error('Unexpected proxy answer'));
+    });
+  });
 }
 void main().catch(() => {
   console.error('Notion credential probe refused or failed; no raw error retained');

@@ -16,6 +16,9 @@ export interface NotionCredentialEvidence {
 }
 export interface NotionCredentialTester {
   ready(): boolean;
+  /** Runs before each explicit test, outside the credential lock: the keeper uses it to make
+   * sure the proxy lets its own address reach Notion (`AgentLifecycle.prepareKeeperChecks`). */
+  prepare?(): Promise<void>;
   test(credential: ApiKeyCredential, readSecret: () => string): Promise<NotionCredentialEvidence>;
 }
 const user = z.object({ object: z.literal('user'), id: z.uuid(), type: z.literal('bot'),

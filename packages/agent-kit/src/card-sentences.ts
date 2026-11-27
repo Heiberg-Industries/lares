@@ -69,6 +69,9 @@ export function textShownWhole(text: string): boolean {
  *  names this page. */
 export const CONSOLE_WAITING_PAGE_NAME = "the Reviews page in the console";
 
+/** The words of the short link an open approval card carries to its request's Reviews page. */
+export const CONSOLE_LINK_TEXT = "Open in console";
+
 /** A place a person can read and approve a card too long for the door it came on. */
 export interface ShortenedCardPlace {
   /** In words that are true of that place, after "Open it in". */

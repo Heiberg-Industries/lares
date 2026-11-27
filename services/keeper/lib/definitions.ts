@@ -51,6 +51,8 @@ export interface DefinitionCompose {
     meetingsSourceFallback?(name: string): string | undefined;
     /** What the installation file alone gives this agent for one console-settable environment key. */
     environmentFallback?(name: string, key: string): string | undefined;
+    /** What every agent gets for that key when nothing sets it (for the console address: the install domain). */
+    environmentDefault?(key: string): string | undefined;
     /** The lifecycle owns provisioning, compose generation and start. Absent = refuse create BEFORE writes. */
     create?(name: string, definition: AgentDefinition): Promise<unknown>;
 }
@@ -749,9 +751,13 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 const stored = await readSetting(o.pool, entry.setting);
                 const names = await rolesOf(entry.roles);
                 const fallback = names.map(n => o.compose.environmentFallback?.(n, entry.key)).find(v => !!v);
+                // What the agents get when nothing is saved: shown, so the owner sees what is used.
+                const byDefault = o.compose.environmentDefault?.(entry.key);
+                const [value, from] = typeof stored === 'string' && stored ? [stored, 'console']
+                    : typeof stored === 'string' ? (byDefault ? [byDefault, 'default'] : [null, 'console'])
+                    : fallback ? [fallback, 'installation file'] : byDefault ? [byDefault, 'default'] : [null, 'none'];
                 settings.push({ key: entry.key, section: entry.section, label: entry.label, description: entry.description,
-                    value: typeof stored === 'string' ? (stored || null) : (fallback ?? null),
-                    from: typeof stored === 'string' ? 'console' : fallback ? 'installation file' : 'none', agentCount: names.length });
+                    value, from, agentCount: names.length });
             }
             return { settings, canChange: mayChange(ctx) };
         } });
@@ -778,7 +784,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 const outcome = await o.compose.applyInstallationSettings?.(name) ?? 'waiting';
                 (outcome === 'restarted' ? restarted : outcome === 'stopped' ? stopped : waiting).push(name);
             }
-            return { key, value: stored || null, restarted, waiting, stopped };
+            // Saved empty with a default: the agents now use the default, so say which value that is.
+            const byDefault = stored ? undefined : o.compose.environmentDefault?.(key);
+            return { key, value: stored || byDefault || null, ...(byDefault ? { from: 'default' as const } : {}), restarted, waiting, stopped };
         }) });
     registerAction({ name: 'definition.get', input: nameInput, run: async ({ name }) => {
             roots();

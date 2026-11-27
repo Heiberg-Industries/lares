@@ -136,6 +136,7 @@ export class Credentials {
     this.authorize(ctx);
     if (!token.safeParse(value).success) throw new KeeperRefusedError('Invalid credential input');
     this.testReady(ctx);
+    await this.tester!.prepare?.();
     return this.store.locked(async journal => {
       const old = await this.current(journal, expectedRevision);
       const consumers = await this.prepared(old);
@@ -153,6 +154,7 @@ export class Credentials {
   async testExisting(target: 'current' | 'pending', expectedRevision: number, ctx: ActionContext): Promise<CredentialStatus> {
     this.authorize(ctx);
     this.testReady(ctx);
+    await this.tester!.prepare?.();
     return this.store.locked(async journal => {
       const old = await this.current(journal, expectedRevision);
       const consumers = await this.prepared(old);

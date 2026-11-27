@@ -8,7 +8,7 @@ import { doorsOf, definitionSchema, hashOf, readDefinitionFiles, type AgentDefin
 import { outsideHttpsHosts, outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
 import { connectorRouteHosts } from './outside-connectors.js';
 import { CAPABILITY_DOCS } from '@lares/agent-kit/persona';
-import { generateEgress } from './egress.js';
+import { generateEgress, KEEPER_CHECK_ALLOW } from './egress.js';
 import { renderAgentsCompose, nextAddress, DOOR_FILES, ROLE_DOORS, type AgentContainer } from './compose-agents.js';
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from './docker.js';
 import type { LifecycleConfig } from './lifecycle-config.js';
@@ -25,7 +25,7 @@ import { personalGoogleConfig, personalGoogleEnabled } from './personal-google.j
 import { bindingsFor, verifyBindingSources, INTEGRATION_SECRET_FILES, isRetiredRole } from './runtime-bindings.js';
 import { LiteLLMGatewayKeys, gatewayModels, type GatewayKeyProvisioner } from './gateway-keys.js';
 import { readSetting } from './settings.js';
-import { CONSOLE_ENVIRONMENT } from './agent-environment.js';
+import { CONSOLE_ENVIRONMENT, CONSOLE_ENVIRONMENT_BY_KEY } from './agent-environment.js';
 import { effectiveGrantedAgents, type CredentialRecord } from './credential-state.js';
 import { requireDefinitionNamespace, withDefinitionNamespace } from './definition-namespace.js';
 import { appliedDefinitionGeneration, clearFirstActivation, clearUnknownApplyBaseline, forgetDefinitionGeneration, hasFirstActivation, preservedDefinitionGeneration, recordAppliedDefinition } from './definition-files.js';
@@ -140,6 +140,8 @@ export class AgentLifecycle {
         modelPurposeRuntimeDir?: string;
         outsideCustody?: KeeperConfig['outsideCustody'];
         credentials?: { administrator?: string };
+        /** `https://<install domain>`, where the console is served (keeper.json's publicDoorOrigin). */
+        publicDoorOrigin?: string;
     }, private docker: DockerBoundary, private provisionSecret = runtimeSecret, private verifySecrets = verifySecretRoot,
     private gatewayKeyProvisioner: GatewayKeyProvisioner = new LiteLLMGatewayKeys(),
     workflowConnections?: WorkflowDatabaseConnections,
@@ -406,7 +408,11 @@ export class AgentLifecycle {
                 enabled: boolean;
             }[], infrastructureHosts: c.egress.infrastructureHosts, outsideHosts: outsideHttpsHosts(outsideToolsInEffect(defs.get(a.name)!)) })),
             { ...c.egress, legacyConsumers: c.egress.legacyConsumers.map(x => outsideRoute && x.name === outsideRoute.name ? outsideRoute : x),
-                managedServices: await this.managedServices?.egress(), tolerateUnknownGrantsFor: new Set(agents.map(a => a.name).filter(n => n !== override?.name)) });
+                managedServices: await this.managedServices?.egress(), tolerateUnknownGrantsFor: new Set(agents.map(a => a.name).filter(n => n !== override?.name)),
+                // The keeper's own checks (the Notion key test) leave from the outside route's
+                // address, which is the keeper container's pinned address. Present in EVERY seal,
+                // with or without agents, so a fresh install's first key test can reach Notion.
+                ...(selectedRoute ? { keeper: { address: selectedRoute.address } } : {}) });
         for (const s of e.skipped)
             console.warn(`keeper: agent ${s.agent} still grants ${s.capability}; it opens no network hosts until the agent is saved in the new style`);
         return Object.assign(e, { outsideRoute });
@@ -435,7 +441,9 @@ export class AgentLifecycle {
             await this.docker.firewall(stage, false);
             atomic(join(c.egressDir, INSTALLED_STAGE), `${stage}\n`, 0o644);
             atomic(join(c.egressDir, 'squid.conf'), squid, 0o644);
+            this.keeperChecksStage = undefined;
             await this.docker.reloadSquid();
+            this.keeperChecksStage = squid.includes(KEEPER_CHECK_ALLOW) ? stage : undefined;
             if (selected) {
                 const deadlineAtMs = Date.now() + 1000;
                 if (!this.docker.acknowledgeOutsideStage) throw new KeeperRefusedError('Outside route acknowledgement is unavailable');
@@ -546,6 +554,24 @@ export class AgentLifecycle {
         }, { deadlineAtMs });
     }
     private resealing: Promise<void> = Promise.resolve();
+    /** The stage of the last proxy configuration THIS process wrote and reloaded that carries the
+     * keeper's own check rule. Unset until then: an install-time `deny all`, or a squid.conf left
+     * by an earlier keeper, is never trusted to have it. */
+    private keeperChecksStage?: string;
+    /** Before a key test the keeper runs itself: make sure the proxy carries the keeper's own
+     * check rule. Waits for the startup seal first (it normally installs the rule); only when that
+     * did not, seals once now. Needs the outside route (the keeper's address); without it there
+     * is nothing to open. Never throws: a failure logs one line and the test reports what it meets. */
+    async prepareKeeperChecks(): Promise<void> {
+        await this.resealing;
+        if (this.keeperChecksStage || !this.paths.outsideCustody) return;
+        try {
+            await this.seal();
+            console.log('keeper: the proxy now lets the keeper run its own key checks');
+        } catch (error) {
+            console.error(`keeper: could not open the keeper's own key checks in the proxy (${(error as Error).message}); the test goes ahead and reports what it meets`);
+        }
+    }
     /** Startup: a reboot empties the kernel's nft tables, so re-apply the last firewall this keeper
      * installed, unchanged. Not a fresh render: that reads the database, and a definition gone invalid
      * would block it. The proxy needs nothing; it reads squid.conf from disk when it starts. One
@@ -669,7 +695,19 @@ export class AgentLifecycle {
             else environment[entry.key] = stored;
             changed = true;
         }
+        // A setting nobody gave a value (or that was saved empty) takes its installation default.
+        for (const entry of CONSOLE_ENVIRONMENT) {
+            if (!entry.roles.includes(a.role) || environment[entry.key]) continue;
+            const value = this.environmentDefault(entry.key);
+            if (value === undefined) continue;
+            environment[entry.key] = value;
+            changed = true;
+        }
         if (changed) a.bindings = { role: 'chief-of-staff', ...a.bindings, environment, mounts: a.bindings?.mounts ?? [], secrets: a.bindings?.secrets ?? {} };
+    }
+    /** What an agent gets for one console-settable environment key when nothing else sets it. */
+    environmentDefault(key: string): string | undefined {
+        return CONSOLE_ENVIRONMENT_BY_KEY.get(key)?.defaultValue?.({ publicOrigin: this.paths.publicDoorOrigin });
     }
     /** What the installation file alone gives this agent for one console-settable environment key. */
     environmentFallback(name: string, key: string): string | undefined {

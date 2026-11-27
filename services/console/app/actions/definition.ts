@@ -51,7 +51,8 @@ export interface MeetingsSourceResult { value: string | null; restarted: string[
 export async function setMeetingsSource(input: {dataSource: string}): Promise<DefinitionActionResult<MeetingsSourceResult>> {
   return call('settings.notion_meetings_set', {dataSource: input.dataSource}, await ownerActor(), 90_000);
 }
-export interface AgentSettingsResult { key: string; value: string | null; restarted: string[]; waiting: string[]; stopped: string[] }
+/** `from: 'default'` when the field was saved empty and the agents now use the keeper's default (shown as `value`). */
+export interface AgentSettingsResult { key: string; value: string | null; from?: 'default'; restarted: string[]; waiting: string[]; stopped: string[] }
 export async function setAgentSetting(input: {key: string; value: string}): Promise<DefinitionActionResult<AgentSettingsResult>> {
   return call('settings.agent_environment_set', {key: input.key, value: input.value}, await ownerActor(), 90_000);
 }

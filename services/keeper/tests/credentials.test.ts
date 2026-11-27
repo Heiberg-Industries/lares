@@ -408,3 +408,20 @@ it('never retains two pending candidates and exposes fixed test states tied to t
   expect(await service.status(admin)).toMatchObject({state:'pending-apply'});
   expect(readFileSync(join(dir,readdirSync(dir)[0]),'utf8')).toBe(secret);
 });
+it('prepares the keeper\'s proxy route before each explicit test, outside the credential lock, and never for status', async () => {
+  active();
+  const order: string[] = [];
+  const prepare = vi.fn(async () => { order.push(store.busy ? 'prepare-locked' : 'prepare'); });
+  vi.mocked(tester.test).mockImplementation(async () => { order.push('test'); return { outcome: 'passed', identity: { kind: 'internal-bot', botId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } }; });
+  service = new Credentials(config, store, files, inventory, { ...tester, prepare }); resetActions(); registerCredentialActions(service);
+  await service.status(admin);
+  expect(prepare).not.toHaveBeenCalled();
+  await runAction('credential.test_save', { ...testInput(1), token: 'replacement-without-prefix' }, admin);
+  expect(order).toEqual(['prepare', 'test']);
+  await runAction('credential.test_pending', testInput(store.record.version), admin);
+  expect(order).toEqual(['prepare', 'test', 'prepare', 'test']);
+  // A tester that is not ready refuses first: nothing is prepared.
+  vi.mocked(tester.ready).mockReturnValue(false);
+  await expect(runAction('credential.test_pending', testInput(store.record.version), admin)).rejects.toThrow('egress proxy');
+  expect(prepare).toHaveBeenCalledTimes(2);
+});
