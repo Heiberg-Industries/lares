@@ -43,13 +43,17 @@ const BROKEN_PAGE = {
   },
 };
 
+/** The pages the fake query answers with. The schedule's Notion client keeps the first `fetch` it is
+ *  given for the life of the module, so a test changes this list rather than stubbing fetch again. */
+let PAGES: unknown[] = [BROKEN_PAGE];
+
 function fakeNotionFetch() {
   return vi.fn(async (input: unknown, init?: { method?: string }) => {
     const url = String(input);
     const method = init?.method ?? "GET";
     if (method === "POST" && url.includes("/query")) {
       return new Response(
-        JSON.stringify({ results: [BROKEN_PAGE], has_more: false, next_cursor: null }),
+        JSON.stringify({ results: PAGES, has_more: false, next_cursor: null }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
@@ -94,5 +98,37 @@ describe("liveListMeetings — summary-mismatch signal dedupe", () => {
     const mismatchCalls = mockEmitSignal.mock.calls.filter(([kind]) => kind === "meeting-followup-summary-mismatch");
     expect(mismatchCalls).toHaveLength(1);
     expect(mismatchCalls[0]?.[1]).toContain("page-mismatch-1");
+  });
+});
+
+describe("liveListMeetings — meetings waiting for a summary are counted before they are dropped", () => {
+  const page = (id: string, summary: string, attendees: string, start = "2026-08-20T09:00:00.000Z") => ({
+    ...BROKEN_PAGE, id,
+    properties: {
+      ...BROKEN_PAGE.properties,
+      "Date": { date: { start } },
+      "Summary": { rich_text: summary ? [{ plain_text: summary }] : [] },
+      "Attendees": { rich_text: attendees ? [{ plain_text: attendees }] : [] },
+    },
+  });
+  beforeEach(() => {
+    process.env["NOTION_TOKEN"] = "test-token";
+    delete process.env["EGRESS_PROXY_URL"];
+    PAGES = [
+      page("no-summary", "", "Henrik <sam@example.com>"),
+      page("no-attendees", "A summary.", ""),
+      page("old-no-summary", "", "Henrik <sam@example.com>", "2026-08-01T09:00:00.000Z"),
+      page("done-no-summary", "", "Henrik <sam@example.com>"),
+    ];
+    vi.stubGlobal("fetch", fakeNotionFetch());
+  });
+  afterEach(() => { vi.unstubAllGlobals(); delete process.env["NOTION_TOKEN"]; PAGES = [BROKEN_PAGE]; });
+
+  it("counts recent, unhandled meetings with no Summary or no Attendees, and returns none of them", async () => {
+    const { liveListMeetings } = await import("../agent/schedules/meeting-followup.js");
+    const pool = { query: async (sql: string) => ({ rows: /outcome IN/.test(sql) ? [{ notion_page_id: "done-no-summary" }] : [] }) } as unknown as Pool;
+    const seen = { waitingForSummary: 0 };
+    expect(await liveListMeetings(pool, NOW, seen)).toEqual([]);
+    expect(seen.waitingForSummary).toBe(2);
   });
 });

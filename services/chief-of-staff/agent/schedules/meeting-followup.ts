@@ -970,7 +970,12 @@ const signaledMismatchPages = new Set<string>();
  * recency bound below, stage 2) can be driven by a fixed clock in tests instead of racing
  * `Date.now`.
  */
-export async function liveListMeetings(pool: Pool, now: Date = new Date()): Promise<MeetingRow[]> {
+/** What `liveListMeetings` saw but did not return, for the Meetings page's status line. */
+export interface ListedMeetings { waitingForSummary: number }
+
+/** `seen`, when given, is filled with how many recent meetings are not handled yet and still have no
+ *  Summary or no Attendees in Notion: they are filtered out here, before the tick could count them. */
+export async function liveListMeetings(pool: Pool, now: Date = new Date(), seen?: ListedMeetings): Promise<MeetingRow[]> {
   const [candidates, doneRows, seriesRows] = await Promise.all([
     queryMeetingCandidates(),
     pool.query<{ notion_page_id: string }>(
@@ -983,6 +988,11 @@ export async function liveListMeetings(pool: Pool, now: Date = new Date()): Prom
   const eligible = candidates.filter(
     (c) => c.summaryPropertyFilled && c.attendees.trim() !== "" && !done.has(c.pageId),
   );
+  if (seen) {
+    seen.waitingForSummary = withinFollowupAge(
+      candidates.filter((c) => !done.has(c.pageId) && !(c.summaryPropertyFilled && c.attendees.trim() !== "")), now,
+    ).length;
+  }
   // Recency bound BEFORE the markdown-read ceiling (deliberately — see FOLLOWUP_MAX_AGE_DAYS):
   // an ancient row must never cost a Notion page read, let alone occupy one of the
   // MARKDOWN_READ_CEILING slots ahead of a genuinely recent one.
@@ -1463,8 +1473,9 @@ export default defineSchedule({
       const selfEmails = await listAliases(pool, configuredOwnerId(), "email");
       const fromMailbox = (await listEnrolledMailboxes())[0] ?? selfEmails[0] ?? "";
 
+      const listed: ListedMeetings = { waitingForSummary: 0 };
       const deps: FollowupDeps = {
-        listMeetings: () => liveListMeetings(pool),
+        listMeetings: () => liveListMeetings(pool, new Date(), listed),
         claim: (pageId, summaryHash) => claimMeeting(pool, pageId, summaryHash),
         precheck: makeLivePrecheck(pool, routed),
         recordSeriesKey: (pageId, seriesKey) => storeRecordSeriesKey(pool, pageId, seriesKey),
@@ -1497,7 +1508,9 @@ export default defineSchedule({
         console.error("meeting-followup: could not count the cards waiting for approval", err);
         return Math.max(0, result.queued - result.sent);
       });
-      await recordRunFinished(pool, job, { agent, counts: { ...finishedCounts(result, waiting) } });
+      // Not-ready meetings are dropped while listing, before the tick: add the ones it never saw.
+      const counted = { ...result, waitingForSummary: result.waitingForSummary + listed.waitingForSummary };
+      await recordRunFinished(pool, job, { agent, counts: { ...finishedCounts(counted, waiting) } });
     } catch (err) {
       console.error("meeting-followup: tick failed", err);
       skipMemo.last = null;
