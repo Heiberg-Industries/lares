@@ -17,21 +17,25 @@ type Row = Record<string, unknown>;
 const db = vi.hoisted(() => ({
   cards: [] as Row[],
   requestedAt: null as Date | null,
-  run: null as Row | null,
+  /** Outcome records, one per agent (`<agent>/voice-learn`); any other key too, to prove it is ignored. */
+  runs: [] as Row[],
   agents: [] as Row[],
   /** What went through the one connection the page takes. */
   onConnection: [] as string[],
 }));
 vi.mock("../lib/db", () => {
-  const query = vi.fn(async (sql: string) => {
-    if (/FROM schedule_run/.test(sql)) return { rows: db.run ? [db.run] : [] };
+  const query = vi.fn(async (sql: string, params?: unknown[]) => {
+    if (/FROM schedule_run/.test(sql)) {
+      const keys = (params?.[0] ?? []) as string[];
+      return { rows: db.runs.filter((r) => keys.includes(String(r.job))) };
+    }
     if (/SELECT relearn_requested_at FROM voice_profile/.test(sql)) return { rows: [{ relearn_requested_at: db.requestedAt }] };
     if (/FROM voice_profile/.test(sql)) return { rows: db.cards };
     if (/FROM agent_definitions/.test(sql)) return { rows: db.agents };
     return { rows: [] };
   });
   // The request and the outcome are read on one connection, in one read-only transaction.
-  const onConnection = async (sql: string) => { db.onConnection.push(sql); return query(sql); };
+  const onConnection = async (sql: string, params?: unknown[]) => { db.onConnection.push(sql); return query(sql, params); };
   return { pool: { query, connect: async () => ({ query: onConnection, release: () => {} }) } };
 });
 
@@ -43,7 +47,7 @@ const agent = (name: string, display: string, on = true): Row => ({
   name, definition: { name, role: "chief-of-staff", display, schedules: { "voice-learn": { on } } },
 });
 const run = (state: string, extra: Row = {}): Row => ({
-  job: "chief-of-staff/voice-learn", agent: "example-agent", state, reason: "", detail: "", counts: {},
+  job: `${String(extra.agent ?? "example-agent")}/voice-learn`, agent: "example-agent", state, reason: "", detail: "", counts: {},
   started_at: new Date(), updated_at: new Date(), ...extra,
 });
 
@@ -58,7 +62,7 @@ const isDisabled = (html: string) => /<button[^>]*\sdisabled=""/.test(button(htm
 beforeEach(() => {
   db.cards = [card("default", "idle"), card("owner@owner.example", "idle")];
   db.requestedAt = null;
-  db.run = null;
+  db.runs = [];
   db.agents = [agent("example-agent", "Example Agent")];
   db.onConnection = [];
 });
@@ -80,7 +84,7 @@ describe("the Re-learn button follows the run, not the default card", () => {
   });
 
   it("the job record wins: running from the record, though every card says idle", async () => {
-    db.run = run("running");
+    db.runs = [run("running")];
     expect(isDisabled(await render())).toBe(true);
   });
 });
@@ -103,14 +107,14 @@ describe("the status line says what is happening, in words", () => {
   });
 
   it("no mailbox chosen: links to the agent's page, where it is chosen", async () => {
-    db.run = run("skipped", { reason: "no-mailbox", detail: "No mailbox.", started_at: null });
+    db.runs = [run("skipped", { reason: "no-mailbox", detail: "No mailbox.", started_at: null })];
     const html = await render();
     expect(html).toContain("No mailbox chosen for Example Agent.");
     expect(html).toContain('href="/agents/example-agent"');
   });
 
   it("finished: when, and the counts", async () => {
-    db.run = run("finished", { counts: { kept: 12, dropped: 3 } });
+    db.runs = [run("finished", { counts: { kept: 12, dropped: 3 } })];
     const html = await render();
     expect(html).toContain('data-state="finished"');
     expect(html).toContain("Finished today at");
@@ -130,7 +134,38 @@ describe("the request and the outcome are read together", () => {
     const seen = db.onConnection.join("\n");
     expect(db.onConnection[0]).toBe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     expect(seen).toMatch(/SELECT relearn_requested_at FROM voice_profile/);
+    expect(seen).toMatch(/FROM agent_definitions/);
     expect(seen).toMatch(/FROM schedule_run/);
     expect(db.onConnection.at(-1)).toBe("COMMIT");
+  });
+});
+
+describe("more than one chief-of-staff agent: one record each, combined on the page", () => {
+  beforeEach(() => {
+    db.agents = [agent("example-agent", "Example Agent"), agent("other-agent", "Other Agent")];
+  });
+
+  it("one agent still learning: the page says running, though the other agent finished after it started", async () => {
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
+    db.runs = [
+      run("running", { agent: "other-agent", started_at: minutesAgo(20), updated_at: minutesAgo(20) }),
+      run("finished", { counts: { kept: 5, dropped: 1 }, started_at: minutesAgo(10), updated_at: minutesAgo(1) }),
+    ];
+    const html = await render();
+    expect(html).toContain('data-state="running"');
+    expect(isDisabled(html)).toBe(true);
+  });
+
+  it("the newest outcome names whose run it was by display name", async () => {
+    db.runs = [run("finished", { agent: "other-agent", counts: { kept: 4, dropped: 2 } })];
+    const html = await render();
+    expect(html).toContain("Last run by Other Agent. Kept 4 emails as examples, left out 2.");
+  });
+
+  it("a record under a key no chief-of-staff agent has (an earlier shared record) is ignored", async () => {
+    db.runs = [{ ...run("running"), job: "chief-of-staff/voice-learn", agent: "" }];
+    const html = await render();
+    expect(html).not.toContain("lares-run-status");
+    expect(button(html)).toContain("Re-learn from Sent mail");
   });
 });

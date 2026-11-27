@@ -114,9 +114,10 @@ export async function recordScheduleTick(db: HeartbeatDb, key: string): Promise<
  * must not put an address or a message text into `detail` beyond an error's own message.
  *
  * Same contract as a stamp: it NEVER throws and NEVER hangs the run (bounded to 5 s), and a failed
- * write is a warning. Handed a pool, the write also carries a 4 s limit on the database itself, so a
- * blocked write is cancelled there instead of holding a connection and landing late over a newer
- * outcome. A record that fails must never cost the schedule its real work — and the
+ * write is a warning. Handed a pool, the write also carries a limit on the database itself (4 s, or
+ * whatever is left of the 5 s after waiting for a free connection), so a blocked write is cancelled
+ * there instead of holding a connection and landing late over a newer outcome; a write whose wait for
+ * a connection used up the 5 s is not made at all. A record that fails must never cost the schedule its real work — and the
  * outcome is written to the log as well, so nothing is lost that was there before.
  * ------------------------------------------------------------------------------------------- */
 
@@ -155,19 +156,39 @@ function cleanCounts(counts: Record<string, number> | undefined): Record<string,
 /** An outcome write's limit on the database itself, below the 5 s wait, so a write that is blocked
  *  is cancelled there rather than abandoned while it keeps a connection and lands late. */
 const OUTCOME_SERVER_TIMEOUT_MS = 4_000;
+/** Less time than this left once a connection is free: not worth starting the write. */
+const OUTCOME_MIN_WRITE_MS = 250;
+
+/** The caller's 5 s budget: when it ends, and whether the caller has already stopped waiting. */
+interface WriteBudget { deadline: number; abandoned: () => boolean }
 
 /** Run `write` with the server-side limit. Handed a pool, it takes one connection for a short
  *  transaction with `SET LOCAL` timeouts. Handed anything else (a client already inside the caller's
- *  transaction, or a test double), it runs the write as given: the caller owns that transaction. */
-async function withServerTimeout(db: HeartbeatDb, write: (q: HeartbeatDb) => Promise<unknown>): Promise<void> {
+ *  transaction, or a test double), it runs the write as given: the caller owns that transaction.
+ *
+ *  The wait for a free connection counts against the same 5 s budget. When the pool is exhausted,
+ *  `connect()` stays queued after the caller has given up, and without a check the write would land
+ *  whenever a connection came free, possibly over a newer outcome another agent wrote meanwhile. So:
+ *  once the connection arrives, a spent budget hands it back without writing; otherwise the
+ *  database's own limit is shrunk to the time that is left, and a caller that gave up while the
+ *  write ran gets a ROLLBACK instead of a COMMIT. What is left is a COMMIT already on its way at the
+ *  moment the 5 s end. */
+async function withServerTimeout(db: HeartbeatDb, write: (q: HeartbeatDb) => Promise<unknown>, budget: WriteBudget): Promise<void> {
   const pool = db as Partial<Pick<Pool, "connect" | "totalCount">>;
   if (typeof pool.connect !== "function" || typeof pool.totalCount !== "number") { await write(db); return; }
   const client = await pool.connect();
+  const left = budget.deadline - Date.now();
+  if (budget.abandoned() || left < OUTCOME_MIN_WRITE_MS) {
+    client.release();
+    throw new Error("the wait for a database connection used up the time for this write; nothing was written");
+  }
+  const limit = Math.max(1, Math.min(OUTCOME_SERVER_TIMEOUT_MS, Math.floor(left - OUTCOME_MIN_WRITE_MS / 2)));
   try {
     await client.query("BEGIN");
-    await client.query(`SET LOCAL statement_timeout = ${OUTCOME_SERVER_TIMEOUT_MS}`);
-    await client.query(`SET LOCAL lock_timeout = ${OUTCOME_SERVER_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL statement_timeout = ${limit}`);
+    await client.query(`SET LOCAL lock_timeout = ${limit}`);
     await write(client);
+    if (budget.abandoned()) throw new Error("the caller stopped waiting before the write could be saved; nothing was written");
     await client.query("COMMIT");
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
@@ -182,6 +203,8 @@ async function writeOutcome(
   fields: { reason?: string; detail?: string; counts?: Record<string, number>; agent?: string },
 ): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined;
+  let gaveUp = false;
+  const budget: WriteBudget = { deadline: Date.now() + STAMP_TIMEOUT_MS, abandoned: () => gaveUp };
   const detail = (fields.detail ?? "").slice(0, DETAIL_MAX);
   try {
     await Promise.race([
@@ -197,9 +220,9 @@ async function writeOutcome(
                                             ELSE schedule_run.started_at END,
            updated_at = EXCLUDED.updated_at`,
         [key, fields.agent ?? "", state, fields.reason ?? "", detail, JSON.stringify(cleanCounts(fields.counts))],
-      )),
+      ), budget),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`timed out after ${STAMP_TIMEOUT_MS} ms`)), STAMP_TIMEOUT_MS);
+        timer = setTimeout(() => { gaveUp = true; reject(new Error(`timed out after ${STAMP_TIMEOUT_MS} ms`)); }, STAMP_TIMEOUT_MS);
       }),
     ]);
     return true;
@@ -244,19 +267,12 @@ export async function recordRunSkipped(
   return writeOutcome(db, key, "skipped", { reason, detail: sentence, agent: opts.agent });
 }
 
-/** The last recorded outcome of a job, or null when it has none (or the table cannot be read).
- *  The console reads through this, so the row's shape is decided here once. */
-export async function readScheduleRun(db: HeartbeatDb, key: string): Promise<ScheduleRunRow | null> {
-  assertKey(key);
-  const { rows } = await db.query<{
-    job: string; agent: string; state: ScheduleRunState; reason: string; detail: string;
-    counts: Record<string, unknown> | null; started_at: Date | string | null; updated_at: Date | string;
-  }>(
-    `SELECT job, agent, state, reason, detail, counts, started_at, updated_at FROM schedule_run WHERE job = $1`,
-    [key],
-  );
-  const r = rows[0];
-  if (!r) return null;
+type ScheduleRunDbRow = {
+  job: string; agent: string; state: ScheduleRunState; reason: string; detail: string;
+  counts: Record<string, unknown> | null; started_at: Date | string | null; updated_at: Date | string;
+};
+
+function toScheduleRun(r: ScheduleRunDbRow): ScheduleRunRow {
   const counts: Record<string, number> = {};
   for (const [k, v] of Object.entries(r.counts ?? {})) if (typeof v === "number") counts[k] = v;
   return {
@@ -264,4 +280,25 @@ export async function readScheduleRun(db: HeartbeatDb, key: string): Promise<Sch
     startedAt: r.started_at === null ? null : new Date(r.started_at),
     updatedAt: new Date(r.updated_at),
   };
+}
+
+const RUN_COLUMNS = "job, agent, state, reason, detail, counts, started_at, updated_at";
+
+/** The last recorded outcome of a job, or null when it has none (or the table cannot be read).
+ *  The console reads through this, so the row's shape is decided here once. */
+export async function readScheduleRun(db: HeartbeatDb, key: string): Promise<ScheduleRunRow | null> {
+  assertKey(key);
+  const { rows } = await db.query<ScheduleRunDbRow>(`SELECT ${RUN_COLUMNS} FROM schedule_run WHERE job = $1`, [key]);
+  return rows[0] ? toScheduleRun(rows[0]) : null;
+}
+
+/** The last recorded outcomes of several jobs (one per agent, say), in one query, ordered by key.
+ *  A job with no outcome is simply absent. */
+export async function readScheduleRuns(db: HeartbeatDb, keys: readonly string[]): Promise<ScheduleRunRow[]> {
+  for (const key of keys) assertKey(key);
+  if (keys.length === 0) return [];
+  const { rows } = await db.query<ScheduleRunDbRow>(
+    `SELECT ${RUN_COLUMNS} FROM schedule_run WHERE job = ANY($1::text[]) ORDER BY job`, [[...keys]],
+  );
+  return rows.map(toScheduleRun);
 }
