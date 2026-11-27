@@ -31,7 +31,11 @@ vi.mock("../lib/db", () => {
     }
     if (/SELECT relearn_requested_at FROM voice_profile/.test(sql)) return { rows: [{ relearn_requested_at: db.requestedAt }] };
     if (/FROM voice_profile/.test(sql)) return { rows: db.cards };
-    if (/FROM agent_definitions/.test(sql)) return { rows: db.agents };
+    if (/FROM agent_definitions/.test(sql)) {
+      // The page's own filter on the keeper's status column, applied to the fake rows.
+      const keep = /status <> 'retired'/.test(sql) ? (s: unknown) => s !== "retired" : /status = 'valid'/.test(sql) ? (s: unknown) => s === "valid" : () => true;
+      return { rows: db.agents.filter((a) => keep(a.status ?? "valid")) };
+    }
     return { rows: [] };
   });
   // The request and the outcome are read on one connection, in one read-only transaction.
@@ -160,6 +164,16 @@ describe("more than one chief-of-staff agent: one record each, combined on the p
     db.runs = [run("finished", { agent: "other-agent", counts: { kept: 4, dropped: 2 } })];
     const html = await render();
     expect(html).toContain("Last run by Other Agent. Kept 4 emails as examples, left out 2.");
+  });
+
+  it("an agent whose saved definition is invalid still runs: its run shows; a retired agent's does not", async () => {
+    db.agents = [agent("example-agent", "Example Agent"), { ...agent("other-agent", "Other Agent"), status: "invalid" }];
+    db.runs = [run("running", { agent: "other-agent" })];
+    expect(await render()).toContain('data-state="running"');
+    db.agents = [agent("example-agent", "Example Agent"), { ...agent("other-agent", "Other Agent"), status: "retired" }];
+    const html = await render();
+    expect(html).not.toContain('data-state="running"');
+    expect(html).not.toContain("Other Agent");
   });
 
   it("a record under a key no chief-of-staff agent has (an earlier shared record) is ignored", async () => {

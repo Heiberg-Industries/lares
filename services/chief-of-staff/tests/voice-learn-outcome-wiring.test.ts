@@ -94,6 +94,12 @@ async function runOnce(): Promise<void> {
 const outcomeOf = async (job: string) => (await pool.query("SELECT state, reason, agent FROM schedule_run WHERE job = $1", [job])).rows[0] ?? null;
 const outcome = () => outcomeOf(OWN);
 const pending = async () => (await pool.query("SELECT relearn_requested_at FROM voice_profile WHERE id = 'default'")).rows[0]?.relearn_requested_at != null;
+/** A chief-of-staff agent's saved definition row, as the keeper keeps it (`status`: valid, invalid or retired). */
+const defineAgent = (name: string, status = "valid") => pool.query(
+  `INSERT INTO agent_definitions (name, definition, hash, status) VALUES ($1, $2, 'fixture-hash', $3)
+   ON CONFLICT DO NOTHING`,
+  [name, JSON.stringify({ name, role: "chief-of-staff" }), status],
+);
 const heartbeatAge = async (key: string) => Number((await pool.query("SELECT extract(epoch from (now() - updated_at)) AS a FROM heartbeat WHERE agent = $1", [key])).rows[0]?.a ?? -1);
 
 beforeAll(async () => {
@@ -119,6 +125,9 @@ beforeEach(async () => {
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.resetModules();
   await pool.query("TRUNCATE schedule_run");
+  await pool.query("DELETE FROM agent_definitions WHERE name IN ('first-agent', 'other-agent')");
+  await defineAgent("first-agent");
+  await defineAgent("other-agent");
   await pool.query(`INSERT INTO voice_profile (id) VALUES ('default') ON CONFLICT (id) DO NOTHING`);
   await pool.query("UPDATE voice_profile SET relearn_requested_at = now() WHERE id = 'default'");
   await pool.query("UPDATE heartbeat SET updated_at = now() - interval '1 hour' WHERE agent LIKE 'chief-of-staff/voice-learn%'");
@@ -368,5 +377,22 @@ describe("voice-learn: what a re-learn request becomes", () => {
       await blocker.query("ROLLBACK").catch(() => {});
       blocker.release();
     }
+  }, 30_000);
+
+  it("a retired agent's record left as running does not hold the request: the page ignores it, and so does the claim", async () => {
+    // Retiring only marks the definition retired; a run the retirement cut off leaves its record behind.
+    await pool.query("UPDATE agent_definitions SET status = 'retired' WHERE name = 'other-agent'");
+    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('other-agent/voice-learn', 'other-agent', 'running', now())");
+    await runOnce();
+    expect(seenAtMailbox).toEqual({ state: "running", pending: false });
+    expect(await pending()).toBe(false);
+  }, 30_000);
+
+  it("an agent whose definition is invalid still runs on its last valid one: its run that is going holds the request", async () => {
+    await pool.query("UPDATE agent_definitions SET status = 'invalid' WHERE name = 'other-agent'");
+    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('other-agent/voice-learn', 'other-agent', 'running', now())");
+    await runOnce();
+    expect(seenAtMailbox).toBeNull();
+    expect(await pending()).toBe(true);
   }, 30_000);
 });

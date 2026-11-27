@@ -26,9 +26,6 @@ export function voiceLearnJob(agent: string): string {
   return scheduleKey(agent, VOICE_LEARN_SCHEDULE);
 }
 
-/** SQL `LIKE` pattern for every agent's record (no wildcard characters in the schedule's name). */
-export const VOICE_LEARN_JOBS_LIKE = `%/${VOICE_LEARN_SCHEDULE}`;
-
 /** Why a learning run did not start. */
 export const VOICE_LEARN_SKIPS = {
   /** The agent's own Voice Learn schedule is switched off in its definition. */

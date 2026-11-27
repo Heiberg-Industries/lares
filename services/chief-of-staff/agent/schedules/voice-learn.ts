@@ -58,7 +58,7 @@ import {
   readScheduleRun, recordRunFailed, recordRunFinished, recordRunSkipped, recordRunStarted,
   recordSchedulePass, recordScheduleTick,
 } from "@lares/agent-kit/schedule-heartbeat";
-import { VOICE_LEARN_JOBS_LIKE, VOICE_LEARN_SKIPS, voiceLearnJob, type VoiceLearnSkip } from "@lares/agent-kit/voice-learn-outcome";
+import { VOICE_LEARN_SCHEDULE, VOICE_LEARN_SKIPS, voiceLearnJob, type VoiceLearnSkip } from "@lares/agent-kit/voice-learn-outcome";
 import { dowIn, slotIn } from "../../lib/recurrence.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
@@ -199,12 +199,12 @@ const CLEAR_REQUEST = `UPDATE voice_profile SET relearn_requested_at = NULL
 async function claimAndRecordStart(agent: string, detail: string): Promise<boolean> {
   return inRequestTransaction(async (db) => {
     if (!(await lockRequest(db))) return false;
-    // A run that is going, this agent's or ANY other agent's, holds the request until it ends: a
-    // second run would page a mailbox and bill the gateway twice for one press (the agent whose run
-    // is going answers the request instead, `answerRequestDuringRun`). A run that has said nothing
-    // for longer than a learn can take is treated as gone, so a crashed run does not hold requests
-    // for ever.
-    if ((await runNow(db, "every agent")) !== "idle") return false;
+    // A run that is going, this agent's or any other chief-of-staff agent's that is not retired,
+    // holds the request until it ends: a second run would page a mailbox and bill the gateway twice
+    // for one press (the agent whose run is going answers the request instead,
+    // `answerRequestDuringRun`). A run that has said nothing for longer than a learn can take is
+    // treated as gone, so a crashed run does not hold requests for ever.
+    if ((await runNow(db, { everyAgentBut: voiceLearnJob(agent) })) !== "idle") return false;
     await db.query(CLEAR_REQUEST);
     await recordInSavepoint(db, () => recordRunStarted(db, voiceLearnJob(agent), { agent, detail }));
     return true;
@@ -217,7 +217,10 @@ const RUN_SILENT_MS = 2 * 60 * 60_000;
 
 /**
  * What the outcome records say right now, with their rows locked for this transaction — one agent's
- * own record (its job key), or "every agent" (every `<agent>/voice-learn` record):
+ * own record (its job key), or every agent's: this agent's own record and the record of every
+ * chief-of-staff agent that is not retired. A retired agent's record is left out: retiring does not
+ * remove it, and a run the retirement cut off would otherwise read as going and hold every other
+ * agent's claim for two hours, while the console (which reads the same set of agents) ignores it.
  *   "going"  — a run is going: `running`, or a request already covered by one (`already-running`),
  *              written in the last two hours, in any of the records looked at;
  *   "idle"   — nothing is running (no row, a finished, failed or skipped run, or a silent one);
@@ -226,14 +229,18 @@ const RUN_SILENT_MS = 2 * 60 * 60_000;
  *              the request is left for the next tick.
  * An outcome that cannot be read for any other reason (an older database) reads as "idle".
  */
-async function runNow(db: PoolClient, whose: string | "every agent"): Promise<"going" | "idle" | "locked"> {
-  const [where, job] = whose === "every agent" ? ["job LIKE $1", VOICE_LEARN_JOBS_LIKE] : ["job = $1", whose];
+async function runNow(db: PoolClient, whose: string | { everyAgentBut: string }): Promise<"going" | "idle" | "locked"> {
+  const [where, job] = typeof whose === "string" ? ["job = $1", whose] : [
+    `(job = $1 OR job IN (SELECT name || '/${VOICE_LEARN_SCHEDULE}' FROM agent_definitions
+                            WHERE status <> 'retired' AND definition->>'role' = 'chief-of-staff'))`,
+    whose.everyAgentBut,
+  ];
   await db.query("SAVEPOINT run_check");
   try {
     const { rows } = await db.query<{ going: boolean }>(
       `SELECT (state = 'running' OR (state = 'skipped' AND reason = $2))
               AND updated_at > now() - make_interval(secs => $3) AS going
-         FROM schedule_run WHERE ${where} FOR UPDATE NOWAIT`,
+         FROM schedule_run WHERE ${where} FOR UPDATE OF schedule_run NOWAIT`,
       [job, VOICE_LEARN_SKIPS.alreadyRunning, RUN_SILENT_MS / 1000],
     );
     await db.query("RELEASE SAVEPOINT run_check");

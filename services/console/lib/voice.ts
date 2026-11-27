@@ -241,11 +241,15 @@ export function relearnStatus(f: RelearnFacts, now: Date, tz: string): RelearnSt
   }
 }
 
-/** The chief-of-staff agents and their Voice Learn switch, from their saved definitions. */
+/** The chief-of-staff agents and their Voice Learn switch, from their saved definitions: every one
+ *  that is not retired. An agent whose saved definition is invalid still runs on its last valid one
+ *  (ADR-0015), so it counts; a retired one does not run. The voice-learn schedule's claim reads the
+ *  same set of agents' records (`claimAndRecordStart`), so the page and the schedule agree on which
+ *  runs are going. */
 export async function voiceLearnAgents(db: Pick<PoolClient, "query"> = pool): Promise<VoiceLearnAgent[]> {
   const { rows } = await db.query<{ name: string; definition: { display?: unknown; schedules?: Record<string, { on?: unknown }> } | null }>(
     `SELECT name, definition FROM agent_definitions
-      WHERE definition->>'role' = 'chief-of-staff' AND status = 'valid' ORDER BY name`,
+      WHERE definition->>'role' = 'chief-of-staff' AND status <> 'retired' ORDER BY name`,
   );
   return rows.map((r) => ({
     name: r.name,
