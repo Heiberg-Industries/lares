@@ -157,7 +157,7 @@ export function MeetingsSourceControl({ view, initialLookup, notion, names = {} 
             <p className="lares-muted">Choosing it restarts the agents that read it, so a conversation in progress is interrupted for a moment.</p>
             <div className="lares-inline-form"><Button disabled={pending} onClick={() => save(picked.id)}>{pending ? "Saving…" : "Use this database"}</Button></div>
           </div>}
-          {current !== null && !offer && <div className="lares-inline-form">
+          {current !== null && <div className="lares-inline-form">
             <Button variant="outline" disabled={pending} onClick={() => save("")}>Stop reading meeting notes</Button>
           </div>}
         </> : view && <p className="lares-muted">Only the installation&apos;s owner can choose the meetings source.</p>}

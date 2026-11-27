@@ -77,7 +77,8 @@ describe('1. Connect', () => {
     expect(checkLine(pending(outcome))).toBe(line);
     const t = markup(of(pending(outcome)));
     expect(t).toContain(line);
-    expect(t).toContain('The check shows the key is valid. It does not show which pages the connection can read.');
+    // Only a key that passed is called valid.
+    expect(t.includes('The check shows the key is valid.')).toBe(outcome === 'passed');
   });
   it('sends the key once with the same keeper call as before, clears the field, and keeps it out of the page', async () => {
     let resolve!: (value: Response) => void;

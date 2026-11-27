@@ -66,8 +66,11 @@ describe('every state has its own sentence', () => {
 
   describe('the Notion key line', () => {
     it('may use / may not / not connected / unavailable: it points at the steps above, and has no switch of its own', () => {
-      expect(text(view(), cred(granted))).toContain('The chief of staff may use Notion, so clipping can run.');
-      expect(text(view(), cred({ consumers: granted.consumers }))).toContain('The chief of staff may use Notion, so clipping can run.');
+      expect(text(view(), cred(granted))).toContain('A chief of staff may use Notion, so clipping can run.');
+      expect(text(view(), cred({ consumers: granted.consumers }))).toContain('A chief of staff may use Notion, so clipping can run.');
+      // With several chiefs of staff the card cannot name one, and still says so.
+      expect(text(view({ chiefOfStaff: { kind: 'several' } }), cred(granted))).toContain('A chief of staff may use Notion, so clipping can run.');
+      expect(text(view(), cred({ grants: [{ agent: 'gone', purposes: ['clipping'], stale: true }] }))).toContain('No chief of staff may use Notion yet.');
       expect(text(view())).toContain('No chief of staff may use Notion yet. Switch one on under 2. Which agents may use Notion.');
       expect(text(view(), cred({ activeRevision: null, state: 'not-configured' }))).toContain('Notion is not connected yet. Connect it under 1. Connect.');
       expect(text(view(), { kind: 'unavailable' })).toContain('Notion key: status unavailable.');
@@ -80,7 +83,7 @@ describe('every state has its own sentence', () => {
       act(() => { window.dispatchEvent(new CustomEvent('lares:notion-key-updated', { detail: { not: 'a status' } })); });
       expect(screen.getByText('Notion is not connected yet. Connect it under 1. Connect.')).toBeTruthy();
       act(() => { window.dispatchEvent(new CustomEvent('lares:notion-key-updated', { detail: status(granted) })); });
-      await waitFor(() => expect(screen.getByText('The chief of staff may use Notion, so clipping can run.')).toBeTruthy());
+      await waitFor(() => expect(screen.getByText('A chief of staff may use Notion, so clipping can run.')).toBeTruthy());
     });
   });
 

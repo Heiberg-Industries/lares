@@ -180,7 +180,7 @@ export function NotionConnection({ initial, agents, names, children }: {
         </form>}
         {candidateCheck && <p data-testid="notion-check">New key: {candidateCheck}</p>}
         {activeCheck && <p data-testid="notion-check">{activeCheck}</p>}
-        {(candidateCheck || activeCheck) && <p className="lares-muted">The check shows the key is valid. It does not show which pages the connection can read.</p>}
+        {(candidateCheck || activeCheck) && status?.test?.outcome === 'passed' && <p className="lares-muted">The check shows the key is valid. It does not show which pages the connection can read.</p>}
         {status && editable && status.candidateRevision && <div className="lares-inline-form">
           {status.state === 'pending-apply'
             ? <Button disabled={busy || !canSwitch} onClick={() => setConfirm({ kind: 'apply' })}>Start using this key</Button>

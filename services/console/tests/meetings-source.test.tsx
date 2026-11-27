@@ -98,6 +98,12 @@ it("stops reading meeting notes when asked, by saving the setting empty", async 
   await waitFor(() => expect(document.body.textContent).toContain("no meetings database is chosen now"));
 });
 
+it("keeps Stop reading meeting notes while a lookup found another database that was not chosen", () => {
+  show({ view: view({ value: "ds-old", from: "console" }), initialLookup: lookup(request()) });
+  expect(screen.getByRole("button", { name: "Use this database" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Stop reading meeting notes" })).toBeTruthy();
+});
+
 it("shows the keeper's refusal word for word", async () => {
   const sentence = "Only the installation's owner can change the meetings source.";
   vi.mocked(setMeetingsSource).mockResolvedValue({ ok: false, error: { message: sentence, outcomeMayBeUnknown: false } } as never);

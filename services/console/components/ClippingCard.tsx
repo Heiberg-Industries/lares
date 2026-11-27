@@ -177,12 +177,14 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
   const req = (k: ClippingRequestKind) => live?.requests[k];
   const schemaReq = req('schema');
   const schema = schemaReq?.status === 'done' && isSchema(schemaReq.result) ? schemaReq.result : null;
-  const agent = live?.chiefOfStaff.kind === 'one' ? live.chiefOfStaff.name : null;
+  // Any agent that gets the key counts, however many chiefs of staff there are: the keeper gives it to
+  // a chief of staff only, by a grant (switched on in step 2) or through the installation's own settings.
+  const someoneMayUse = !!status && ((status.grants ?? []).some((g) => !g.stale) || status.consumers.some((c) => c.category === 'owned-agent'));
 
   const keyLine = !status || status.state === 'unavailable' ? 'Notion key: status unavailable.'
     : !status.activeRevision ? 'Notion is not connected yet. Connect it under 1. Connect.'
-    : agent && (status.grants ?? []).some((g) => g.agent === agent && !g.stale) || agent && status.consumers.some((c) => c.name === agent && c.category === 'owned-agent')
-      ? 'The chief of staff may use Notion, so clipping can run.'
+    : someoneMayUse
+      ? 'A chief of staff may use Notion, so clipping can run.'
       : 'No chief of staff may use Notion yet. Switch one on under 2. Which agents may use Notion.';
 
   return <Card role="region" aria-labelledby="clipping-heading">
