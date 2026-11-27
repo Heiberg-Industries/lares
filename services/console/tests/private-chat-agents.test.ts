@@ -14,6 +14,14 @@ describe('private chat identity listing',()=>{
   expect(sql).not.toMatch(/grants|autonomy|skills|doors|tools|started_at|count\(/);
   expect(fake.visible).toHaveBeenCalledWith(member.id,'agent',{db:expect.any(Object)});expect(fake.release).toHaveBeenCalledOnce();
  });
+ it('carries the picture version so Chat shows the agent\'s picture, and none when there is no picture',async()=>{
+  fake.visible.mockResolvedValue([{resource:{id:'allowed'},permissions:['use']},{resource:{id:'plain'},permissions:['use']}]);
+  fake.query.mockImplementation(async(sql:string)=>({rows:sql.startsWith('SELECT')?[{name:'allowed',display_name:'Allowed agent',role:'chief-of-staff',avatar_version:'1700000000.5'},{name:'plain',display_name:'Plain agent',role:'creative',avatar_version:null}]:[]}));
+  const agents=await listPrivateChatAgents(member);
+  expect(agents[0]).toEqual({name:'allowed',displayName:'Allowed agent',role:'Chief of Staff',avatarVersion:'1700000000.5'});
+  expect(agents[1]).not.toHaveProperty('avatarVersion');
+  expect(fake.query.mock.calls.find(([sql])=>sql.startsWith('SELECT'))![0]).toContain('LEFT JOIN agent_avatars');
+ });
  it('does not query metadata for ungranted or edit-only callers',async()=>{
   fake.visible.mockResolvedValue([{resource:{id:'editor-only'},permissions:['edit']}]);
   expect(await listPrivateChatAgents(member)).toEqual([]);expect(fake.query.mock.calls.some(([sql])=>sql.startsWith('SELECT'))).toBe(false);

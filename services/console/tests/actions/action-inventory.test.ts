@@ -96,7 +96,7 @@ const ROUTE_LEVELS: Record<string, "member" | "admin" | "owner"> = {
   "GET /api/accounts/microsoft/callback": "member", "POST /api/accounts/microsoft/start": "member",
   "GET /api/agent-mailbox": "member", "POST /api/agent-mailbox": "member",
   "GET /api/chat/[name]/[...path]": "member", "POST /api/chat/[name]/[...path]": "member",
-  "GET /api/agents/[name]/avatar": "admin",
+  "GET /api/agents/[name]/avatar": "member", // a member only for an agent they may chat with; see the admin-parts test
   "GET /api/clipping": "admin",
   "POST /api/clipping": "owner",
   "GET /api/notion-proposals": "admin",
@@ -264,7 +264,8 @@ describe("console action inventory", () => {
     const withOwnerParts = rows.filter(r => r.ownerExtras).map(r => r.id).sort();
     expect(withOwnerParts).toEqual(["/agents/[name]", "/integrations/[id]", "/outside-tools/[id]", "/reviews", "/sign-in", "/your-accounts", "GET /api/auth/[...route]", "accounts.removeAccount",
       "outside-connect.connectSetTools"].sort()); // an admin sets tools; a new run-without-asking switch inside the same save is refused
-    expect(rows.filter(r => r.adminExtras).map(r => r.id)).toEqual([]);
+    // An agent's picture: an admin sees every agent's; a member only an agent they may chat with, checked inside.
+    expect(rows.filter(r => r.adminExtras).map(r => r.id)).toEqual(["GET /api/agents/[name]/avatar"]);
   });
 
   it("only gates pages, actions and routes through guards this suite has proved, and knows every function lib/auth.ts exports", () => {

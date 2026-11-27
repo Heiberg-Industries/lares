@@ -1541,9 +1541,10 @@
       "id": "GET /api/agents/[name]/avatar",
       "kind": "route",
       "file": "app/api/agents/[name]/avatar/route.ts",
-      "act": "admin",
-      "guards": ["actingAddress"],
+      "act": "member",
+      "guards": ["mayUse"],
       "source": "derived",
+      "adminExtras": true,
       "methods": "GET",
       "changesState": false,
       "usedBy": ["/", "/agents", "/agents/[name]", "/agents/[name]/edit", "/agents/new", "/chat/[name]"]
