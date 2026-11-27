@@ -46,7 +46,34 @@ Commit titles from c09263205cb2c450a6fafed76c7806e26df7007a to 4ae92750a1b443953
 
 ## What changed, and what breaks
 
-TO BE WRITTEN BY A PERSON. Replace this paragraph with what changed in plain words, one short paragraph or bullet for each change a person using the release would notice. Then write each breaking change as one sentence in the `breaking` list of the release file, or delete the placeholder line if nothing breaks. The tests refuse to pass while this marker is still in a release file or in these notes.
+- **The console has a new look.** Every page uses one set of colours, type sizes and spacing, in light and dark, laid out on the same grid, with the same cards, rows, badges and messages. On a phone the menu opens from a button. No page does anything it did not do before, except where this list says so.
+- **A new menu.** The owner's menu is grouped, and features that are not built yet are greyed and tagged "Coming". Appearance (the light or dark choice), Your membership and Sign out sit at the foot of the menu under the person's name. A member who is not the owner or an admin sees Chat, Your accounts and Your membership.
+- **Page addresses changed, and the old ones are gone.** Nothing redirects, so old bookmarks stop working:
+
+  | Old | New |
+  | --- | --- |
+  | `/waiting` | `/reviews` |
+  | `/voice` | `/writing-style` |
+  | `/accounts` | `/your-accounts` |
+  | `/integrations/outside` | `/outside-tools` |
+  | `/meetings` | `/meeting-follow-ups` |
+  | `/taste` | `/saved-preferences` |
+  | `/activity` | `/permission-checks` |
+  | `/signals` | `/alerts` |
+  | `/signals/rules` | `/alert-routing` |
+  | `/signals/catalogue` | `/alert-routing/catalogue` |
+  | `/settings` | `/general` |
+  | `/proactivity` | `/quiet-hours-and-delivery` |
+  | `/backup` | `/backups` |
+  | `/membership` | `/your-membership` |
+
+  Unchanged: Overview (`/`), `/chat`, `/agents`, `/integrations`, `/deadlines`, `/members`, `/sign-in`, `/invite`, and everything under `/api` and `/v1`. The agents' instructions and the console's own messages name the new pages.
+- **Every Notion setting is on the Notion page** (Integrations > Notion): the key, the meetings database, the people sync, clipping, the changes waiting for a yes or no, and the frozen documents. The meetings database and the people sync moved there from General; clipping moved there from the Readability worker page.
+- **A new level between owner and member: admin.** The owner picks Admin or Member for each person on the Members page, and an invitation can be made as Admin. An admin can open every shared page except Members, Backups and General. An admin can change deadlines, saved preferences, writing style, meeting follow-ups, quiet hours and delivery, alert routing, and where an agent's messages go. An admin can add and check outside connectors and connect one to an agent the owner lets them edit. An admin can see agents but not create, edit or delete them, cannot set up a chat app for one, and cannot answer approvals. Switching a tool to "run without asking" stays with the owner.
+- **A "run without asking" switch reaches a conversation that is already open,** at its next step. Before, an open conversation kept the switches it started with until a new conversation began.
+- **One database file:** `040_admin_role.sql` adds the admin level. `lares update` applies it. No setting changes.
+
+Model prices were last checked on 18 November 2026.
 
 ## Security scan
 
