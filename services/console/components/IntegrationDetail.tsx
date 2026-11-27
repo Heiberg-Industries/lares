@@ -27,16 +27,21 @@ export function IntegrationHeader({ card, actions }: { card: IntegrationCard; ac
 
 /** Which agents use a service, what each may do with it, when it was last used and where its key is
  *  kept. `board` null means the permission rows could not be read. */
-export function IntegrationDetail({ card, rows, board, owner }: { card: IntegrationCard; rows: ConnectionRowDTO[]; board: BoardRowDTO[] | null;
+export function IntegrationDetail({ card, rows, board, owner, usage = true, children }: { card: IntegrationCard; rows: ConnectionRowDTO[]; board: BoardRowDTO[] | null;
   /** True for the owner, who alone changes how freely an agent acts. */
-  owner: boolean }) {
+  owner: boolean;
+  /** False on a page that says which agents use the service in its own words (Notion's step 2). */
+  usage?: boolean;
+  /** The service's own settings, between the header and what agents may do with it. */
+  children?: ReactNode }) {
   const several = rows.length > 1;
   const permissions = board ? boardRowsFor(card.id, board) : [];
   return (
     <>
       <IntegrationHeader card={card} />
-      {rows.some((r) => r.usageUnavailable) && <Notice tone="needs-you">Usage unavailable. Recorded connection activity could not be read.</Notice>}
-      {rows.map((r) => (
+      {children}
+      {usage && rows.some((r) => r.usageUnavailable) && <Notice tone="needs-you">Usage unavailable. Recorded connection activity could not be read.</Notice>}
+      {usage && rows.map((r) => (
         <Card key={r.instanceId} role={several ? "group" : undefined} aria-label={several ? r.label : undefined}>
           {several && <CardHeader><CardTitle role="heading" aria-level={2}>{r.label}</CardTitle></CardHeader>}
           <Rows>

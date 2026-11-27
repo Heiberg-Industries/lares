@@ -466,6 +466,12 @@ void main();"""
  sql((repo/'services/box/sql/041_schedule_run.sql').read_text())
  sql("DO $$ BEGIN IF (SELECT count(*) FROM schedule_run WHERE job='outcome-proof/voice-learn' AND state='skipped' AND reason='switched-off')<>1 OR (SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='schedule_run')<>8 THEN RAISE EXCEPTION 'SQL041 lost an outcome on reapply or changed shape'; END IF; BEGIN INSERT INTO schedule_run(job,state,reason) VALUES('outcome-proof/dream','finished','switched-off'); RAISE EXCEPTION 'SQL041 accepted a reason on a finished run'; EXCEPTION WHEN check_violation THEN NULL; END; END $$")
  sql("DELETE FROM schedule_run WHERE job='outcome-proof/voice-learn'")
+ # SQL042 (the meetings lookup) touches no row and is safe to run again: a waiting request survives, the new kind can be stored, a kind off the list is refused.
+ sql("INSERT INTO clipping_requests(kind,requested_by) VALUES('schema','lookup-proof')")
+ sql((repo/'services/box/sql/042_notion_meetings_lookup.sql').read_text())
+ sql((repo/'services/box/sql/042_notion_meetings_lookup.sql').read_text())
+ sql("DO $$ BEGIN IF (SELECT count(*) FROM clipping_requests WHERE requested_by='lookup-proof' AND kind='schema' AND status='pending')<>1 THEN RAISE EXCEPTION 'SQL042 lost a waiting request on reapply'; END IF; INSERT INTO clipping_requests(kind,requested_by,params) VALUES('meetings-database','lookup-proof','{\"link\":\"https://www.notion.so/example\"}'); BEGIN INSERT INTO clipping_requests(kind,requested_by) VALUES('anything','lookup-proof'); RAISE EXCEPTION 'SQL042 accepted a kind off the list'; EXCEPTION WHEN check_violation THEN NULL; END; END $$")
+ sql("DELETE FROM clipping_requests WHERE requested_by='lookup-proof'")
  # The credential journal is part of the baseline.
  sql("DO $$ BEGIN IF to_regclass('standing_facts') IS NULL OR (SELECT count(*) FROM information_schema.columns WHERE table_name='standing_facts' AND column_name IN ('user_id','origin','recorded_at','source','superseded_by'))<>5 THEN RAISE EXCEPTION 'standing_facts missing or not in its final shape'; END IF; END $$")
  sql("DO $$ BEGIN IF to_regclass('keeper_credentials') IS NULL THEN RAISE EXCEPTION 'Credential journal migration missing'; END IF; END $$")

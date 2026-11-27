@@ -10,9 +10,9 @@
 // a row to `clipping_requests`; the chief of staff answers it within a minute. The one table the
 // console writes directly is `clipping_sources` (the saved mapping) and `clipping_choice`.
 import {
-  clippingAddPropertiesResult, clippingImportResult, clippingSchemaResult, clippingTestResult,
+  clippingAddPropertiesResult, clippingImportResult, clippingSchemaResult, clippingTestResult, meetingsDatabaseResult,
   type ClippingAddPropertiesResult, type ClippingImportResult, type ClippingMode,
-  type ClippingSchemaResult, type ClippingTestResult,
+  type ClippingSchemaResult, type ClippingTestResult, type MeetingsDatabaseResult,
 } from "@lares/agent-kit/clipping-console";
 import { pool } from "./db";
 
@@ -28,8 +28,11 @@ export const CLIPPING_OUTCOMES = [
 export type ClippingOutcome = (typeof CLIPPING_OUTCOMES)[number];
 
 /** services/chief-of-staff/lib/clipping/requests.ts `RequestKind`. */
-export const CLIPPING_REQUEST_KINDS = ["schema", "test", "import", "add-properties"] as const;
+export const CLIPPING_REQUEST_KINDS = ["schema", "test", "import", "add-properties", "meetings-database"] as const;
 export type ClippingRequestKind = (typeof CLIPPING_REQUEST_KINDS)[number];
+/** The kinds the Clipping card asks for. `meetings-database` is the Meetings page's lookup, read by
+ *  `getMeetingsLookupView`: it shares the queue, never the card. */
+export const CARD_REQUEST_KINDS = ["schema", "test", "import", "add-properties"] as const satisfies readonly ClippingRequestKind[];
 
 /** services/chief-of-staff/lib/clipping/requests.ts `CLAIM_STALE_MS`. */
 export const REQUEST_STALE_MS = 10 * 60_000;
@@ -64,7 +67,7 @@ export interface ClippingRequestView {
   createdAt: string;
   finishedAt: string | null;
   /** Parsed result of a finished request, or null when it is absent or not the shape expected. */
-  result: ClippingSchemaResult | ClippingTestResult | ClippingImportResult | ClippingAddPropertiesResult | null;
+  result: ClippingSchemaResult | ClippingTestResult | ClippingImportResult | ClippingAddPropertiesResult | MeetingsDatabaseResult | null;
 }
 
 export type ChiefOfStaff =
@@ -93,7 +96,7 @@ const isOutcome = (v: unknown): v is ClippingOutcome => (CLIPPING_OUTCOMES as re
 
 const RESULT_SCHEMAS = {
   schema: clippingSchemaResult, test: clippingTestResult, import: clippingImportResult,
-  "add-properties": clippingAddPropertiesResult,
+  "add-properties": clippingAddPropertiesResult, "meetings-database": meetingsDatabaseResult,
 } as const;
 
 export const NOT_PICKED_UP = "The chief of staff did not pick this up.";
@@ -161,7 +164,7 @@ export async function getClippingView(now: Date = new Date()): Promise<ClippingV
     ]);
     const byKind: Partial<Record<ClippingRequestKind, ClippingRequestView>> = {};
     for (const r of requests.rows as Row[]) {
-      if ((CLIPPING_REQUEST_KINDS as readonly string[]).includes(r["kind"] as string)) {
+      if ((CARD_REQUEST_KINDS as readonly string[]).includes(r["kind"] as string)) {
         byKind[r["kind"] as ClippingRequestKind] = toRequestView(r, now);
       }
     }
@@ -309,7 +312,21 @@ export async function hasSavedSource(): Promise<boolean | null> {
   }
 }
 
-/** The chief of staff to switch on, resolved on the server so the browser never names an agent. */
-export async function chiefOfStaffForSwitch(): Promise<ChiefOfStaff | null> {
-  try { return await findChiefOfStaff(); } catch { return null; }
+// --- the Meetings page's lookup ------------------------------------------------------------------
+
+/** The latest meetings lookup (`meetings-database`), as the Meetings page shows it: null when none was
+ *  asked for yet, `unavailable` when it could not be read. `busy`: the page keeps itself up to date. */
+export type MeetingsLookupView =
+  | { unavailable: true }
+  | { unavailable: false; request: ClippingRequestView | null; busy: boolean };
+
+export async function getMeetingsLookupView(now: Date = new Date()): Promise<MeetingsLookupView> {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM clipping_requests WHERE kind = 'meetings-database' ORDER BY created_at DESC, id LIMIT 1");
+    const request = rows[0] ? toRequestView(rows[0] as Row, now) : null;
+    return { unavailable: false, request, busy: request?.status === "pending" || request?.status === "claimed" };
+  } catch {
+    return { unavailable: true };
+  }
 }

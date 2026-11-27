@@ -2,11 +2,13 @@
  * The clipping request queue (child b): what the console's Clipping card asks the chief
  * of staff to do, because only the chief of staff holds the Notion key.
  *
- * Four kinds, each answered into `clipping_requests` (box/sql/001_baseline.sql):
- *   schema          read a pasted database: its data sources and their columns, with a suggestion
- *   test            try the saved (or proposed) mapping on one page of rows; writes nothing
- *   import          run one clipping pass now (the same code the digest runs)
- *   add-properties  add only the missing Status, For and Origin columns; never change an existing one
+ * Five kinds, each answered into `clipping_requests` (box/sql/001_baseline.sql, 042):
+ *   schema             read a pasted database: its data sources and their columns, with a suggestion
+ *   test               try the saved (or proposed) mapping on one page of rows; writes nothing
+ *   import             run one clipping pass now (the same code the digest runs)
+ *   add-properties     add only the missing Status, For and Origin columns; never change an existing one
+ *   meetings-database  the Meetings page's lookup: a pasted meetings database's data sources (ids and
+ *                      names only), so the owner can save one as the meetings source; writes nothing
  *
  * Same discipline as the digest's step: every failure keeps its own outcome and a one-line owner
  * sentence (never a vendor body, never a token), a request is never left "claimed" for ever, and
@@ -22,7 +24,7 @@ import {
   findDuplicate, getItem, loadNotionSources, readClippingChoice, type Queryable,
 } from "./store.js";
 
-export type RequestKind = "schema" | "test" | "import" | "add-properties";
+export type RequestKind = "schema" | "test" | "import" | "add-properties" | "meetings-database";
 
 export interface ClippingRequest {
   id: string;
@@ -102,7 +104,7 @@ function propsOf(dataSource: unknown): [string, RawProp][] {
 
 const NO_KEY = new ClippingFailure(
   "not-configured", "The chief of staff has no Notion key yet.",
-  "Add the Notion key and switch clipping on first.",
+  "Add the Notion key, then switch Notion on for this agent on the Notion page under Integrations.",
 );
 
 function keyFor(deps: RequestDeps): string {
@@ -119,7 +121,10 @@ function keyFor(deps: RequestDeps): string {
 
 // --- schema ----------------------------------------------------------------------------------
 
-async function runSchema(client: NotionLike, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+/** The data sources a pasted database link lists, ids and names only. Shared by both lookups. */
+async function listDataSources(client: NotionLike, params: Record<string, unknown>): Promise<{
+  databaseId: string; listed: { id: string; name: string }[];
+}> {
   const link = str(params["link"]);
   const databaseId = link ? parseDatabaseRef(link) : null;
   if (!databaseId) {
@@ -139,14 +144,22 @@ async function runSchema(client: NotionLike, params: Record<string, unknown>): P
       "Check the link points at a database, not a page.",
     );
   }
+  return {
+    databaseId,
+    listed: listed.map((d) => ({ id: d.id as string, name: typeof d.name === "string" && d.name ? d.name : "Untitled" })),
+  };
+}
+
+async function runSchema(client: NotionLike, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const { databaseId, listed } = await listDataSources(client, params);
   const dataSources: { id: string; name: string; columns: { id: string; name: string; type: string }[] }[] = [];
   for (const d of listed) {
     let ds: unknown;
-    try { ds = await client.dataSources.retrieve({ data_source_id: d.id as string }); }
+    try { ds = await client.dataSources.retrieve({ data_source_id: d.id }); }
     catch (e) { throw classifyNotionError(e); }
     dataSources.push({
-      id: d.id as string,
-      name: typeof d.name === "string" && d.name ? d.name : "Untitled",
+      id: d.id,
+      name: d.name,
       columns: propsOf(ds).map(([key, p]) => ({ id: p.id!, name: p.name || key, type: p.type! })),
     });
   }
@@ -327,6 +340,11 @@ export async function runRequest(deps: RequestDeps, req: ClippingRequest): Promi
         case "schema": return runSchema(client, req.params);
         case "test": return runTest(deps, client, req.params);
         case "add-properties": return runAddProperties(deps, client, req.params);
+        // The meetings source is the owner's choice of one of these; nothing is saved here.
+        case "meetings-database": {
+          const { databaseId, listed } = await listDataSources(client, req.params);
+          return { databaseId, dataSources: listed };
+        }
       }
     });
     return { status: "done", outcome: "ok", detail: null, result: result ?? {} };

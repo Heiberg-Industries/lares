@@ -1,10 +1,7 @@
 'use client';
 import { Select } from "@lares/ui/primitives/select";
-import { Checkbox } from "@lares/ui/primitives/checkbox";
 import { useEffect, useRef, useState } from 'react';
-import {
-  CREDENTIAL_SLOT, credentialStatusSchema, type CredentialGrantPreview, type CredentialMutation, type CredentialStatus,
-} from '@lares/agent-kit/credential-lifecycle';
+import { credentialStatusSchema, type CredentialStatus } from '@lares/agent-kit/credential-lifecycle';
 import type {
   ClippingAddPropertiesResult, ClippingImportResult, ClippingMode, ClippingSchemaResult, ClippingTestResult,
 } from '@lares/agent-kit/clipping-console';
@@ -12,14 +9,15 @@ import type { CredentialView } from '../lib/credentials';
 import type {
   ClippingOutcome, ClippingRequestKind, ClippingRequestView, ClippingSourceView, ClippingView,
 } from '../lib/clipping';
-import { Notice } from '@lares/ui/patterns';
+import { Notice, RunStatus, type RunStatusProps } from '@lares/ui/patterns';
 import { Button } from '@lares/ui/primitives/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@lares/ui/primitives/card';
 import { Input } from '@lares/ui/primitives/input';
-import { NOTION_CREDENTIAL_CHANGED, NOTION_KEY_UPDATED } from './NotionCredential';
+import { NOTION_KEY_UPDATED } from './NotionConnection';
 import { useKeepFresh } from '../lib/use-keep-fresh';
 
 const when = (iso: string | null) => (iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : 'never');
+const at = (iso: string | null) => (iso ? `on ${iso.slice(0, 10)} at ${iso.slice(11, 16)} UTC` : undefined);
 
 const MODE_LABEL: Record<ClippingMode, string> = { notion: 'Notion', karakeep: 'Karakeep', both: 'Both (changeover)' };
 
@@ -39,7 +37,7 @@ const OUTCOME_LABEL: Record<ClippingOutcome, string> = {
   'local-error': 'Lares could not read its own records',
 };
 const FIX: Partial<Record<ClippingOutcome, string>> = {
-  refused: 'Check the Notion key above.',
+  refused: 'Check the Notion key under 1. Connect.',
   'not-shared': 'In Notion, open the database, choose the three dots, then Connections, and add your Lares connection.',
   'schema-mismatch': 'Read the database again and pick the columns again.',
 };
@@ -59,13 +57,7 @@ const messages: Record<string, string> = {
   'no-schema': 'Read the database first, then pick its columns.',
   'mapping-mismatch': 'Those columns do not match what the chief of staff last read. Read the database again.',
   'more-than-one-source': 'More than one Notion source is set up on this installation. Only one is supported for now; ask the host operator.',
-  'chief-of-staff-not-found': 'There is not exactly one chief of staff to switch on.',
-  'request-refused': 'The Lares server helper refused this request. Check the Notion key above, then try again.',
-  'unavailable-before-send': 'The Lares server helper could not be reached. Nothing was changed.',
-  'outcome-unknown': 'The result is unknown: the request may have run. Check the Notion key card above before trying again.',
-  administrator: "Only the installation's credential administrator can switch this.",
   unavailable: 'Clipping status unavailable.',
-  'administrator-required': "Only the installation's credential administrator can switch this.",
 };
 
 const isSchema = (r: ClippingRequestView['result']): r is ClippingSchemaResult => !!r && 'dataSources' in r;
@@ -114,24 +106,40 @@ function sourceSentence(s: ClippingSourceView | null, count: number): string {
   return `Last fetch failed at ${when(s.lastAttemptAt)}. ${failureText(s.outcome, s.detail)} Last good fetch: ${when(s.lastSuccessAt)}. ${total}`;
 }
 
-type Flow = { kind: 'on'; preview: CredentialGrantPreview } | { kind: 'off' } | null;
+/** Where clipping is, for the status line at the top of the card. Pure. */
+export function clippingRunStatus(live: Extract<ClippingView, { unavailable: false }>): RunStatusProps {
+  const waiting = CARD_KINDS.map((k) => live.requests[k]).find((r) => r?.status === 'pending' || r?.status === 'claimed');
+  if (waiting) return waiting.status === 'claimed'
+    ? { state: 'running', why: 'The chief of staff is working on your request.' }
+    : { state: 'requested', why: 'The chief of staff picks this up within a minute.' };
+  if (live.sourceCount > 1) return { state: 'skipped', why: 'More than one Notion source is set up, so none is read.' };
+  const s = live.source;
+  if (!s) return { state: 'skipped', why: 'No database is chosen yet. Paste its link under Database.' };
+  if (!s.outcome) return { state: 'waiting', why: 'Not fetched yet. The next digest, or Import now, fetches it.' };
+  if (s.outcome === 'ok') {
+    const c = s.lastCounts;
+    return { state: 'finished', when: at(s.lastAttemptAt), why: typeof c['imported'] === 'number' ? `Last fetch brought in ${c['imported']} new link${c['imported'] === 1 ? '' : 's'}.` : undefined };
+  }
+  if (s.outcome === 'not-configured') return { state: 'skipped', when: at(s.lastAttemptAt), why: s.detail ?? OUTCOME_LABEL['not-configured'] };
+  return { state: 'failed', when: at(s.lastAttemptAt), why: failureText(s.outcome, s.detail) };
+}
+const CARD_KINDS: ClippingRequestKind[] = ['schema', 'test', 'import', 'add-properties'];
 
 export function ClippingCard({ initial, credential }: { initial: ClippingView; credential: CredentialView }) {
   const [view, setView] = useState<ClippingView>(initial);
   const [cred, setCred] = useState<CredentialView>(credential);
-  const [busy, setBusy] = useState(false), [message, setMessage] = useState(''), [credMessage, setCredMessage] = useState('');
+  const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const [link, setLink] = useState('');
-  const [flow, setFlow] = useState<Flow>(null), [confirmed, setConfirmed] = useState(false);
   const inFlight = useRef(false);
 
   const live = view.unavailable ? null : view;
   const status: CredentialStatus | null = cred.kind === 'status' ? cred.status : null;
 
-  // The Notion key card on the same page changed the key: take the status it got back, so the switch below is not stale.
+  // The Notion key or who may use it changed on the same page: take the status it got back.
   useEffect(() => {
     const onKey = (event: Event) => {
       const parsed = credentialStatusSchema.safeParse((event as CustomEvent).detail);
-      if (parsed.success) { setCred({ kind: 'status', status: parsed.data }); setFlow(null); setConfirmed(false); }
+      if (parsed.success) setCred({ kind: 'status', status: parsed.data });
     };
     window.addEventListener(NOTION_KEY_UPDATED, onKey);
     return () => window.removeEventListener(NOTION_KEY_UPDATED, onKey);
@@ -164,79 +172,18 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
     finally { inFlight.current = false; setBusy(false); }
   }
 
-  // ---- the keeper switch (existing credentials route) --------------------------------------------
-  async function credentialCall(command: CredentialMutation): Promise<boolean> {
-    if (inFlight.current) return false;
-    inFlight.current = true; setBusy(true); setCredMessage(''); setFlow(null); setConfirmed(false);
-    try {
-      const res = await fetch('/api/credentials/notion', {
-        method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(command),
-      });
-      const body = await res.json(); const parsed = credentialStatusSchema.safeParse(body.status);
-      if (!res.ok || body.ok !== true || !parsed.success) {
-        const code = typeof body.code === 'string' && messages[body.code] ? body.code : 'outcome-unknown';
-        setCredMessage(messages[code]!); return false;
-      }
-      setCred({ kind: 'status', status: parsed.data });
-      setCredMessage('Operation recorded. Review the result below.');
-      // The Notion key card above holds its own copy of this status; tell it to read it again.
-      window.dispatchEvent(new Event(NOTION_CREDENTIAL_CHANGED));
-      return true;
-    } catch { setCredMessage(messages['outcome-unknown']!); return false; }
-    finally { inFlight.current = false; setBusy(false); }
-  }
-  async function recheckCredential() {
-    if (inFlight.current) return;
-    inFlight.current = true; setBusy(true);
-    try {
-      const res = await fetch('/api/credentials/notion', { cache: 'no-store', credentials: 'same-origin' });
-      const body = await res.json(); const parsed = credentialStatusSchema.safeParse(body.status);
-      if (res.ok && body.ok === true && parsed.success) { setCred({ kind: 'status', status: parsed.data }); setCredMessage('Credential status refreshed.'); }
-      else setCredMessage(messages[body.code as string] ?? 'Credential status unavailable.');
-    } catch { setCredMessage('Credential status unavailable.'); }
-    finally { inFlight.current = false; setBusy(false); }
-  }
-
-  const agent = live?.chiefOfStaff.kind === 'one' ? live.chiefOfStaff.name : null;
-  const grants = status?.grants ?? [];
-  const granted = !!agent && grants.some((g) => g.agent === agent && !g.stale);
-  const byConfig = !!agent && !granted && !!status?.consumers.some((c) => c.name === agent && c.category === 'owned-agent');
-  const staleGrants = grants.filter((g) => g.stale);
-  const grantCommand = (operation: 'grant' | 'revoke', name: string, inventoryRevision: string): CredentialMutation | null => {
-    if (!status || status.revision === null) return null;
-    return {
-      operation, slot: CREDENTIAL_SLOT, expectedRevision: status.revision, expectedActiveRevision: status.activeRevision,
-      inventoryRevision, confirmRestart: true, agent: name, purpose: 'clipping',
-    };
-  };
-  async function startOn() {
-    const body = await act({ action: 'preview-grant' }) as { preview?: CredentialGrantPreview } | null;
-    if (body?.preview) { setFlow({ kind: 'on', preview: body.preview }); setConfirmed(false); }
-  }
-  function confirmSwitch() {
-    if (!flow || !confirmed || !agent) return;
-    const command = flow.kind === 'on'
-      ? grantCommand('grant', agent, flow.preview.inventoryRevision)
-      : status?.inventoryRevision ? grantCommand('revoke', agent, status.inventoryRevision) : null;
-    if (command) void credentialCall(command);
-  }
-  function removeStale(name: string) {
-    if (!status?.inventoryRevision) return;
-    const command = grantCommand('revoke', name, status.inventoryRevision);
-    if (command) void credentialCall(command);
-  }
-
   // ---- what to show ------------------------------------------------------------------------------
   const source = live?.source ?? null;
   const req = (k: ClippingRequestKind) => live?.requests[k];
   const schemaReq = req('schema');
   const schema = schemaReq?.status === 'done' && isSchema(schemaReq.result) ? schemaReq.result : null;
+  const agent = live?.chiefOfStaff.kind === 'one' ? live.chiefOfStaff.name : null;
 
-  const keyLine = !status ? 'Notion key: status unavailable.'
-    : status.state === 'unavailable' ? 'Notion key: status unavailable.'
-    : !status.activeRevision ? 'Notion key: not saved. Add it under Notion key above.'
-    : status.test?.revision === status.activeRevision && status.test.outcome === 'passed' ? 'Notion key: working.'
-    : 'Notion key: saved.';
+  const keyLine = !status || status.state === 'unavailable' ? 'Notion key: status unavailable.'
+    : !status.activeRevision ? 'Notion is not connected yet. Connect it under 1. Connect.'
+    : agent && (status.grants ?? []).some((g) => g.agent === agent && !g.stale) || agent && status.consumers.some((c) => c.name === agent && c.category === 'owned-agent')
+      ? 'The chief of staff may use Notion, so clipping can run.'
+      : 'No chief of staff may use Notion yet. Switch one on under 2. Which agents may use Notion.';
 
   return <Card role="region" aria-labelledby="clipping-heading">
     <CardHeader>
@@ -245,8 +192,9 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
     </CardHeader>
     <CardContent className="lares-stack">
     {!live ? <Notice>{messages.unavailable}</Notice> : <>
-      <SourceChoice live={live} busy={busy} onChoose={(mode) => void act({ action: 'set-choice', mode })} />
+      <RunStatus label="Clipping" {...clippingRunStatus(live)} />
       <p>{keyLine}</p>
+      <SourceChoice live={live} busy={busy} onChoose={(mode) => void act({ action: 'set-choice', mode })} />
 
       <h3 className="lares-section-title">Database</h3>
       <MappingPicker key={`${schemaReq?.id ?? 'none'}:${source?.dataSourceId ?? ''}`} schema={schema} source={source} busy={busy}
@@ -265,14 +213,6 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
       <div className="lares-inline-form"><Button variant="outline" disabled={busy || !source} onClick={() => void act({ action: 'test' })}>Test</Button></div>
       <RequestResult req={req('test')} wait="Testing…"
         done={(r) => isTest(r) ? testSentence(r) : null} />
-
-      <h3 className="lares-section-title">Switch</h3>
-      <SwitchBlock status={status} credKind={cred.kind} live={live} agent={agent} granted={granted} byConfig={byConfig}
-        busy={busy} flow={flow} confirmed={confirmed} setConfirmed={setConfirmed}
-        onOn={() => void startOn()} onOff={() => { setFlow({ kind: 'off' }); setConfirmed(false); }}
-        onCancel={() => { setFlow(null); setConfirmed(false); }} onConfirm={confirmSwitch}
-        stale={staleGrants} onRemove={removeStale} onRecheck={() => void recheckCredential()} />
-      {credMessage && <Notice>{credMessage}</Notice>}
 
       <h3 className="lares-section-title">Import</h3>
       <div className="lares-inline-form"><Button disabled={busy || !source} onClick={() => void act({ action: 'import' })}>Import now</Button></div>
@@ -371,52 +311,5 @@ function MappingPicker({ schema, source, busy, link, setLink, wait, onRead, onSa
         {!source && <p className="lares-muted">Saving starts from now: links saved before this are not imported.</p>}
       </>}
     </div>}
-  </div>;
-}
-
-function SwitchBlock(p: {
-  status: CredentialStatus | null; credKind: CredentialView['kind']; live: Extract<ClippingView, { unavailable: false }>;
-  agent: string | null; granted: boolean; byConfig: boolean; busy: boolean; flow: Flow; confirmed: boolean;
-  setConfirmed: (v: boolean) => void; onOn: () => void; onOff: () => void; onCancel: () => void; onConfirm: () => void;
-  stale: { agent: string }[]; onRemove: (name: string) => void; onRecheck: () => void;
-}) {
-  const { status } = p;
-  if (!status) {
-    return <Notice>{p.credKind === 'administrator-required' ? messages.administrator
-      : p.credKind === 'sign-in-required' ? 'Sign in again before changing clipping.' : 'Credential status unavailable.'}</Notice>;
-  }
-  if (status.state === 'unavailable') return <Notice>Credential status unavailable.</Notice>;
-  if (!status.activeRevision) return <Notice>No Notion key is saved yet. Add it under Notion key above.</Notice>;
-  const chief = p.live.chiefOfStaff;
-  const consumers = p.flow?.kind === 'on' ? p.flow.preview.consumers : status.consumers;
-  return <div className="lares-stack">
-    {chief.kind === 'none' && <Notice>No chief of staff is set up, so there is nothing to switch on.</Notice>}
-    {chief.kind === 'several' && <Notice>More than one chief of staff is set up, so Lares cannot tell which one should read Notion. Ask the host operator.</Notice>}
-    {p.agent && (p.granted
-      ? <p>Clipping is switched on: the chief of staff receives the Notion key.</p>
-      : p.byConfig
-        ? <p>The chief of staff already receives the Notion key through this installation&apos;s own configuration, so there is no switch.</p>
-        : <p>Clipping is switched off: the chief of staff does not receive the Notion key yet.</p>)}
-    {p.agent && !p.byConfig && !p.flow && <div className="lares-inline-form">
-      {p.granted
-        ? <Button variant="outline" disabled={p.busy || !status.inventoryRevision} onClick={p.onOff}>Switch clipping off</Button>
-        : <Button disabled={p.busy} onClick={p.onOn}>Switch clipping on</Button>}
-      <Button variant="outline" disabled={p.busy} onClick={p.onRecheck}>Check credential status</Button>
-    </div>}
-    {p.agent && p.granted && !status.inventoryRevision && <p className="lares-muted">Check credential status to confirm the affected agents before switching off.</p>}
-    {p.flow && <div className="lares-stack" role="group" aria-label="Confirm clipping switch">
-      <p>{p.flow.kind === 'on' ? 'Switch clipping on' : 'Switch clipping off'} and restart every affected agent:</p>
-      {consumers.length ? <ul>{consumers.map((c) => <li key={c.name}>{c.name}</li>)}</ul> : <p>No affected agents are recorded.</p>}
-      <p className="lares-muted">Agents will stop and restart. This does not guarantee that current work has finished.</p>
-      <label className="lares-choice"><Checkbox checked={p.confirmed} onChange={(e) => p.setConfirmed(e.target.checked)} /> I confirm the complete list and these restarts.</label>
-      <div className="lares-inline-form">
-        <Button disabled={p.busy || !p.confirmed} onClick={p.onConfirm}>Confirm switch {p.flow.kind === 'on' ? 'on' : 'off'}</Button>
-        <Button variant="outline" disabled={p.busy} onClick={p.onCancel}>Cancel</Button>
-      </div>
-    </div>}
-    {p.stale.map((g) => <div key={g.agent} className="lares-inline-form">
-      <p>The agent {g.agent} was switched on but no longer exists. Nothing restarts when you remove it.</p>
-      <Button variant="outline" disabled={p.busy || !status.inventoryRevision} onClick={() => p.onRemove(g.agent)}>Remove</Button>
-    </div>)}
   </div>;
 }

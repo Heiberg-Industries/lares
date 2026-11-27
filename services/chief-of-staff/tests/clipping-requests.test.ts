@@ -34,6 +34,7 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   db = quietPool(container.getConnectionUri());
   await db.query(sql("001_baseline.sql"));
+  await db.query(sql("042_notion_meetings_lookup.sql"));
 }, 180_000);
 afterAll(async () => { await db?.end(); await container?.stop(); });
 
@@ -210,6 +211,28 @@ describe("schema", () => {
     fake.world.databases.set(DATABASE_ID, []);
     const row = await answer("schema", { link: DATABASE_ID });
     expect(row).toMatchObject({ status: "failed", outcome: "schema-mismatch" });
+  });
+});
+
+describe("meetings-database (the Meetings page's lookup)", () => {
+  it("answers a pasted link with the database's data sources, ids and names only, and saves nothing", async () => {
+    const link = `https://www.notion.so/Meetings-${DATABASE_ID.replace(/-/g, "")}?v=99999222333344445555666677778888`;
+    const row = await answer("meetings-database", { link });
+    expect(row).toMatchObject({ status: "done", outcome: "ok", outcome_detail: null });
+    expect(row.result).toEqual({ databaseId: DATABASE_ID, dataSources: [{ id: "ds-1", name: "Clips" }] });
+    expect((await db.query("SELECT count(*)::int AS n FROM clipping_sources")).rows[0].n).toBe(0);
+  });
+
+  it("a link that is not a database link, or one not shared with the connection, fails with its own sentence", async () => {
+    const bad = await answer("meetings-database", { link: "https://example.com/x" });
+    expect(bad).toMatchObject({ status: "failed", outcome: "schema-mismatch", result: {} });
+    const unshared = await answer("meetings-database", { link: "99999222-3333-4444-5555-666677778888" });
+    expect(unshared).toMatchObject({ status: "failed", outcome: "not-shared" });
+  });
+
+  it("with no Notion key, fails as not set up, which the page turns into its own sentence and link", async () => {
+    const row = await answer("meetings-database", { link: DATABASE_ID }, deps({ key: { kind: "none" } }));
+    expect(row).toMatchObject({ status: "failed", outcome: "not-configured", outcome_detail: "The chief of staff has no Notion key yet." });
   });
 });
 

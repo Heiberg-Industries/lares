@@ -158,7 +158,7 @@ describe("every action: who may call it", () => {
 
 describe("every route with a session: who may call it", () => {
   const routes = inventory.routes.filter((r: Row) => r.act !== "public");
-  it("covers every route with a session", () => expect(routes.length).toBe(17));
+  it("covers every route with a session", () => expect(routes.length).toBe(20));
   const url = (id: string) => `https://console.example.test${id.split(" ")[1]!.replace("[name]", "example").replace("[...path]", "v1/session")}`;
   for (const route of routes) {
     describe(`${route.id} (${route.act})`, () => {

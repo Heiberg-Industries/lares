@@ -24,12 +24,23 @@ export const clippingActionInput = z.discriminatedUnion('action', [
   z.object({ action: z.literal('import') }).strict(),
   z.object({ action: z.literal('add-properties') }).strict(),
   z.object({ action: z.literal('set-choice'), mode: z.enum(CLIPPING_MODES) }).strict(),
-  z.object({ action: z.literal('preview-grant') }).strict(),
 ]);
 export type ClippingActionInput = z.infer<typeof clippingActionInput>;
 
 const count = z.number().int().min(0).max(1_000_000);
 const column = z.object({ id, name: z.string().max(500), type: z.string().max(100) });
+
+/** What the Meetings page sends (`POST /api/meetings/source`): a pasted Notion database link for the
+ *  chief of staff to look up (request kind `meetings-database`, box/sql/042). */
+export const meetingsLookupInput = z.object({ link: z.string().trim().min(1).max(2048) }).strict();
+
+/** The chief of staff's answer to a meetings lookup: the database and its data sources, ids and
+ *  names only. Mirrors `meetings-database` in services/chief-of-staff/lib/clipping/requests.ts. */
+export const meetingsDatabaseResult = z.object({
+  databaseId: z.string().max(100),
+  dataSources: z.array(z.object({ id, name: z.string().max(500) }).strict()).min(1).max(10),
+}).strict();
+export type MeetingsDatabaseResult = z.infer<typeof meetingsDatabaseResult>;
 
 export const clippingSchemaResult = z.object({
   databaseId: z.string().max(100),

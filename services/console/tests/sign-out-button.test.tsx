@@ -36,6 +36,6 @@ it('shows only private chat, your accounts and your membership to another member
   expect(screen.getAllByRole('link',{name:'Your membership'}).length).toBeGreaterThan(0);
   expect(screen.getAllByRole('link',{name:'Your accounts'}).length).toBeGreaterThan(0);
   expect(screen.getAllByRole('link').map(a=>a.getAttribute('href')).sort()).toEqual(['/chat','/chat','/chat','/your-accounts','/your-membership']);
-  for(const name of ['Overview','Reviews','Agents','Writing style','Integrations','Outside tools','Deadlines','Meeting follow-ups','Saved preferences','Permission checks','Alerts','Members','General','Quiet hours and delivery','Alert routing','Backups'])expect(screen.queryByRole('link',{name})).toBeNull();
+  for(const name of ['Overview','Reviews','Agents','Writing style','Integrations','Outside tools','Deadlines','Meetings','Saved preferences','Permission checks','Alerts','Members','General','Quiet hours and delivery','Alert routing','Backups'])expect(screen.queryByRole('link',{name})).toBeNull();
   expect(inbox.mounted).not.toHaveBeenCalled();
 });

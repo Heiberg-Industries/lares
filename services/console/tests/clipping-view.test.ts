@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ query: vi.fn() }));
 vi.mock("../lib/db", () => ({ pool: { query: mocks.query } }));
 import {
-  NOT_FINISHED, NOT_PICKED_UP, enqueueRequest, getClippingView, saveMapping, setChoice, toRequestView,
+  NOT_FINISHED, NOT_PICKED_UP, enqueueRequest, getClippingView, getMeetingsLookupView, saveMapping, setChoice, toRequestView,
 } from "../lib/clipping";
 
 const NOW = new Date("2026-10-09T12:00:00.000Z");
@@ -263,5 +263,28 @@ describe("setChoice", () => {
   it("a failed write is unavailable", async () => {
     mocks.query.mockRejectedValueOnce(new Error("down"));
     expect(await setChoice("notion", "owner@example.test")).toEqual({ ok: false, code: "unavailable" });
+  });
+});
+
+describe("the Meetings page lookup shares the queue, never the Clipping card", () => {
+  it("a waiting meetings lookup neither shows on the card nor keeps it polling", async () => {
+    db({ requests: [reqRow("meetings-database", { status: "pending", outcome: null, claimed_at: null, finished_at: null, created_at: ago(MIN) })] });
+    expect(await getClippingView(NOW)).toMatchObject({ requests: {}, busy: false });
+  });
+  it("reads the latest lookup, with its answer parsed, ids and names only", async () => {
+    const answer = { databaseId: "db", dataSources: [{ id: "ds-9", name: "Meetings" }] };
+    mocks.query.mockResolvedValue({ rows: [reqRow("meetings-database", { result: answer })] });
+    expect(await getMeetingsLookupView(NOW)).toMatchObject({ unavailable: false, busy: false, request: { kind: "meetings-database", status: "done", result: answer } });
+    expect(String(mocks.query.mock.calls[0]![0])).toMatch(/kind = 'meetings-database'/);
+  });
+  it("an answer in the wrong shape is no answer; a waiting one keeps the page polling; an unreadable one says so", async () => {
+    mocks.query.mockResolvedValue({ rows: [reqRow("meetings-database", { result: { databaseId: "db", dataSources: [] } })] });
+    expect(await getMeetingsLookupView(NOW)).toMatchObject({ request: { result: null } });
+    mocks.query.mockResolvedValue({ rows: [reqRow("meetings-database", { status: "claimed", outcome: null, finished_at: null })] });
+    expect(await getMeetingsLookupView(NOW)).toMatchObject({ busy: true });
+    mocks.query.mockResolvedValue({ rows: [] });
+    expect(await getMeetingsLookupView(NOW)).toEqual({ unavailable: false, request: null, busy: false });
+    mocks.query.mockRejectedValue(new Error("down"));
+    expect(await getMeetingsLookupView(NOW)).toEqual({ unavailable: true });
   });
 });

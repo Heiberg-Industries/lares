@@ -40,6 +40,7 @@
     "./schedule-switch": "./src/schedule-switch.ts",
     "./schedule-heartbeat": "./src/schedule-heartbeat.ts",
     "./voice-learn-outcome": "./src/voice-learn-outcome.ts",
+    "./meeting-followup-outcome": "./src/meeting-followup-outcome.ts",
     "./schedule-settings": "./src/schedule-settings.ts",
     "./db": "./src/db.ts",
     "./ratchet": "./src/ratchet.ts",

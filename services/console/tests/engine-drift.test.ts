@@ -356,7 +356,7 @@ describe("the console's clipping mirrors have not drifted from the chief of staf
     }
   });
 
-  it("CLIPPING_REQUEST_KINDS is exactly the engine's RequestKind and the CHECK list in the baseline", () => {
+  it("CLIPPING_REQUEST_KINDS is exactly the engine's RequestKind and the CHECK list the newest migration sets", () => {
     const src = fs.readFileSync(path.join(CHIEF_LIB, "clipping", "requests.ts"), "utf8");
     const m = /export type RequestKind =([^;]+);/u.exec(src);
     expect(m, "`export type RequestKind = … ;` not found in the engine's requests.ts").toBeDefined();
@@ -366,7 +366,12 @@ describe("the console's clipping mirrors have not drifted from the chief of staf
     const sql = fs.readFileSync(path.join(BOX_SQL, "001_baseline.sql"), "utf8");
     const c = /CONSTRAINT clipping_requests_kind_check CHECK \(\(kind = ANY \(ARRAY\[([^\]]+)\]/u.exec(sql);
     expect(c, "the kind CHECK was not found in the baseline").not.toBeNull();
-    expect(quoted(c![1]!)).toEqual(engine);
+    // The baseline's list, widened by every later file that sets the check again; the last one wins.
+    const later = fs.readdirSync(BOX_SQL).filter((f) => /^\d{3}_.*\.sql$/u.test(f) && f !== "001_baseline.sql").sort()
+      .map((f) => /ADD CONSTRAINT clipping_requests_kind_check\s+CHECK \(kind IN \(([^)]+)\)\)/u.exec(fs.readFileSync(path.join(BOX_SQL, f), "utf8")))
+      .filter((m): m is RegExpExecArray => m !== null);
+    const newest = later.length ? quoted(later.at(-1)![1]!) : quoted(c![1]!);
+    expect(newest).toEqual(engine);
   });
 
   it("REQUEST_STALE_MS is the engine's CLAIM_STALE_MS, and both are ten minutes", () => {

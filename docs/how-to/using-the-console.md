@@ -140,13 +140,27 @@ search box. Only the owner turns them on or changes them. Each opens a page with
 it, when it was last used, where its key is kept, test buttons and what each agent may do with it
 (acts on its own, asks first, never).
 
-The **Notion** page holds every Notion setting, in the order you set them up: the Notion key, the
-**Meetings database**, **People sync**, **Clipping**, the status of the document sync, and the
-Notion proposals waiting for your yes or no.
+The **Notion** page is about the connection only: agents read and write the pages and databases you
+share with it. One sentence at the top says where things stand ("Notion is not connected yet",
+"Notion is connected; <agents> may use it", or that your server cannot reach Notion and what to do),
+and it updates by itself while a key is being switched. Below it, in the order you set them up:
 
-- **Meetings database**: meeting follow-ups read your meeting notes from Notion, so they need the
-  id of this database. With it unset the follow-up schedule says so each time it runs. Owner only;
-  saving restarts the agents that read it. See the install guide, "Meeting follow-ups and Notion".
+1. **Connect**: paste the **Notion key** and choose **Save and check**. One line answers: Lares
+   reached Notion with this key, Notion refused the key, or your server could not reach Notion. The
+   check shows the key is valid, not which pages it can read. The new key is kept apart from the one
+   in use until you choose **Start using this key**, which asks once and names the agents that
+   restart; if the switch fails, Lares goes back to the previous key by itself. **Remove this new
+   key** drops a key you have not started; **Stop using Notion in Lares** takes the key out of Lares
+   (it still works in Notion until you delete the connection there). In Notion, share each page or
+   database an agent should use (the three dots, then Connections).
+2. **Which agents may use Notion**: shown once the key is in use. One switch per chief-of-staff
+   agent; switching asks once and restarts that agent for a moment.
+
+**Clipping** and **People sync** sit below, folded until both steps are done, each with a line that
+says how it last went. The document sync and the Notion proposals show only when there is something
+in them: they belong to a sync service a standard install does not run. Only the owner can change
+any of it.
+
 - **People sync**: meeting attendees and People records, once an hour. It is off until you switch
   it on, run a preview that shows what it would do, and accept it. See "The Notion sync
   (optional)" in the install guide.
@@ -168,12 +182,21 @@ file, **Add the year's legal deadlines**
 ([`install.md`, section 7](../install.md#7-the-console-and-the-deadline-calendar-file)). Nothing
 here calls an authority; every date is confirmed by a human.
 
-## Meeting follow-ups
+## Meetings
 
-Recurring meeting series an agent may send the follow-up e-mail for without asking first. Revoking
-a series does not delete its history; it goes back to needing your approval. You switch a series
-on by asking the agent. The Meetings database these follow-ups read is set on the Notion page
-under **Integrations**.
+Two sections.
+
+1. **Where your meeting notes come from.** A choice among the sources you have connected; in this
+   version the one source is a Notion meetings database. Paste the database's link from Notion
+   (Share, then Copy link) and choose **Find database**: the chief of staff looks it up in Notion
+   and shows what it found, and **Use this database** saves it. Saving restarts the agents that read
+   it. Owner only. Connections are made in **Integrations**, never here: the page links there.
+   See the install guide, "Meetings and Notion".
+2. **Follow-ups.** A line that says how the follow-ups last went: when they last checked the notes,
+   what was sent, what waits for your approval or for a meeting summary, or why they did not run.
+   Below it, the recurring meeting series an agent may send the follow-up e-mail for without asking
+   first. Revoking a series does not delete its history; it goes back to needing your approval. You
+   switch a series on by asking the agent.
 
 ## Saved preferences
 

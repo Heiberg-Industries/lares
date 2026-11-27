@@ -8,52 +8,53 @@ import { getCredentialView } from "../../../lib/credentials";
 import { getClippingView } from "../../../lib/clipping";
 import { getNotionSyncStatus } from "../../../lib/queries";
 import { getNotionProposalsView } from "../../../lib/notion-proposals";
-import { getMeetingsSourceView } from "../../../lib/meetings-source";
 import { getNotionSyncView } from "../../../lib/notion-sync";
+import { notionAgents } from "../../../lib/notion-agents";
+import type { NotionAgent } from "../../../lib/notion-connection";
 import { anyOutsideToolsInUse } from "../../../lib/outside-tools";
 import { getGatewayStatusView } from "../../../lib/gateway-status";
 import { listAgents } from "../../../lib/agents";
 import { agentNames } from "../../../lib/connection-words";
 import { gatewayAgents, integrationCard } from "../../../lib/integrations-grid";
 import { IntegrationDetail } from "../../../components/IntegrationDetail";
-import { NotionCredential } from "../../../components/NotionCredential";
+import { NotionConnection } from "../../../components/NotionConnection";
 import { NotionProposalsCard } from "../../../components/NotionProposalsCard";
 import { ClippingCard } from "../../../components/ClippingCard";
-import { MeetingsSourceControl } from "../../../components/MeetingsSourceControl";
 import { NotionSyncControl } from "../../../components/NotionSyncControl";
 
 export const dynamic = "force-dynamic";
 
 type Credential = Awaited<ReturnType<typeof getCredentialView>>;
 type NotionSettings = {
-  meetings: Awaited<ReturnType<typeof getMeetingsSourceView>>;
   people: Awaited<ReturnType<typeof getNotionSyncView>>;
   clipping: Awaited<ReturnType<typeof getClippingView>>;
   documents: Awaited<ReturnType<typeof getNotionSyncStatus>>;
   proposals: Awaited<ReturnType<typeof getNotionProposalsView>>;
+  /** null when the agents could not be read: step 2 then lists none. */
+  agents: NotionAgent[] | null;
 };
 
 const when = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 
-/** Every Notion setting, in one place and in the order a person sets them up: the key, the meetings
- *  database, the people sync, clipping, then the changes waiting for a decision. */
-function NotionExtras({ credential, notion, owner }: { credential: Credential; notion: NotionSettings; owner: boolean }) {
-  const { documents } = notion;
-  const noNotionRun = !documents.unavailable && documents.lastRunAt === null &&
-    documents.synced === 0 && documents.needsYou === 0 &&
-    documents.retrying === 0 && documents.unmatched === 0;
+/** The Notion page, in the order a person meets it: one sentence on where things stand, 1. Connect,
+ *  2. Which agents may use Notion, then Clipping and People sync, folded until both steps are done.
+ *  Nothing about meetings: the meetings database is chosen on the Meetings page. Document sync and
+ *  the changes waiting for a decision belong to a sync service a standard install does not run, so
+ *  they show only when there is something in them. */
+function NotionExtras({ credential, notion, owner, names }: { credential: Credential; notion: NotionSettings; owner: boolean; names: Record<string, string> }) {
+  const { documents, proposals } = notion;
+  const documentsHere = !documents.unavailable && (documents.lastRunAt !== null ||
+    documents.synced + documents.needsYou + documents.retrying + documents.unmatched > 0);
+  const proposalsHere = !proposals.unavailable && (proposals.proposals.length > 0 || proposals.frozen.length > 0);
   return (
     <>
-      <NotionCredential initial={credential} />
-      {notion.meetings ? <MeetingsSourceControl view={notion.meetings} /> : <Notice tone="needs-you">The meetings database setting could not be loaded.</Notice>}
-      {/* Null also means this installation offers no people sync, so nothing is shown rather than an error. */}
-      {notion.people && <NotionSyncControl initial={notion.people} />}
-      <ClippingCard initial={notion.clipping} credential={credential} />
-      {documents.unavailable ? (
-        <Notice tone="needs-you">The status of the document sync could not be read.</Notice>
-      ) : noNotionRun ? (
-        <Notice>No document sync run is recorded. Check the service setup before expecting Notion changes here.</Notice>
-      ) : (
+      <NotionConnection initial={credential} agents={notion.agents ?? []} names={names}>
+        <ClippingCard initial={notion.clipping} credential={credential} />
+        {/* Null also means this installation offers no people sync, so nothing is shown rather than an error. */}
+        {notion.people && <NotionSyncControl initial={notion.people} />}
+      </NotionConnection>
+      {notion.agents === null && <Notice tone="needs-you">The agents that may use Notion could not be read. Reload the page to try again.</Notice>}
+      {documentsHere && (
         <Notice tone={documents.needsYou > 0 ? "needs-you" : "info"}>
           Document sync last ran {documents.lastRunAt ? when(documents.lastRunAt) : "never"}: {documents.synced} synced
           {documents.needsYou > 0 && <>, {documents.needsYou} need you</>}
@@ -61,11 +62,7 @@ function NotionExtras({ credential, notion, owner }: { credential: Credential; n
           {documents.unmatched > 0 && <>, {documents.unmatched} unmatched</>}.
         </Notice>
       )}
-      {notion.proposals.unavailable ? (
-        <Notice tone="needs-you">The changes waiting for you could not be read.</Notice>
-      ) : (
-        <NotionProposalsCard proposals={notion.proposals.proposals} frozen={notion.proposals.frozen} canDecide={owner} />
-      )}
+      {proposalsHere && <NotionProposalsCard proposals={proposals.proposals} frozen={proposals.frozen} canDecide={owner} />}
     </>
   );
 }
@@ -84,8 +81,8 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
   const [board, notion, clipping, agents] = await Promise.all([
     getBoardRows({ strict: true }).catch(() => null),
     card.id === "notion"
-      ? Promise.all([getMeetingsSourceView(), getNotionSyncView(), getClippingView(), getNotionSyncStatus(), getNotionProposalsView()])
-        .then(([meetings, people, clip, documents, proposals]): NotionSettings => ({ meetings, people, clipping: clip, documents, proposals }))
+      ? Promise.all([getNotionSyncView(), getClippingView(), getNotionSyncStatus(), getNotionProposalsView(), notionAgents().catch(() => null)])
+        .then(([people, clip, documents, proposals, chiefs]): NotionSettings => ({ people, clipping: clip, documents, proposals, agents: chiefs }))
       : null,
     clippingHere ? getClippingView() : null,
     listAgents(),
@@ -96,8 +93,10 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
   });
   return (
     <Page className="lares-stack">
-      <IntegrationDetail card={card} rows={shown} board={board} owner={mayUse(member, "owner")} />
-      {notion && <NotionExtras credential={credential} notion={notion} owner={mayUse(member, "owner")} />}
+      <IntegrationDetail card={card} rows={shown} board={board} owner={mayUse(member, "owner")} usage={!notion}>
+        {notion && <NotionExtras credential={credential} notion={notion} owner={mayUse(member, "owner")}
+          names={Object.fromEntries([...agents.map((a) => [a.name, a.displayName] as const), ...(notion.agents ?? []).map((a) => [a.name, a.displayName] as const)])} />}
+      </IntegrationDetail>
       {clipping && <ClippingCard initial={clipping} credential={credential} />}
       {card.id === "readability" && !clippingHere && <p className="lares-muted">Saving links from a Notion database is set up on the <Link href="/integrations/notion">Notion</Link> page, under Clipping.</p>}
     </Page>

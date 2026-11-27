@@ -9,7 +9,7 @@
 
 1. Until now one person, the installation's named owner, could use the console's shared pages. Everyone else saw Chat, Your accounts and Your membership.
 2. There is now a level in between: **admin**. The owner sets it per person on the Members page.
-3. An admin may use the shared pages: Overview, Reviews, Agents (to see them), Writing style, Integrations, Outside tools, Deadlines, Meeting follow-ups, Saved preferences, Permission checks, Alerts, Quiet hours and delivery, Alert routing.
+3. An admin may use the shared pages: Overview, Reviews, Agents (to see them), Writing style, Integrations, Outside tools, Deadlines, Meetings (called Meeting follow-ups when this was decided), Saved preferences, Permission checks, Alerts, Quiet hours and delivery, Alert routing.
 4. An admin may not use Members and roles, Backups or the General settings, and may not delete the installation's data. Those stay with the owner.
 4a. For now an admin also may not create or edit an agent, connect a chat app to one, or change how freely it acts. The reason is in "What stays with the owner" below; it is a limit of this first step, not the owner's wish.
 5. A member is exactly as before.
