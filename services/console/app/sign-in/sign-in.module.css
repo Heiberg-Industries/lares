@@ -1,6 +1,7 @@
 /* The signed-out pages: a grain-and-gradient panel on the left, the page's own column on the right.
-   Colour and type come from the console's values; the controls are the shared parts. Only the
-   full-screen layout and the panel's moving light are this page's own. */
+   Colour and type come from the console's values; the panel uses the website's teal (the
+   --lares-door-* values). The controls are the shared parts. Only the full-screen layout and the
+   panel's moving light are this page's own. */
 .page {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
@@ -20,7 +21,7 @@
   justify-content: space-between;
   gap: var(--space-12);
   padding: var(--space-12) clamp(var(--space-8), 5vw, var(--space-16));
-  background: var(--lares-sidebar-bg);
+  background: var(--lares-door-field);
   border-right: 1px solid var(--lares-line);
 }
 .light {
@@ -32,8 +33,8 @@
   inset: -40%;
   background: radial-gradient(
     ellipse at 78% 48%,
-    color-mix(in oklch, var(--lares-accent) 30%, var(--lares-accent-soft)) 0%,
-    var(--lares-accent-soft) 24%,
+    color-mix(in oklch, var(--lares-door-glow) 84%, var(--lares-text)) 0%,
+    var(--lares-door-glow) 24%,
     transparent 58%
   );
   animation: drift-one 14s ease-in-out infinite alternate;
@@ -41,8 +42,8 @@
 .lightTwo {
   inset: -22%;
   background:
-    radial-gradient(ellipse at 55% 76%, var(--lares-accent-soft) 8%, transparent 43%),
-    radial-gradient(ellipse at 20% 12%, var(--lares-surface) 6%, transparent 42%);
+    radial-gradient(ellipse at 55% 76%, var(--lares-door-glow-soft) 8%, transparent 43%),
+    radial-gradient(ellipse at 20% 12%, var(--lares-door-light) 6%, transparent 42%);
   animation: drift-two 19s ease-in-out infinite alternate;
 }
 .grain {

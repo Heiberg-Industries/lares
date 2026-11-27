@@ -1,6 +1,6 @@
 import { requirePage } from "../../lib/auth";
 import Link from "next/link";
-import { getRules, getConsumers } from "../../lib/signals";
+import { ALERTS_NOT_SET_UP, alertsSetUp, getRules, getConsumers } from "../../lib/signals";
 import { JsonEditor } from "../../components/JsonEditor";
 import { ConsumerSwitches } from "../../components/ConsumerSwitches";
 import { saveRules, saveConsumers } from "../actions/signals";
@@ -10,6 +10,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lare
 export const dynamic = "force-dynamic";
 export default async function RulesPage() {
   await requirePage("admin");
+  if (!alertsSetUp()) return (
+    <Page className="lares-stack">
+      <PageHeader title="Alert routing" description="Where alerts are sent, and what each one means." />
+      <Notice>{ALERTS_NOT_SET_UP}</Notice>
+    </Page>
+  );
   // The switches sit ABOVE the rules rather than on their own page, because they are the same
   // question — where does an alert go — asked one level up. Fetched independently so a spine
   // that answers one and not the other still renders what it can.

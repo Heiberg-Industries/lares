@@ -15,6 +15,13 @@ const SOURCE: Record<AgentSettingView["from"], string> = {
   "installation file": "Still comes from the installation file; saving here replaces it.",
   none: "Not set.",
 };
+/** What someone who cannot change a setting sees: a list as its values, one after another, not its stored text. */
+function shownValue(key: string, stored: string | null): string | null {
+  const draft = draftOf(key, stored);
+  if (draft.kind === "values") return draft.items.join(", ") || null;
+  if (draft.kind === "tracks") return draft.items.map(track => track.id).join(", ") || null;
+  return stored;
+}
 const NEW_TRACK: TrackDraft = { id: "", description: "", closingSteps: [], namedClosingSteps: false };
 
 /** One track of the CRM tracks setting: its exact value, a line about it, and the stages that close it. */
@@ -67,7 +74,7 @@ function AgentSettingRow({ setting, canChange }: { setting: AgentSettingView; ca
     </>
   );
   if (!canChange)
-    return <Row title={setting.label} description={description} control={<span className="mono" data-testid={`setting-${setting.key}`}>{current ?? "Not set"}</span>} />;
+    return <Row title={setting.label} description={description} control={<span className="mono" data-testid={`setting-${setting.key}`}>{shownValue(setting.key, current) ?? "Not set"}</span>} />;
   return (
     <Row title={setting.label} description={description}>
       <form className="lares-stack" onSubmit={e => { e.preventDefault(); if (!pending) save(); }}>
@@ -82,7 +89,7 @@ function AgentSettingRow({ setting, canChange }: { setting: AgentSettingView; ca
         {draft.kind === "values" && (
           <>
             <ListEditor label={setting.label} values={draft.items} disabled={pending} onChange={items => edit({ ...draft, items })} />
-            <p className="lares-field-hint">One value in each box. Remove every box and save to clear the setting.</p>
+            <p className="lares-field-hint">One entry in each box. Remove every box and save to clear the setting.</p>
           </>
         )}
         {draft.kind === "tracks" && (
