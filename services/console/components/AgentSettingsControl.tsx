@@ -15,12 +15,20 @@ const SOURCE: Record<AgentSettingView["from"], string> = {
   "installation file": "Still comes from the installation file; saving here replaces it.",
   none: "Not set.",
 };
+/** A CRM track in full for someone who cannot open the editor: its value, what it is for and the
+ * stages that close it, since all three steer the agent. */
+function trackLine(track: TrackDraft): string {
+  const parts = [track.id];
+  if (track.description) parts.push(track.description);
+  if (track.closingSteps.length > 0) parts.push(`Closing stages: ${track.closingSteps.join("; ")}`);
+  return parts.join(" — ");
+}
 /** What someone who cannot change a setting sees: a list as its entries, one per line (an entry may
  * itself contain a comma), not its stored text. */
 function shownValue(key: string, stored: string | null): string[] {
   const draft = draftOf(key, stored);
   if (draft.kind === "values") return draft.items;
-  if (draft.kind === "tracks") return draft.items.map(track => track.id);
+  if (draft.kind === "tracks") return draft.items.map(trackLine);
   return stored === null ? [] : [stored];
 }
 const Shown = ({ entries }: { entries: string[] }) => entries.length === 0 ? <>Not set</>
