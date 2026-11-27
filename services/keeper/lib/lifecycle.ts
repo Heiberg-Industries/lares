@@ -566,8 +566,14 @@ export class AgentLifecycle {
         await this.resealing;
         if (this.keeperChecksStage || !this.paths.outsideCustody) return;
         try {
-            await this.seal();
-            console.log('keeper: the proxy now lets the keeper run its own key checks');
+            // Plan AND apply under the definition namespace: a plan made before a concurrent
+            // definition change finishes would install a seal that misses that change.
+            const sealed = await withDefinitionNamespace(this.pool, async () => {
+                if (this.keeperChecksStage) return false;
+                await this.seal();
+                return true;
+            });
+            if (sealed) console.log('keeper: the proxy now lets the keeper run its own key checks');
         } catch (error) {
             console.error(`keeper: could not open the keeper's own key checks in the proxy (${(error as Error).message}); the test goes ahead and reports what it meets`);
         }

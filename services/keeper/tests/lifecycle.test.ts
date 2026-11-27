@@ -1191,6 +1191,31 @@ it('opens the keeper\'s own Notion key check in the proxy on a fresh install, be
   expect(squid().split('\n').find(line=>line.startsWith('acl dst_bookkeeper '))).not.toContain('api.notion.com');
  }finally{log.mockRestore();error.mockRestore();}
 });
+it('plans the key-check fallback seal only once a running definition change is done, so it never installs a stale seal',async()=>{
+ const {withDefinitionNamespace}=await import('../lib/definition-namespace.js');
+ config.egress.legacyConsumers=[{name:'outside-route',address:'172.18.0.24',hosts:[]}];
+ const stored=(await pool.query("SELECT * FROM agent_definitions WHERE name='bookkeeper'")).rows[0];
+ await pool.query('DELETE FROM agent_definitions');
+ const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async()=>{}};
+ const fresh=()=>new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const log=vi.spyOn(console,'log').mockImplementation(()=>{});
+ try{
+  let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
+  // A definition change holds the namespace and creates an agent once released.
+  const change=withDefinitionNamespace(pool,async()=>{
+   await gate;
+   await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,$2,$3::jsonb,now(),'valid')",[stored.name,stored.hash,JSON.stringify(stored.definition)]);
+   await fresh().create('bookkeeper',definition);
+  });
+  const fallback=fresh().prepareKeeperChecks();
+  await new Promise(r=>setTimeout(r,200));
+  release();await change;await fallback;
+  const squid=readFileSync(join(config.egressDir,'squid.conf'),'utf8');
+  expect(squid).toContain('acl src_bookkeeper src');
+  expect(squid).toContain('http_access allow CONNECT keeper_check_src keeper_check_dst SSL_ports');
+ }finally{log.mockRestore();}
+});
 it('opens nothing for the keeper without outside custody, which is what names its address',async()=>{
  const l=lifecycle();await l.prepareKeeperChecks();
  expect(events).toEqual([]);
