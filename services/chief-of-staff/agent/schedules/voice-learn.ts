@@ -33,8 +33,8 @@
  *     answered "skipped" and LEFT pending, so it runs once the switch is on. It is not taken: a
  *     second agent that has the schedule on may still pick it up. The heartbeat is not touched —
  *     a closed gate still stamps nothing, so monitoring still pages;
- *   - the run is recorded "running" BEFORE the request is cleared, so the page never sees a moment
- *     with neither a request nor a run;
+ *   - the request is cleared and the run recorded "running" in one transaction, by the agent whose
+ *     claim succeeds only, so the page never sees a moment with neither a request nor a run;
  *   - no mailbox, an unusable mailbox and no model for comparing texts are "skipped" with their
  *     reason; a request that arrives while a run is going is taken and answered by that run.
  */
@@ -141,14 +141,39 @@ async function pendingRequestAt(): Promise<Date | null> {
  *  learning (not after) is deliberate — a run that fails must not re-fire every minute against a
  *  billed gateway, which is the shape of a past spend leak. The failure is recorded on
  *  the profile as `learn_status = 'error'` and as the job's outcome; the human re-presses the
- *  button. The run is recorded as started before this is called, so the console goes straight
- *  from "asked for" to "running". */
+ *  button. Used where no run starts (a request that arrives during a run); a run that starts
+ *  claims through `claimAndRecordStart`. */
 async function claimRelearnRequest(): Promise<boolean> {
   const { rowCount } = await getPool().query(
     `UPDATE voice_profile SET relearn_requested_at = NULL
      WHERE id = 'default' AND relearn_requested_at IS NOT NULL`,
   );
   return (rowCount ?? 0) > 0;
+}
+
+/** Claim the request and record the run as started in ONE transaction: a reader sees both or
+ *  neither (never a moment with no request and no run), and only the agent whose claim succeeds
+ *  writes "running" — a second agent that saw the same request writes nothing. The started record
+ *  is best effort inside a savepoint, so a record that cannot be written never undoes the claim. */
+async function claimAndRecordStart(agent: string, detail: string): Promise<boolean> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const { rowCount } = await client.query(
+      `UPDATE voice_profile SET relearn_requested_at = NULL
+       WHERE id = 'default' AND relearn_requested_at IS NOT NULL`,
+    );
+    if ((rowCount ?? 0) === 0) { await client.query("ROLLBACK"); return false; }
+    await client.query("SAVEPOINT run_outcome");
+    if (!(await recordRunStarted(client, HEARTBEAT_KEY, { agent, detail }))) await client.query("ROLLBACK TO SAVEPOINT run_outcome");
+    await client.query("COMMIT");
+    return true;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -299,14 +324,15 @@ export default defineSchedule({
     running = true;
     try {
       console.log(`voice-learn: starting (${requested ? "console re-learn request" : "weekly slot"})`);
-      await recordRunStarted(getPool(), HEARTBEAT_KEY, { agent, detail: requested ? "Asked for in the console." : "The weekly run." });
-      // Only the agent whose claim succeeds runs a requested learn: another agent that saw the same
-      // request may have taken it first, and one press must never start two billed runs. That agent
-      // records its own run, so this one writes nothing more.
-      if (requested && !(await claimRelearnRequest()) && !scheduled) {
+      // Only the agent whose claim succeeds runs a requested learn, and only it records "running":
+      // another agent that saw the same request may have taken it first, and one press must never
+      // start two billed runs or leave a second agent's "running" over the first one's outcome.
+      const claimed = requested && (await claimAndRecordStart(agent, "Asked for in the console."));
+      if (requested && !claimed && !scheduled) {
         console.log("voice-learn: another agent took this re-learn request; not starting a second run");
         return;
       }
+      if (!claimed) await recordRunStarted(getPool(), HEARTBEAT_KEY, { agent, detail: "The weekly run." });
       let completed: boolean;
       try {
         completed = await learnAllMailboxes({ agent });

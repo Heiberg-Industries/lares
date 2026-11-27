@@ -47,6 +47,18 @@ let seenAtMailbox: { state: string | null; pending: boolean } | null = null;
 /** When set, the mailbox answer waits for this promise: a run that is still going. */
 let holdMailbox: Promise<void> | null = null;
 let pool: Pool;
+/** When set, another agent takes the request while this one looks up its hour. */
+let otherAgentClaims = false;
+vi.mock("../lib/schedule-hours.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/schedule-hours.js")>();
+  return {
+    ...actual,
+    scheduleHours: async (schedule: string) => {
+      if (otherAgentClaims) await pool.query("UPDATE voice_profile SET relearn_requested_at = NULL WHERE id = 'default'");
+      return actual.scheduleHours(schedule);
+    },
+  };
+});
 vi.mock("../lib/agent-mailbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/agent-mailbox.js")>()),
   agentMailbox: async () => {
@@ -86,6 +98,7 @@ beforeEach(async () => {
   voiceLearnOn = true;
   seenAtMailbox = null;
   holdMailbox = null;
+  otherAgentClaims = false;
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.resetModules();
@@ -157,20 +170,13 @@ describe("voice-learn: what a re-learn request becomes", () => {
     expect(await outcome()).toMatchObject({ state: "skipped", reason: "mailbox-unusable" });
   }, 30_000);
 
-  it("a request another agent took first is not run a second time", async () => {
-    // Another agent's claim lands between this agent seeing the request and taking it: simulated by
-    // clearing the request the moment this agent records its start.
-    await pool.query(`CREATE OR REPLACE FUNCTION test_other_agent_claims() RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN UPDATE voice_profile SET relearn_requested_at = NULL WHERE id = 'default'; RETURN NEW; END $$`);
-    await pool.query(`CREATE TRIGGER test_other_agent_claims AFTER INSERT OR UPDATE ON schedule_run
-      FOR EACH ROW WHEN (NEW.state = 'running') EXECUTE FUNCTION test_other_agent_claims()`);
-    try {
-      await runOnce();
-      expect(seenAtMailbox).toBeNull();
-      expect(await pending()).toBe(false);
-    } finally {
-      await pool.query("DROP TRIGGER test_other_agent_claims ON schedule_run");
-      await pool.query("DROP FUNCTION test_other_agent_claims()");
-    }
+  it("a request another agent took first is not run a second time, and this agent records nothing", async () => {
+    // Another agent's claim lands between this agent seeing the request and taking it: simulated
+    // inside the hour lookup, which runs between the two.
+    otherAgentClaims = true;
+    await runOnce();
+    expect(seenAtMailbox).toBeNull();
+    expect(await pending()).toBe(false);
+    expect(await outcome()).toBeNull();
   }, 30_000);
 });
