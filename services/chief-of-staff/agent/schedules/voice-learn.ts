@@ -300,7 +300,13 @@ export default defineSchedule({
     try {
       console.log(`voice-learn: starting (${requested ? "console re-learn request" : "weekly slot"})`);
       await recordRunStarted(getPool(), HEARTBEAT_KEY, { agent, detail: requested ? "Asked for in the console." : "The weekly run." });
-      if (requested) await claimRelearnRequest();
+      // Only the agent whose claim succeeds runs a requested learn: another agent that saw the same
+      // request may have taken it first, and one press must never start two billed runs. That agent
+      // records its own run, so this one writes nothing more.
+      if (requested && !(await claimRelearnRequest()) && !scheduled) {
+        console.log("voice-learn: another agent took this re-learn request; not starting a second run");
+        return;
+      }
       let completed: boolean;
       try {
         completed = await learnAllMailboxes({ agent });
