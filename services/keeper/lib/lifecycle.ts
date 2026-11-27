@@ -703,7 +703,7 @@ export class AgentLifecycle {
             environment[entry.key] = value;
             changed = true;
         }
-        if (changed) a.bindings = { role: 'chief-of-staff', ...a.bindings, environment, mounts: a.bindings?.mounts ?? [], secrets: a.bindings?.secrets ?? {} };
+        if (changed) a.bindings = { role: a.role === 'creative' ? 'creative' : 'chief-of-staff', ...a.bindings, environment, mounts: a.bindings?.mounts ?? [], secrets: a.bindings?.secrets ?? {} };
     }
     /** What an agent gets for one console-settable environment key when nothing else sets it. */
     environmentDefault(key: string): string | undefined {

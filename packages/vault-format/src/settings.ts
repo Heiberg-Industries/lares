@@ -943,13 +943,13 @@ export const SETTINGS: readonly SettingDef[] = [
 
   {
     name: "LARES_CONSOLE_URL",
-    readers: ["chief-of-staff"],
+    readers: ["chief-of-staff", "creative"],
     source: "owner",
     requiredFor: [],
     fallback: "",
     secret: false,
-    breaksWithout: "Nothing breaks — an approval too long for one Telegram message says \"open the console to approve\" instead of carrying a link to the console's Reviews page.",
-    readAt: ["services/chief-of-staff/agent/channels/telegram.ts"],
+    breaksWithout: "Nothing breaks. The keeper sets it to the installation's own address (https://<domain>) unless the owner saves another on General. Without it, a Slack approval card carries no \"Open in console\" link, and an approval too long for one Telegram message says \"open the console to approve\" instead of carrying a link to the console's Reviews page.",
+    readAt: ["services/chief-of-staff/agent/channels/telegram.ts", "packages/agent-kit/src/card-layer.ts"],
   },
 
   // ── Console-internal wiring ────────────────────────────────────────────────────────────────

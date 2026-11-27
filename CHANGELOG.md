@@ -6,7 +6,7 @@ The history starts at the first public release, v0.1.0. Earlier work is not reco
 
 - The Notion key check works on a fresh install. Until now it always said "unavailable", because the outbound proxy refused the keeper's own request to Notion. The proxy now lets the keeper's own address reach `api.notion.com` on port 443 for the key check, and nothing else: no agent gains a host. The keeper adds this rule when it starts, before any agent exists.
 
-- The console address the agents use (General, Console address) now defaults to the installation's own address, `https://<your domain>`, when none is saved. General shows that address. An address you save there still wins, and saving the field empty goes back to the default. A running agent picks the default up the next time it starts or restarts.
+- The console address the agents use (General, Console address) now reaches creative agents as well as chiefs of staff, and defaults to the installation's own address, `https://<your domain>`, when none is saved. General shows that address. An address you save there still wins, and saving the field empty goes back to the default. A running agent picks the default up the next time it starts or restarts.
 
 - Every open approval card in Slack now ends with a short "Open in console" link to that request on the Reviews page, when the console address is known. Once the request is answered, the link goes away. When the console address is set, a card so long that it needed all of a Slack message's 50 blocks is now cut one section sooner, to keep room for the link.
 

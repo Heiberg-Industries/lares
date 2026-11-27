@@ -1482,6 +1482,19 @@ it('gives a chief of staff the install address as the console address when none 
  l=withOrigin('http://lares.example.org');await l.reconcile('bookkeeper',chief);expect(composeEnv().LARES_CONSOLE_URL).toBeUndefined();
  await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
 });
+it('gives a creative agent the console address too, since its Slack cards link to the console',async()=>{
+ await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),publicDoorOrigin:'https://lares.example.org'},
+  docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ await l.create('bookkeeper',definition); // the creative template
+ expect(composeEnv().LARES_CONSOLE_URL).toBe('https://lares.example.org');
+ // The chief-only settings stay off a creative agent.
+ await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agent_env.telegram_bot_username','\"example_bot\"'::jsonb,'test'),('agent_env.console_url','\"https://console.example.com\"'::jsonb,'test')");
+ await l.reconcile('bookkeeper',definition);
+ expect(composeEnv().LARES_CONSOLE_URL).toBe('https://console.example.com');
+ expect(composeEnv().TELEGRAM_BOT_USERNAME).toBeUndefined();
+ await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
+});
 it('restarts a ready chief once for a changed console agent setting',async()=>{
  const chief=await chiefFixture();
  const l=lifecycle();await l.create('bookkeeper',chief);
