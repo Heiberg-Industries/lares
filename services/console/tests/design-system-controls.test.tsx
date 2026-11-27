@@ -102,7 +102,7 @@ describe("the console's values", () => {
     const [light, dark] = [rule(themeCss, 'html[data-lares="console"]'), rule(themeCss, 'html[data-lares="console"].dark')];
     const colours = (block: string) => [...block.matchAll(/(--lares-[a-z-]+): oklch\(([\d.]+) ([\d.]+) ([\d.]+)\);/g)];
     const names = (block: string) => colours(block).map((m) => m[1]);
-    expect(names(light)).toHaveLength(26);
+    expect(names(light)).toHaveLength(30); // 26, plus the four teal values of the signed-out panel
     expect(names(dark)).toEqual(names(light));
     expect(themeCss).not.toMatch(/:\s*#[0-9a-f]{3,8}\s*;|rgba?\(/i);
     for (const block of [light, dark]) for (const [, name, , chroma, hue] of colours(block)) {

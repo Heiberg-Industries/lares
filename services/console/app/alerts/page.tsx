@@ -1,6 +1,6 @@
 import { requirePage } from "../../lib/auth";
 import Link from "next/link";
-import { getRecentSignals } from "../../lib/signals";
+import { ALERTS_NOT_SET_UP, alertsSetUp, getRecentSignals } from "../../lib/signals";
 import { EmptyState, Field, Notice, PageHeader, Page, Row, Rows } from "@lares/ui/patterns";
 import { Badge } from "@lares/ui/primitives/badge";
 import { Button } from "@lares/ui/primitives/button";
@@ -20,6 +20,12 @@ const STATE: Record<string, string> = { open: "Open", recovered: "Recovered", cl
 export default async function SignalsPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   await requirePage("admin");
   const q = await searchParams;
+  if (!alertsSetUp()) return (
+    <Page className="lares-stack">
+      <PageHeader title="Alerts" description="Recent alerts, events and reports from your services." />
+      <Notice>{ALERTS_NOT_SET_UP}</Notice>
+    </Page>
+  );
   const r = await getRecentSignals({ severity: q.severity, project: q.project, kind: q.kind, state: q.state, since: q.since });
   return (
     <Page className="lares-stack">

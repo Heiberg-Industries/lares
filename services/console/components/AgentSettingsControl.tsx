@@ -4,7 +4,7 @@ import { Button } from "@lares/ui/primitives/button";
 import { Card, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { Input } from "@lares/ui/primitives/input";
 import { ListEditor } from "@lares/ui/primitives/list-editor";
-import { useState, useTransition } from "react";
+import { Fragment, useState, useTransition } from "react";
 import { setAgentSetting, type AgentSettingsResult } from "../app/actions/definition";
 import type { AgentSettingView } from "../lib/agent-settings";
 import { draftOf, draftText, type SettingDraft, type TrackDraft } from "../lib/list-setting";
@@ -15,6 +15,24 @@ const SOURCE: Record<AgentSettingView["from"], string> = {
   "installation file": "Still comes from the installation file; saving here replaces it.",
   none: "Not set.",
 };
+/** A CRM track in full for someone who cannot open the editor: its value, what it is for and the
+ * stages that close it, since all three steer the agent. */
+function trackLine(track: TrackDraft): string {
+  const parts = [track.id];
+  if (track.description) parts.push(track.description);
+  if (track.closingSteps.length > 0) parts.push(`Closing stages: ${track.closingSteps.join("; ")}`);
+  return parts.join(" — ");
+}
+/** What someone who cannot change a setting sees: a list as its entries, one per line (an entry may
+ * itself contain a comma), not its stored text. */
+function shownValue(key: string, stored: string | null): string[] {
+  const draft = draftOf(key, stored);
+  if (draft.kind === "values") return draft.items;
+  if (draft.kind === "tracks") return draft.items.map(trackLine);
+  return stored === null ? [] : [stored];
+}
+const Shown = ({ entries }: { entries: string[] }) => entries.length === 0 ? <>Not set</>
+  : <>{entries.map((entry, i) => <Fragment key={i}>{i > 0 && <br />}{entry}</Fragment>)}</>;
 const NEW_TRACK: TrackDraft = { id: "", description: "", closingSteps: [], namedClosingSteps: false };
 
 /** One track of the CRM tracks setting: its exact value, a line about it, and the stages that close it. */
@@ -67,7 +85,7 @@ function AgentSettingRow({ setting, canChange }: { setting: AgentSettingView; ca
     </>
   );
   if (!canChange)
-    return <Row title={setting.label} description={description} control={<span className="mono" data-testid={`setting-${setting.key}`}>{current ?? "Not set"}</span>} />;
+    return <Row title={setting.label} description={description} control={<span className="mono" data-testid={`setting-${setting.key}`}><Shown entries={shownValue(setting.key, current)} /></span>} />;
   return (
     <Row title={setting.label} description={description}>
       <form className="lares-stack" onSubmit={e => { e.preventDefault(); if (!pending) save(); }}>
@@ -82,7 +100,7 @@ function AgentSettingRow({ setting, canChange }: { setting: AgentSettingView; ca
         {draft.kind === "values" && (
           <>
             <ListEditor label={setting.label} values={draft.items} disabled={pending} onChange={items => edit({ ...draft, items })} />
-            <p className="lares-field-hint">One value in each box. Remove every box and save to clear the setting.</p>
+            <p className="lares-field-hint">One entry in each box. Remove every box and save to clear the setting.</p>
           </>
         )}
         {draft.kind === "tracks" && (

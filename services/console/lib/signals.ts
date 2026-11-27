@@ -17,6 +17,13 @@ const UNAVAILABLE: Unavailable = { unavailable: true };
 
 function base(): string | undefined { return process.env["SIGNAL_SPINE_URL"]?.replace(/\/$/, ""); }
 
+/** Whether this installation has an alerts service at all. A standard install does not, and its
+ *  pages then say so calmly instead of reporting a service that did not answer. */
+export function alertsSetUp(): boolean { return !!base(); }
+
+/** The calm sentence for an installation without an alerts service. */
+export const ALERTS_NOT_SET_UP = "Alerts are not set up on this installation. A standard install does not include the service that collects alerts, so there is nothing to show here.";
+
 /** Fetch + parse only — no shape validation. Degrades to `unavailable` on ANY failure. */
 async function getJson(path: string, token: string | undefined): Promise<unknown | Unavailable> {
   const url = base();

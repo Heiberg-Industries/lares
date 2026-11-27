@@ -84,11 +84,11 @@ function consoleUrl(raw: string): EnvironmentCheck {
 const CHIEF = ['chief-of-staff'] as const;
 export const CONSOLE_ENVIRONMENT: readonly ConsoleEnvironmentSetting[] = [
     { key: 'CRM_BRANDS', setting: 'agent_env.crm_brands', roles: CHIEF, section: 'Business data', check: crmBrands,
-        label: 'CRM tracks', description: 'A list that explains each CRM track to the agent and names the stages that close it: [{"id":"EXACT_TRACK_VALUE","description":"one line","closingSteps":["EXACT_STAGE_VALUE"]}].' },
+        label: 'CRM tracks', description: 'The tracks (pipelines) in your CRM, so the agent knows what each one is for and which stages mean a deal is finished. Write each track and stage exactly as your CRM shows it.' },
     { key: 'COMMERCIAL_BRANDS', setting: 'agent_env.commercial_brands', roles: CHIEF, section: 'Business data', check: commercialBrands,
-        label: 'Commercial brands', description: 'The brands the "who to contact" tool works on, as a list of names: ["EXAMPLE_BRAND"].' },
+        label: 'Commercial brands', description: 'The brand names the "who to contact" tool works on.' },
     { key: 'INSTITUTIONAL_SENDER_DOMAINS', setting: 'agent_env.institutional_sender_domains', roles: CHIEF, section: 'Business data', check: senderDomains,
-        label: 'Authority sender domains', description: 'Domains whose mail counts as a due notice (tax authority, company register), as a list: ["authority.example"].' },
+        label: 'Authority sender domains', description: 'Domains whose mail counts as an official due notice, for example from the tax authority or the company register. Write the part after the @, for example authority.example.' },
     { key: 'TWENTY_ORG_NUMBER_FIELD', setting: 'agent_env.twenty_org_number_field', roles: CHIEF, section: 'CRM', check: twentyField,
         label: 'Organisation number field', description: 'The name of the company field in your CRM that holds the organisation number. Empty means orgNumber.' },
     { key: 'LARES_ARTICLE_AREA', setting: 'agent_env.article_area', roles: CHIEF, section: 'Digest', check: articleArea,

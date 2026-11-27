@@ -68,6 +68,15 @@ it("is read-only for anyone but the owner", () => {
   expect(document.body.textContent).toContain("Ask the installation owner");
 });
 
+it("shows a list to someone who cannot change it as its entries, not as stored text", () => {
+  render(<AgentSettingsSections canChange={false} settings={[
+    row({ key: "COMMERCIAL_BRANDS", section: "Business data", label: "Commercial brands", value: '["EXAMPLE_BRAND","SECOND_BRAND"]', from: "console" }),
+    row({ key: "CRM_BRANDS", section: "Business data", label: "CRM tracks", value: '[{"id":"FIRST_TRACK","description":"New customers","closingSteps":["Won","Lost"]}]', from: "console" }),
+  ]} />);
+  expect(screen.getByTestId("setting-COMMERCIAL_BRANDS").innerHTML).toBe("EXAMPLE_BRAND<br>SECOND_BRAND");
+  expect(screen.getByTestId("setting-CRM_BRANDS").textContent).toBe("FIRST_TRACK — New customers — Closing stages: Won; Lost");
+});
+
 it("says so when no agent reads the setting yet", () => {
   render(<AgentSettingsSections canChange settings={[row({ agentCount: 0 })]} />);
   expect(document.body.textContent).toContain("No agent reads this yet");

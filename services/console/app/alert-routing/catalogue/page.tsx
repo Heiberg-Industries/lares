@@ -1,6 +1,6 @@
 import { requirePage } from "../../../lib/auth";
 import Link from "next/link";
-import { getCatalogue } from "../../../lib/signals";
+import { ALERTS_NOT_SET_UP, alertsSetUp, getCatalogue } from "../../../lib/signals";
 import { JsonEditor } from "../../../components/JsonEditor";
 import { saveCatalogue } from "../../actions/signals";
 import { Notice, PageHeader, Page } from "@lares/ui/patterns";
@@ -9,6 +9,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lare
 export const dynamic = "force-dynamic";
 export default async function CataloguePage() {
   await requirePage("admin");
+  if (!alertsSetUp()) return (
+    <Page className="lares-stack">
+      <PageHeader title="Alert catalogue" description="The plain sentence shown with each kind of alert: what it means and what to do next." />
+      <Notice>{ALERTS_NOT_SET_UP}</Notice>
+    </Page>
+  );
   const r = await getCatalogue();
   return (
     <Page>

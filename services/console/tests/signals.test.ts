@@ -1,7 +1,15 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { getRecentSignals, getConsumers } from "../lib/signals";
+import { alertsSetUp, getRecentSignals, getConsumers } from "../lib/signals";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+
+describe("alertsSetUp", () => {
+  it("is false on an installation without an alerts service address, true with one", () => {
+    expect(alertsSetUp()).toBe(false);
+    vi.stubEnv("SIGNAL_SPINE_URL", "https://spine");
+    expect(alertsSetUp()).toBe(true);
+  });
+});
 
 describe("getRecentSignals", () => {
   it("unavailable without url/token; parses rows with them; unavailable on non-200", async () => {
