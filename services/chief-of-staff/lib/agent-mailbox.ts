@@ -100,6 +100,9 @@ const SAY: Record<AgentMailboxRefusalReason, string> = {
   unavailable: 'Google did not accept the connection just now',
 };
 
+/** The plain sentence for why no mailbox is available, for a record a person reads. */
+export function mailboxRefusalSentence(reason: AgentMailboxRefusalReason): string { return SAY[reason]; }
+
 /** One line per CHANGE of reason, per job. A steady refusal is quiet until it changes or clears. */
 const lastSaid = new Map<string, string>();
 export function resetAgentMailboxLogForTests(): void { lastSaid.clear(); }

@@ -456,6 +456,19 @@ p.lares-form-success::before {
   --badge-color: var(--lares-accent);
   --badge-bg: var(--lares-accent-soft);
 }
+/* RunStatus: where a piece of background work is. A badge, a sentence, and the link that fixes a skip. */
+.lares-run-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.lares-run-status-text {
+  color: var(--lares-text);
+}
+.lares-run-status-fix {
+  font-weight: 600;
+}
 .lares-switch {
   display: inline-flex;
   flex: none;

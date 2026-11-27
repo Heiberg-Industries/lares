@@ -22,20 +22,43 @@
  * That button is the second trigger, and it is not decoration: the console writes
  * `relearn_requested_at` (`services/console/app/actions/voice.ts`) and this schedule polls
  * it. Without the poll the button would silently do nothing —
- * so the tick claims the request (clears it first, then runs) and a manual re-learn lands
+ * so the tick claims the request (clears it, then runs) and a manual re-learn lands
  * within a minute instead of waiting for Sunday.
+ *
+ * WHAT THE CONSOLE SEES. Every outcome is also recorded as this agent's last outcome
+ * (`recordRun*`, `@lares/agent-kit/schedule-heartbeat`; the key and reason codes in
+ * `@lares/agent-kit/voice-learn-outcome`), so the Writing style page can say "asked for", "running",
+ * "finished, with counts", "failed, with why" or "skipped, with why" instead of looking dead. Each
+ * agent has its own record (`<agent name>/voice-learn`, `voiceLearnJob`), so two chief-of-staff
+ * agents on one installation never write over each other's outcome; the page combines them. The
+ * console's request is still one, shared by every agent:
+ *   - a request while the schedule is switched off (in the definition, or on the whole server) is
+ *     answered "skipped" and LEFT pending, so it runs once the switch is on. It is not taken: a
+ *     second agent that has the schedule on may still pick it up. The heartbeat is not touched —
+ *     a closed gate still stamps nothing, so monitoring still pages;
+ *   - the request is cleared and the run recorded "running" in one transaction, by the agent whose
+ *     claim succeeds only, so the page never sees a moment with neither a request nor a run;
+ *   - no mailbox, an unusable mailbox and no model for comparing texts are "skipped" with their
+ *     reason; a request that arrives while a run is going is taken and answered by that run.
  */
 import { defineSchedule } from "eve/schedules";
+import type { PoolClient } from "pg";
 
 import { getPool } from "@lares/agent-kit/db";
 import { purposeModel } from "@lares/agent-kit/gateway-status";
 import { type GmailClient } from "../../lib/google.js";
-import { agentMailbox } from "../../lib/agent-mailbox.js";
+import { agentMailbox, mailboxRefusalSentence } from "../../lib/agent-mailbox.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
 import { makeGatewayEmbedder } from "../../lib/embeddings-gateway.js";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
-import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedule-heartbeat";
+import { scheduleGate } from "@lares/agent-kit/schedule-gate";
+import type { AgentDefinition } from "@lares/agent-kit/definition";
+import {
+  readScheduleRun, recordRunFailed, recordRunFinished, recordRunSkipped, recordRunStarted,
+  recordSchedulePass, recordScheduleTick,
+} from "@lares/agent-kit/schedule-heartbeat";
+import { VOICE_LEARN_SCHEDULE, VOICE_LEARN_SKIPS, voiceLearnJob, type VoiceLearnSkip } from "@lares/agent-kit/voice-learn-outcome";
 import { dowIn, slotIn } from "../../lib/recurrence.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
@@ -109,16 +132,144 @@ const SENT_READ_BATCH = 20;
 const SENT_READ_PAUSE_MS = 3_000;
 const QUOTA_BACKOFF_MS = 65_000;
 
-/** Claim a console-requested re-learn: returns true if one was pending. Clearing BEFORE the
- *  run (not after) is deliberate — a run that fails must not re-fire every minute against a
- *  billed gateway, which is the shape of a past spend leak. The failure is recorded on
- *  the profile as `learn_status = 'error'`; the human re-presses the button. */
-async function claimRelearnRequest(): Promise<boolean> {
-  const { rowCount } = await getPool().query(
-    `UPDATE voice_profile SET relearn_requested_at = NULL
-     WHERE id = 'default' AND relearn_requested_at IS NOT NULL`,
+/** When the console asked for a re-learn that nobody has taken yet, or null. */
+async function pendingRequestAt(): Promise<Date | null> {
+  const { rows } = await getPool().query<{ relearn_requested_at: Date | string | null }>(
+    `SELECT relearn_requested_at FROM voice_profile WHERE id = 'default'`,
   );
-  return (rowCount ?? 0) > 0;
+  const at = rows[0]?.relearn_requested_at;
+  return at ? new Date(at) : null;
+}
+
+/** Statements inside a request transaction are cancelled by the database after this long, below
+ *  the outcome helper's own 5 s bound, so a blocked write ends on the server instead of holding the
+ *  request row's lock behind a query nobody waits for any more. */
+const REQUEST_TX_TIMEOUT_MS = 4_000;
+
+/** One transaction on the console's request. Locks are always taken in the same order, the request
+ *  row (`voice_profile`, `default`) first and the outcome rows second, so two agents working on
+ *  the same request queue up behind each other instead of overwriting each other's outcome. */
+async function inRequestTransaction<T>(work: (db: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL statement_timeout = ${REQUEST_TX_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${REQUEST_TX_TIMEOUT_MS}`);
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** An outcome write inside a request transaction, best effort: one that cannot be written is
+ *  rolled back to its savepoint, so it never undoes the claim around it. */
+async function recordInSavepoint(db: PoolClient, write: () => Promise<boolean>): Promise<void> {
+  await db.query("SAVEPOINT run_outcome");
+  if (await write()) await db.query("RELEASE SAVEPOINT run_outcome");
+  else await db.query("ROLLBACK TO SAVEPOINT run_outcome");
+}
+
+/** The console's request row, locked for this transaction; null when nothing is asked for. */
+async function lockRequest(db: PoolClient): Promise<Date | null> {
+  const { rows } = await db.query<{ relearn_requested_at: Date | string | null }>(
+    `SELECT relearn_requested_at FROM voice_profile WHERE id = 'default' FOR UPDATE`,
+  );
+  const at = rows[0]?.relearn_requested_at;
+  return at ? new Date(at) : null;
+}
+
+const CLEAR_REQUEST = `UPDATE voice_profile SET relearn_requested_at = NULL
+     WHERE id = 'default' AND relearn_requested_at IS NOT NULL`;
+
+/**
+ * Claim a console-requested re-learn and record the run as started, in one transaction: a reader
+ * sees both or neither (never a moment with no request and no run), and only the agent whose claim
+ * succeeds writes "running" — a second agent that saw the same request writes nothing.
+ *
+ * Clearing the request BEFORE the learning (not after) is deliberate — a run that fails must not
+ * re-fire every minute against a billed gateway, which is the shape of a past spend leak. The
+ * failure is recorded on the profile as `learn_status = 'error'` and as the agent's outcome; the human
+ * re-presses the button.
+ */
+async function claimAndRecordStart(agent: string, detail: string): Promise<boolean> {
+  return inRequestTransaction(async (db) => {
+    if (!(await lockRequest(db))) return false;
+    // A run that is going, this agent's or any other chief-of-staff agent's that is not retired,
+    // holds the request until it ends: a second run would page a mailbox and bill the gateway twice
+    // for one press (the agent whose run is going answers the request instead,
+    // `answerRequestDuringRun`). A run that has said nothing for longer than a learn can take is
+    // treated as gone, so a crashed run does not hold requests for ever.
+    if ((await runNow(db, { everyAgentBut: voiceLearnJob(agent) })) !== "idle") return false;
+    await db.query(CLEAR_REQUEST);
+    await recordInSavepoint(db, () => recordRunStarted(db, voiceLearnJob(agent), { agent, detail }));
+    return true;
+  });
+}
+
+/** A run that has written nothing for this long is not going any more (the learn's own deadline is
+ *  45 minutes; the console reads the same silence as "stopped"). */
+const RUN_SILENT_MS = 2 * 60 * 60_000;
+
+/**
+ * What the outcome records say right now, with their rows locked for this transaction — one agent's
+ * own record (its job key), or every agent's: this agent's own record and the record of every
+ * chief-of-staff agent that is not retired. A retired agent's record is left out: retiring does not
+ * remove it, and a run the retirement cut off would otherwise read as going and hold every other
+ * agent's claim for two hours, while the console (which reads the same set of agents) ignores it.
+ *   "going"  — a run is going: `running`, or a request already covered by one (`already-running`),
+ *              written in the last two hours, in any of the records looked at;
+ *   "idle"   — nothing is running (no row, a finished, failed or skipped run, or a silent one);
+ *   "locked" — someone else holds one of the rows: its outcome is being written right now. The lock
+ *              is not waited for, so this transaction never holds the request row while it waits;
+ *              the request is left for the next tick.
+ * An outcome that cannot be read for any other reason (an older database) reads as "idle".
+ */
+async function runNow(db: PoolClient, whose: string | { everyAgentBut: string }): Promise<"going" | "idle" | "locked"> {
+  const [where, job] = typeof whose === "string" ? ["job = $1", whose] : [
+    `(job = $1 OR job IN (SELECT name || '/${VOICE_LEARN_SCHEDULE}' FROM agent_definitions
+                            WHERE status <> 'retired' AND definition->>'role' = 'chief-of-staff'))`,
+    whose.everyAgentBut,
+  ];
+  await db.query("SAVEPOINT run_check");
+  try {
+    const { rows } = await db.query<{ going: boolean }>(
+      `SELECT (state = 'running' OR (state = 'skipped' AND reason = $2))
+              AND updated_at > now() - make_interval(secs => $3) AS going
+         FROM schedule_run WHERE ${where} FOR UPDATE OF schedule_run NOWAIT`,
+      [job, VOICE_LEARN_SKIPS.alreadyRunning, RUN_SILENT_MS / 1000],
+    );
+    await db.query("RELEASE SAVEPOINT run_check");
+    return rows.some((r) => r.going === true) ? "going" : "idle";
+  } catch (err) {
+    await db.query("ROLLBACK TO SAVEPOINT run_check");
+    return (err as { code?: string }).code === LOCK_NOT_AVAILABLE ? "locked" : "idle";
+  }
+}
+
+/** Postgres: `FOR UPDATE NOWAIT` found the row locked. */
+const LOCK_NOT_AVAILABLE = "55P03";
+
+/**
+ * A request that arrives while this agent's run is going is answered by that run: taken, and said
+ * so on this agent's own record — but only while that record still says a run is going (`running`,
+ * or the note of an earlier request this run already covers). If the run has just recorded its end,
+ * the request is left for the next tick, so a finished outcome is never replaced by a covering note.
+ * The run's own end waits on the outcome row's lock, so it always lands after this note.
+ */
+async function answerRequestDuringRun(agent: string): Promise<void> {
+  await inRequestTransaction(async (db) => {
+    if (!(await lockRequest(db))) return;
+    // Going covers a second press during the same run too: the first one's note says already-running.
+    if ((await runNow(db, voiceLearnJob(agent))) !== "going") return;
+    await db.query(CLEAR_REQUEST);
+    await recordInSavepoint(db, () => recordRunSkipped(db, voiceLearnJob(agent), VOICE_LEARN_SKIPS.alreadyRunning,
+      "A learning run was already going, so it was not started twice.", { agent }));
+  });
 }
 
 /**
@@ -135,13 +286,19 @@ async function claimRelearnRequest(): Promise<boolean> {
  * mailbox "error" for that would be noise. Not completing the pass keeps freshness monitoring
  * honest.
  */
-export async function learnAllMailboxes(): Promise<boolean> {
+export async function learnAllMailboxes(opts: { agent: string }): Promise<boolean> {
   const cfg = await readConfig();
+  const job = voiceLearnJob(opts.agent);
+  const skip = (reason: VoiceLearnSkip, sentence: string) => recordRunSkipped(getPool(), job, reason, sentence, opts);
   // The mailbox the agent's owner chose (reads only here). No mailbox chosen is a normal install:
   // skip, said once (agentMailbox). A chosen-but-stale one skips too, and does not count as a
   // completed pass. A long deadline: a paced read of a year of Sent mail takes minutes.
   const am = await agentMailbox("voice-learn", { workMs: 45 * 60_000 });
-  if (!am.ok) return am.reason === "none";
+  if (!am.ok) {
+    if (am.reason === "none") await skip(VOICE_LEARN_SKIPS.noMailbox, "No mailbox is chosen for this agent, so there is no Sent mail to learn from.");
+    else await skip(VOICE_LEARN_SKIPS.mailboxUnusable, `The chosen mailbox cannot be used right now: ${mailboxRefusalSentence(am.reason)}.`);
+    return am.reason === "none";
+  }
   const mailboxes = [am.mailbox];
 
   const embedModel = process.env["EMBED_MODEL"] ?? purposeModel("embed");
@@ -153,13 +310,17 @@ export async function learnAllMailboxes(): Promise<boolean> {
     console.warn(
       `voice-learn: the gateway did not answer for ${embedModel} (${reason}); this installation may have no embedding model yet — skipping voice learning this pass`,
     );
+    await skip(VOICE_LEARN_SKIPS.noCompareModel, `There is no model for comparing texts: ${embedModel} did not answer.`);
     return false;
   }
 
   let anySucceeded = false;
+  let kept = 0, dropped = 0, failed = 0, lastFailure = "";
   for (const mailbox of mailboxes) {
     try {
-      const { kept, dropped } = await runVoiceLearn({
+      // Running, per mailbox. The address is not written into the outcome: it holds no person data.
+      await recordRunStarted(getPool(), job, { ...opts, detail: "Reading Sent mail." });
+      const result = await runVoiceLearn({
         mailbox,
         listSentMessages: () => listSentMessages(cfg, am.gmail),
         embedder,
@@ -168,34 +329,94 @@ export async function learnAllMailboxes(): Promise<boolean> {
         setProposed: (p) => setProposedFor(mailbox, p),
         setStatus: (status, message) => setStatusFor(mailbox, status, message),
       });
-      console.log(`voice-learn: ${mailbox} — kept ${kept}, dropped ${dropped}`);
+      console.log(`voice-learn: ${mailbox} — kept ${result.kept}, dropped ${result.dropped}`);
+      kept += result.kept; dropped += result.dropped;
       anySucceeded = true;
     } catch (err) {
       // One mailbox's failure must not cost the other its refresh. runVoiceLearn has already
       // recorded 'error' with the message on the profile, so this is visible in the console.
       console.error(`voice-learn: ${mailbox} FAILED — other mailboxes continue`, err);
+      failed += 1;
+      lastFailure = err instanceof Error ? err.message : String(err);
     }
   }
+  if (anySucceeded) await recordRunFinished(getPool(), job, { ...opts, counts: { kept, dropped, ...(failed ? { failed } : {}) } });
+  else if (failed) await recordRunFailed(getPool(), job, lastFailure || "Learning failed.", opts);
   return anySucceeded;
 }
 
 let lastSlot: string | null = null;
 let running = false;
 
-/** — the row input-freshness.sh reads; pinned to this filename by the conformance test. */
+/**
+ * The schedule is switched off (in the definition, or for the whole server) and the owner asked for
+ * a re-learn: say so, once per request, as this agent's outcome. Never runs anything, never stamps the
+ * heartbeat, and never takes the request — it stays pending and runs once the switch is on, and an
+ * agent that has the schedule on may still pick it up. Best effort: a failure here is a warning.
+ */
+let offWarning = "";
+async function answerRequestWhileOff(definition: AgentDefinition): Promise<void> {
+  if (scheduleEnabled(definition, "voice-learn")) return;
+  try {
+    // A cheap look first, so a quiet minute opens no transaction.
+    if (!(await pendingRequestAt())) return;
+    const [reason, sentence] = scheduleGate()
+      ? [VOICE_LEARN_SKIPS.switchedOff, "Voice Learn is switched off for this agent, so it did not run."]
+      : [VOICE_LEARN_SKIPS.schedulesOff, "Schedules are switched off on this server, so it did not run."];
+    // Decided under the request row's lock: another agent that has the schedule on claims through the
+    // same row (`claimAndRecordStart`), so it either went first (the request is gone, and its run is
+    // not overwritten) or waits until this skip is written and then records its run over it.
+    await inRequestTransaction(async (db) => {
+      const requestedAt = await lockRequest(db);
+      if (!requestedAt) return;
+      // The skip goes on this agent's own record, so it can never replace another agent's run. A run
+      // of this agent's own that is still going (it was switched off mid-run) is not replaced either:
+      // the page keeps showing it, and no agent reads it as idle and starts a second run.
+      const job = voiceLearnJob(definition.name);
+      if ((await runNow(db, job)) !== "idle") return;
+      const last = await readScheduleRun(db, job);
+      if (last?.state === "skipped" && last.reason === reason && last.updatedAt >= requestedAt) return;
+      await recordInSavepoint(db, () => recordRunSkipped(db, job, reason, sentence, { agent: definition.name }));
+    });
+    offWarning = "";
+  } catch (err) {
+    // Said once per different failure, not every minute: a dark box may have no database at all.
+    const said = err instanceof Error ? err.message : String(err);
+    if (said !== offWarning) {
+      offWarning = said;
+      console.warn(`voice-learn: could not record why a requested re-learn did not run (the schedule is switched off): ${said}`);
+    }
+  }
+}
+
+/** — the row input-freshness.sh reads; pinned to this filename by the conformance test. The same
+ *  for every chief-of-staff agent. Not where outcomes go: each agent records those under its own
+ *  `voiceLearnJob(<agent name>)`. */
 export const HEARTBEAT_KEY = "chief-of-staff/voice-learn";
 
 export default defineSchedule({
   cron: "* * * * *",
   async run() {
     const { loaded } = await thisAgent(undefined);
+    const agent = loaded.definition.name;
+    await answerRequestWhileOff(loaded.definition);
     if (!scheduleEnabled(loaded.definition, "voice-learn")) return;
     await recordScheduleTick(getPool(), HEARTBEAT_KEY);
-    if (running) return;                       // a previous run is still paging mail
+    if (running) {                             // a previous run is still paging mail
+      // A request that arrives now is answered by the run that is going (see answerRequestDuringRun).
+      // Best effort: this tick has no work of its own to lose.
+      try {
+        await answerRequestDuringRun(agent);
+      } catch (err) {
+        console.warn("voice-learn: could not answer a re-learn request that came in during a run", err);
+      }
+      return;
+    }
 
     // A human pressing "re-learn" wins over the clock — checked first so an on-demand run is
-    // not swallowed by the weekly slot bookkeeping.
-    const requested = await claimRelearnRequest();
+    // not swallowed by the weekly slot bookkeeping. Only looked at here; taken below, once the
+    // run is recorded as started.
+    const requested = (await pendingRequestAt()) !== null;
 
     const now = new Date();
     // The owner clock, resolved once per tick and cached for five minutes (lib/owner-clock.ts).
@@ -211,7 +432,22 @@ export default defineSchedule({
     running = true;
     try {
       console.log(`voice-learn: starting (${requested ? "console re-learn request" : "weekly slot"})`);
-      const completed = await learnAllMailboxes();
+      // Only the agent whose claim succeeds runs a requested learn, and only it records "running":
+      // another agent that saw the same request may have taken it first, and one press must never
+      // start two billed runs or leave a second agent's "running" over the first one's outcome.
+      const claimed = requested && (await claimAndRecordStart(agent, "Asked for in the console."));
+      if (requested && !claimed && !scheduled) {
+        console.log("voice-learn: another agent took this re-learn request; not starting a second run");
+        return;
+      }
+      if (!claimed) await recordRunStarted(getPool(), voiceLearnJob(agent), { agent, detail: "The weekly run." });
+      let completed: boolean;
+      try {
+        completed = await learnAllMailboxes({ agent });
+      } catch (err) {
+        await recordRunFailed(getPool(), voiceLearnJob(agent), err instanceof Error ? err.message : String(err), { agent });
+        throw err;
+      }
       if (completed) await recordSchedulePass(getPool(), HEARTBEAT_KEY);
     } finally {
       running = false;

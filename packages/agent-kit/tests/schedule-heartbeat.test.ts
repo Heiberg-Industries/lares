@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 
 import {
   scheduleKey, tickKey, recordSchedulePass, recordScheduleTick,
+  recordRunStarted, recordRunFinished, recordRunFailed, recordRunSkipped, readScheduleRun, readScheduleRuns,
 } from "../src/schedule-heartbeat.js";
 
 /**
@@ -17,6 +18,7 @@ import {
  */
 const here = dirname(fileURLToPath(import.meta.url));
 const MIGRATION = readFileSync(join(here, "..", "..", "..", "services", "box", "sql", "001_baseline.sql"), "utf8");
+const OUTCOMES = readFileSync(join(here, "..", "..", "..", "services", "box", "sql", "041_schedule_run.sql"), "utf8");
 
 const ageSeconds = async (pool: Pool, key: string): Promise<number | undefined> => {
   const { rows } = await pool.query(
@@ -33,6 +35,7 @@ describe("schedule-heartbeat ", () => {
     container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
     pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(MIGRATION);
+    await pool.query(OUTCOMES);
   }, 120_000);
 
   afterAll(async () => { await pool.end(); await container.stop(); });
@@ -99,4 +102,168 @@ describe("schedule-heartbeat ", () => {
     await expect(recordSchedulePass(pool, "digest")).rejects.toThrow(/key/);
     expect(spy).not.toHaveBeenCalled();
   });
+});
+
+/**
+ * The outcome record next to the heartbeat: what the last run did and why. Same real Postgres, same
+ * real migration file, and the same never-throw contract as a stamp.
+ */
+describe("schedule-heartbeat: the job's last outcome", () => {
+  let container: StartedPostgreSqlContainer;
+  let pool: Pool;
+  const KEY = "chief-of-staff/voice-learn";
+  const heartbeatAge = () => ageSeconds(pool, KEY);
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
+    await pool.query(MIGRATION);
+    await pool.query(OUTCOMES);
+    await pool.query("update heartbeat set updated_at = now() - interval '1 hour' where agent like 'chief-of-staff/%'");
+  }, 120_000);
+
+  afterAll(async () => { await pool.end(); await container.stop(); });
+
+  beforeEach(async () => { vi.restoreAllMocks(); await pool.query("TRUNCATE schedule_run"); });
+
+  it("has no outcome before the first run", async () => {
+    expect(await readScheduleRun(pool, KEY)).toBeNull();
+  });
+
+  it("records a start, then a finish with counts, keeping when it started", async () => {
+    expect(await recordRunStarted(pool, KEY, { agent: "example-agent" })).toBe(true);
+    const started = await readScheduleRun(pool, KEY);
+    expect(started).toMatchObject({ job: KEY, agent: "example-agent", state: "running", reason: "", detail: "", counts: {} });
+    expect(started!.startedAt).toBeInstanceOf(Date);
+
+    expect(await recordRunFinished(pool, KEY, { counts: { kept: 12, dropped: 3 } })).toBe(true);
+    const done = await readScheduleRun(pool, KEY);
+    expect(done).toMatchObject({ state: "finished", agent: "example-agent", counts: { kept: 12, dropped: 3 } });
+    expect(done!.startedAt?.getTime()).toBe(started!.startedAt?.getTime());
+    expect(done!.updatedAt.getTime()).toBeGreaterThanOrEqual(started!.updatedAt.getTime());
+  });
+
+  it("reads several jobs' outcomes at once, one per job that has one; each job keeps its own", async () => {
+    await recordRunStarted(pool, "first-agent/voice-learn", { agent: "first-agent" });
+    await recordRunFinished(pool, "other-agent/voice-learn", { agent: "other-agent", counts: { kept: 4 } });
+    const runs = await readScheduleRuns(pool, ["other-agent/voice-learn", "first-agent/voice-learn", "absent-agent/voice-learn"]);
+    expect(runs.map((r) => [r.job, r.state])).toEqual([["first-agent/voice-learn", "running"], ["other-agent/voice-learn", "finished"]]);
+    expect(runs[1]!.counts).toEqual({ kept: 4 });
+    expect(await readScheduleRuns(pool, [])).toEqual([]);
+    await expect(readScheduleRuns(pool, ["not a key"])).rejects.toThrow(/key/);
+  });
+
+  it("drops counts that are not whole numbers ≥ 0 under a plain name", async () => {
+    await recordRunFinished(pool, KEY, { counts: { kept: 2, dropped: -1, ratio: 0.5, "bad name": 1 } });
+    expect((await readScheduleRun(pool, KEY))!.counts).toEqual({ kept: 2 });
+  });
+
+  it("records a failure with its message", async () => {
+    await recordRunStarted(pool, KEY);
+    await recordRunFailed(pool, KEY, "gateway 500");
+    expect(await readScheduleRun(pool, KEY)).toMatchObject({ state: "failed", reason: "", detail: "gateway 500" });
+  });
+
+  it("records a skip with its reason code and sentence, and clears the start", async () => {
+    await recordRunStarted(pool, KEY);
+    await recordRunSkipped(pool, KEY, "switched-off", "Voice Learn is switched off for this agent.");
+    expect(await readScheduleRun(pool, KEY)).toMatchObject({
+      state: "skipped", reason: "switched-off", detail: "Voice Learn is switched off for this agent.", startedAt: null,
+    });
+  });
+
+  it("refuses a malformed reason code or key before touching the database", async () => {
+    const spy = vi.spyOn(pool, "query");
+    await expect(recordRunSkipped(pool, KEY, "Switched Off", "x")).rejects.toThrow(/reason/);
+    await expect(recordRunStarted(pool, "voice-learn")).rejects.toThrow(/key/);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("shortens a very long message instead of failing the write", async () => {
+    await recordRunFailed(pool, KEY, "x".repeat(5_000));
+    expect((await readScheduleRun(pool, KEY))!.detail).toHaveLength(2_000);
+  });
+
+  it("never moves the heartbeat: monitoring reads only what the schedule stamps", async () => {
+    const before = await heartbeatAge();
+    await recordRunStarted(pool, KEY);
+    await recordRunSkipped(pool, KEY, "switched-off", "Switched off.");
+    await recordRunFinished(pool, KEY);
+    expect(before).toBeGreaterThan(3500);
+    expect(await heartbeatAge()).toBeGreaterThan(3500);
+  });
+
+  it("a blocked write is cancelled on the database, not abandoned: it never lands later over a newer outcome", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await recordRunStarted(pool, KEY);
+    const blocker = await pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM schedule_run WHERE job = $1 FOR UPDATE", [KEY]);
+      expect(await recordRunFinished(pool, KEY, { counts: { kept: 1 } })).toBe(false);
+      await blocker.query("COMMIT");
+    } finally {
+      blocker.release();
+    }
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect((await readScheduleRun(pool, KEY))!.state).toBe("running");
+  }, 20_000);
+
+  it("a write that waited 5 s for a free connection is not made when one comes free: it never lands over a newer outcome", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // One connection, taken: the outcome write queues for it.
+    const small = quiet(new Pool({ connectionString: container.getConnectionUri(), max: 1 }));
+    try {
+      await recordRunStarted(pool, KEY, { agent: "example-agent" });
+      const held = await small.connect();
+      expect(await recordRunFinished(small, KEY, { counts: { kept: 1 } })).toBe(false);
+      // Meanwhile a newer outcome is written (another agent, or this agent's next record).
+      await recordRunFailed(pool, KEY, "newer outcome");
+      held.release();
+      await new Promise((r) => setTimeout(r, 1_500));
+      expect(await readScheduleRun(pool, KEY)).toMatchObject({ state: "failed", detail: "newer outcome" });
+    } finally {
+      await small.end();
+    }
+  }, 20_000);
+
+  it("a write that got its connection late has only the rest of the 5 s on the database: it never lands after the caller gave up", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const small = quiet(new Pool({ connectionString: container.getConnectionUri(), max: 1 }));
+    await recordRunStarted(pool, KEY);
+    const blocker = await pool.connect();
+    try {
+      // The outcome row is locked until after the 5 s, and the only connection is free after 3 s:
+      // with a full 4 s limit on the database, the write would wait for the lock and land at ~6 s.
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM schedule_run WHERE job = $1 FOR UPDATE", [KEY]);
+      const held = await small.connect();
+      setTimeout(() => held.release(), 3_000);
+      setTimeout(() => { blocker.query("COMMIT").catch(() => {}); }, 6_000);
+      expect(await recordRunFinished(small, KEY, { counts: { kept: 1 } })).toBe(false);
+      await new Promise((r) => setTimeout(r, 2_500));
+      expect((await readScheduleRun(pool, KEY))!.state).toBe("running");
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => {});
+      blocker.release();
+      await small.end();
+    }
+  }, 20_000);
+
+  it("a failing database never throws into the schedule — it warns and resolves false", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dead = quiet(new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" }));
+    try {
+      expect(await recordRunStarted(dead, KEY)).toBe(false);
+      expect(await recordRunSkipped(dead, KEY, "no-mailbox", "No mailbox.")).toBe(false);
+    } finally { await dead.end(); }
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/chief-of-staff\/voice-learn/);
+  });
+
+  it("a hung database is bounded — resolves false after the 5 s cap", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hung = { query: () => new Promise<never>(() => {}) };
+    expect(await recordRunFinished(hung, KEY)).toBe(false);
+  }, 10_000);
 });

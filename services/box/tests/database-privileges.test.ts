@@ -371,6 +371,16 @@ describe("engine database privilege foundation", () => {
     expect((await app.query("DELETE FROM outside_connectors WHERE slug='dir-fixture'")).rowCount).toBe(1);
   });
 
+  // The chief of staff writes a job's outcome and the console reads it; both sign in as the application login.
+  it("lets the application login record and read a job's last outcome, and keeps custody out",async()=>{
+    expect((await app.query("INSERT INTO schedule_run(job,state) VALUES('example-agent/voice-learn','running')")).rowCount).toBe(1);
+    expect((await app.query("UPDATE schedule_run SET state='skipped',reason='switched-off' WHERE job='example-agent/voice-learn'")).rowCount).toBe(1);
+    expect((await app.query("SELECT state,reason FROM schedule_run WHERE job='example-agent/voice-learn'")).rows).toEqual([{state:"skipped",reason:"switched-off"}]);
+    await expectDenied(()=>outsideCustody.query("SELECT job FROM schedule_run"));
+    await expectDenied(()=>outsideCustody.query("UPDATE schedule_run SET detail='x'"));
+    expect((await app.query("DELETE FROM schedule_run WHERE job='example-agent/voice-learn'")).rowCount).toBe(1);
+  });
+
   it("lets the application login read and write which account an agent works on, and keeps custody out",async()=>{
     await admin.query("INSERT INTO orgs(id,display_name) VALUES('binding-org','Binding fixture')");
     await admin.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('binding-member','Fixture member','binding-org','member','active')");

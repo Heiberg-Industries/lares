@@ -17,6 +17,7 @@ import { Button } from '@lares/ui/primitives/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@lares/ui/primitives/card';
 import { Input } from '@lares/ui/primitives/input';
 import { NOTION_CREDENTIAL_CHANGED, NOTION_KEY_UPDATED } from './NotionCredential';
+import { useKeepFresh } from '../lib/use-keep-fresh';
 
 const when = (iso: string | null) => (iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : 'never');
 
@@ -137,14 +138,7 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
   }, []);
 
   // ---- polling: every 5 s while a request is waiting, then stop --------------------------------
-  const polling = !!live?.busy;
-  useEffect(() => {
-    if (!polling) return;
-    const timer = setTimeout(() => { void poll(); }, 5000);
-    return () => clearTimeout(timer);
-  // `view` changes on every poll answer, which re-arms (or ends) the loop.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [polling, view]);
+  useKeepFresh(!!live?.busy, poll);
   async function poll() {
     try {
       const res = await fetch('/api/clipping', { cache: 'no-store', credentials: 'same-origin' });

@@ -47,6 +47,7 @@ const PERSON_VOICE_PROFILES_FILENAME = "037_person_voice_profiles.sql";
 const APPROVAL_CARD_RECORD_FILENAME = "038_approval_card_record.sql";
 const OUTSIDE_CONNECTORS_FILENAME = "039_outside_connectors.sql";
 const ADMIN_ROLE_FILENAME = "040_admin_role.sql";
+const SCHEDULE_RUN_FILENAME = "041_schedule_run.sql";
 
 /** Every table the numbered migrations create, plus the ledger. The list is written out so that a table the old
  *  history had and the baseline lost (outside_tool_pins once did) fails here, not on a fresh install. */
@@ -138,6 +139,7 @@ const EXPECTED_TABLES = [
   "route_cursor",
   "route_proposals",
   "route_proposal_approval_links",
+  "schedule_run",
   "schedule_settings",
   "sessions",
   "studio_runs",
@@ -204,7 +206,7 @@ describe("the baseline on a fresh database", () => {
     try {
       await ensureLedger(pool);
       const first = await runMigrations(pool, SQL);
-      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME, CONVERSATION_AUDIENCE_FILENAME, OUTSIDE_EXECUTION_APPROVALS_FILENAME, TRACK_ROUTING_FILENAME, TRACK_DECLINE_FILENAME, PRIVATE_METADATA_DEVICES_FILENAME, AGENT_PROVIDER_KEYS_FILENAME, AGENT_ACCOUNT_BINDINGS_FILENAME, PERSON_VOICE_PROFILES_FILENAME, APPROVAL_CARD_RECORD_FILENAME, OUTSIDE_CONNECTORS_FILENAME, ADMIN_ROLE_FILENAME]);
+      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME, CONVERSATION_AUDIENCE_FILENAME, OUTSIDE_EXECUTION_APPROVALS_FILENAME, TRACK_ROUTING_FILENAME, TRACK_DECLINE_FILENAME, PRIVATE_METADATA_DEVICES_FILENAME, AGENT_PROVIDER_KEYS_FILENAME, AGENT_ACCOUNT_BINDINGS_FILENAME, PERSON_VOICE_PROFILES_FILENAME, APPROVAL_CARD_RECORD_FILENAME, OUTSIDE_CONNECTORS_FILENAME, ADMIN_ROLE_FILENAME, SCHEDULE_RUN_FILENAME]);
       expect(first.refused).toEqual([]);
       const second = await runMigrations(pool, SQL);
       expect(second.applied).toEqual([]);
@@ -281,7 +283,7 @@ describe("adopting the baseline", () => {
     const rows = await listApplied(db.pool);
     expect(rows.map((r) => [r.filename, r.how])).toEqual([[BASELINE_FILENAME, "adopted"]]);
     // Later files still run after adoption: the baseline is skipped, later numbered files are applied.
-    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME, CONVERSATION_AUDIENCE_FILENAME, OUTSIDE_EXECUTION_APPROVALS_FILENAME, TRACK_ROUTING_FILENAME, TRACK_DECLINE_FILENAME, PRIVATE_METADATA_DEVICES_FILENAME, AGENT_PROVIDER_KEYS_FILENAME, AGENT_ACCOUNT_BINDINGS_FILENAME, PERSON_VOICE_PROFILES_FILENAME, APPROVAL_CARD_RECORD_FILENAME, OUTSIDE_CONNECTORS_FILENAME, ADMIN_ROLE_FILENAME], refused: [] });
+    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql", "022_console_vault_source_history.sql", "023_budget_invocation_suppression.sql", "024_gateway_budget_grants.sql", "025_budget_financial_checkpoints.sql", DREAM_SCHEMA_FILENAME, SHARED_SYNC_SCHEMA_FILENAME, STUDIO_OWNERSHIP_FILENAME, OUTSIDE_CUSTODY_FILENAME, CONVERSATION_AUDIENCE_FILENAME, OUTSIDE_EXECUTION_APPROVALS_FILENAME, TRACK_ROUTING_FILENAME, TRACK_DECLINE_FILENAME, PRIVATE_METADATA_DEVICES_FILENAME, AGENT_PROVIDER_KEYS_FILENAME, AGENT_ACCOUNT_BINDINGS_FILENAME, PERSON_VOICE_PROFILES_FILENAME, APPROVAL_CARD_RECORD_FILENAME, OUTSIDE_CONNECTORS_FILENAME, ADMIN_ROLE_FILENAME, SCHEDULE_RUN_FILENAME], refused: [] });
     // Adoption is one-time: the ledger now holds the baseline, so a second adoption refuses.
     await expect(adoptMigrations(db.pool, SQL, { through: BASELINE_FILENAME })).rejects.toThrow(/one-time/);
   });
@@ -355,6 +357,20 @@ describe("adopting the baseline", () => {
     await db.pool.query("UPDATE outside_connectors SET state = 'retired', retired_at = now()");
     await db.pool.query("INSERT INTO outside_connectors (slug, display_name, url, auth_kind, created_by) VALUES ('registry', 'Again', 'https://b.example.org/', 'none', 'owner')");
     await db.pool.query("TRUNCATE outside_connectors");
+  });
+
+  it("the job-outcome file runs twice, keeps its rows, and holds a reason only on a skip", async () => {
+    const sql = readFileSync(join(SQL, SCHEDULE_RUN_FILENAME), "utf8");
+    await db.pool.query(sql);
+    await db.pool.query("INSERT INTO schedule_run (job, state, reason, detail) VALUES ('example-agent/voice-learn', 'skipped', 'switched-off', 'Switched off.')");
+    await db.pool.query(sql);
+    expect((await db.pool.query("SELECT job, state, reason, counts FROM schedule_run")).rows)
+      .toEqual([{ job: "example-agent/voice-learn", state: "skipped", reason: "switched-off", counts: {} }]);
+    await expect(db.pool.query("INSERT INTO schedule_run (job, state, reason) VALUES ('example-agent/dream', 'finished', 'switched-off')")).rejects.toThrow(/schedule_run_reason_only_on_skip/);
+    await expect(db.pool.query("INSERT INTO schedule_run (job, state) VALUES ('example-agent/dream', 'skipped')")).rejects.toThrow(/schedule_run_reason_only_on_skip/);
+    await expect(db.pool.query("INSERT INTO schedule_run (job, state) VALUES ('Not A Key', 'running')")).rejects.toThrow(/schedule_run_job_check/);
+    await expect(db.pool.query("INSERT INTO schedule_run (job, state) VALUES ('example-agent/dream', 'paused')")).rejects.toThrow(/schedule_run_state_check/);
+    await db.pool.query("TRUNCATE schedule_run");
   });
 
   it("refuses when the old history is not whole, and leaves the ledger alone", async () => {
