@@ -39,6 +39,7 @@
  *     reason; a request that arrives while a run is going is taken and answered by that run.
  */
 import { defineSchedule } from "eve/schedules";
+import type { PoolClient } from "pg";
 
 import { getPool } from "@lares/agent-kit/db";
 import { purposeModel } from "@lares/agent-kit/gateway-status";
@@ -137,43 +138,85 @@ async function pendingRequestAt(): Promise<Date | null> {
   return at ? new Date(at) : null;
 }
 
-/** Claim a console-requested re-learn: returns true if one was pending. Clearing BEFORE the
- *  learning (not after) is deliberate — a run that fails must not re-fire every minute against a
- *  billed gateway, which is the shape of a past spend leak. The failure is recorded on
- *  the profile as `learn_status = 'error'` and as the job's outcome; the human re-presses the
- *  button. Used where no run starts (a request that arrives during a run); a run that starts
- *  claims through `claimAndRecordStart`. */
-async function claimRelearnRequest(): Promise<boolean> {
-  const { rowCount } = await getPool().query(
-    `UPDATE voice_profile SET relearn_requested_at = NULL
-     WHERE id = 'default' AND relearn_requested_at IS NOT NULL`,
-  );
-  return (rowCount ?? 0) > 0;
-}
+/** Statements inside a request transaction are cancelled by the database after this long, below
+ *  the outcome helper's own 5 s bound, so a blocked write ends on the server instead of holding the
+ *  request row's lock behind a query nobody waits for any more. */
+const REQUEST_TX_TIMEOUT_MS = 4_000;
 
-/** Claim the request and record the run as started in ONE transaction: a reader sees both or
- *  neither (never a moment with no request and no run), and only the agent whose claim succeeds
- *  writes "running" — a second agent that saw the same request writes nothing. The started record
- *  is best effort inside a savepoint, so a record that cannot be written never undoes the claim. */
-async function claimAndRecordStart(agent: string, detail: string): Promise<boolean> {
+/** One transaction on the console's request. Locks are always taken in the same order, the request
+ *  row (`voice_profile`, `default`) first and the job's outcome row second, so two agents working on
+ *  the same request queue up behind each other instead of overwriting each other's outcome. */
+async function inRequestTransaction<T>(work: (db: PoolClient) => Promise<T>): Promise<T> {
   const client = await getPool().connect();
   try {
     await client.query("BEGIN");
-    const { rowCount } = await client.query(
-      `UPDATE voice_profile SET relearn_requested_at = NULL
-       WHERE id = 'default' AND relearn_requested_at IS NOT NULL`,
-    );
-    if ((rowCount ?? 0) === 0) { await client.query("ROLLBACK"); return false; }
-    await client.query("SAVEPOINT run_outcome");
-    if (!(await recordRunStarted(client, HEARTBEAT_KEY, { agent, detail }))) await client.query("ROLLBACK TO SAVEPOINT run_outcome");
+    await client.query(`SET LOCAL statement_timeout = ${REQUEST_TX_TIMEOUT_MS}`);
+    await client.query(`SET LOCAL lock_timeout = ${REQUEST_TX_TIMEOUT_MS}`);
+    const result = await work(client);
     await client.query("COMMIT");
-    return true;
+    return result;
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
   } finally {
     client.release();
   }
+}
+
+/** An outcome write inside a request transaction, best effort: one that cannot be written is
+ *  rolled back to its savepoint, so it never undoes the claim around it. */
+async function recordInSavepoint(db: PoolClient, write: () => Promise<boolean>): Promise<void> {
+  await db.query("SAVEPOINT run_outcome");
+  if (await write()) await db.query("RELEASE SAVEPOINT run_outcome");
+  else await db.query("ROLLBACK TO SAVEPOINT run_outcome");
+}
+
+/** The console's request row, locked for this transaction; null when nothing is asked for. */
+async function lockRequest(db: PoolClient): Promise<Date | null> {
+  const { rows } = await db.query<{ relearn_requested_at: Date | string | null }>(
+    `SELECT relearn_requested_at FROM voice_profile WHERE id = 'default' FOR UPDATE`,
+  );
+  const at = rows[0]?.relearn_requested_at;
+  return at ? new Date(at) : null;
+}
+
+const CLEAR_REQUEST = `UPDATE voice_profile SET relearn_requested_at = NULL
+     WHERE id = 'default' AND relearn_requested_at IS NOT NULL`;
+
+/**
+ * Claim a console-requested re-learn and record the run as started, in one transaction: a reader
+ * sees both or neither (never a moment with no request and no run), and only the agent whose claim
+ * succeeds writes "running" — a second agent that saw the same request writes nothing.
+ *
+ * Clearing the request BEFORE the learning (not after) is deliberate — a run that fails must not
+ * re-fire every minute against a billed gateway, which is the shape of a past spend leak. The
+ * failure is recorded on the profile as `learn_status = 'error'` and as the job's outcome; the human
+ * re-presses the button.
+ */
+async function claimAndRecordStart(agent: string, detail: string): Promise<boolean> {
+  return inRequestTransaction(async (db) => {
+    const { rowCount } = await db.query(CLEAR_REQUEST);
+    if ((rowCount ?? 0) === 0) return false;
+    await recordInSavepoint(db, () => recordRunStarted(db, HEARTBEAT_KEY, { agent, detail }));
+    return true;
+  });
+}
+
+/**
+ * A request that arrives while this agent's run is going is answered by that run: taken, and said
+ * so — but only while the job's outcome still says "running". If the run has just recorded its end,
+ * the request is left for the next tick, so a finished outcome is never replaced by a covering note.
+ * The run's own end waits on the outcome row's lock, so it always lands after this note.
+ */
+async function answerRequestDuringRun(agent: string): Promise<void> {
+  await inRequestTransaction(async (db) => {
+    if (!(await lockRequest(db))) return;
+    const { rows } = await db.query<{ state: string }>(`SELECT state FROM schedule_run WHERE job = $1 FOR UPDATE`, [HEARTBEAT_KEY]);
+    if (rows[0]?.state !== "running") return;
+    await db.query(CLEAR_REQUEST);
+    await recordInSavepoint(db, () => recordRunSkipped(db, HEARTBEAT_KEY, VOICE_LEARN_SKIPS.alreadyRunning,
+      "A learning run was already going, so it was not started twice.", { agent }));
+  });
 }
 
 /**
@@ -269,28 +312,13 @@ async function answerRequestWhileOff(definition: AgentDefinition): Promise<void>
     // Decided under the request row's lock: another agent that has the schedule on claims through the
     // same row (`claimAndRecordStart`), so it either went first (the request is gone, and its run is
     // not overwritten) or waits until this skip is written and then records its run over it.
-    const client = await getPool().connect();
-    try {
-      await client.query("BEGIN");
-      const { rows } = await client.query<{ relearn_requested_at: Date | string | null }>(
-        `SELECT relearn_requested_at FROM voice_profile WHERE id = 'default' FOR UPDATE`,
-      );
-      const at = rows[0]?.relearn_requested_at;
-      if (!at) { await client.query("ROLLBACK"); return; }
-      const requestedAt = new Date(at);
-      const last = await readScheduleRun(client, HEARTBEAT_KEY);
-      if (last?.state === "skipped" && last.reason === reason && last.updatedAt >= requestedAt) { await client.query("ROLLBACK"); return; }
-      await client.query("SAVEPOINT run_outcome");
-      if (!(await recordRunSkipped(client, HEARTBEAT_KEY, reason, sentence, { agent: definition.name }))) {
-        await client.query("ROLLBACK TO SAVEPOINT run_outcome");
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
-      throw err;
-    } finally {
-      client.release();
-    }
+    await inRequestTransaction(async (db) => {
+      const requestedAt = await lockRequest(db);
+      if (!requestedAt) return;
+      const last = await readScheduleRun(db, HEARTBEAT_KEY);
+      if (last?.state === "skipped" && last.reason === reason && last.updatedAt >= requestedAt) return;
+      await recordInSavepoint(db, () => recordRunSkipped(db, HEARTBEAT_KEY, reason, sentence, { agent: definition.name }));
+    });
     offWarning = "";
   } catch (err) {
     // Said once per different failure, not every minute: a dark box may have no database at all.
@@ -314,13 +342,10 @@ export default defineSchedule({
     if (!scheduleEnabled(loaded.definition, "voice-learn")) return;
     await recordScheduleTick(getPool(), HEARTBEAT_KEY);
     if (running) {                             // a previous run is still paging mail
-      // A request that arrives now is answered by the run that is going: taken, and said so.
+      // A request that arrives now is answered by the run that is going (see answerRequestDuringRun).
       // Best effort: this tick has no work of its own to lose.
       try {
-        if (await claimRelearnRequest()) {
-          await recordRunSkipped(getPool(), HEARTBEAT_KEY, VOICE_LEARN_SKIPS.alreadyRunning,
-            "A learning run was already going, so it was not started twice.", { agent });
-        }
+        await answerRequestDuringRun(agent);
       } catch (err) {
         console.warn("voice-learn: could not answer a re-learn request that came in during a run", err);
       }

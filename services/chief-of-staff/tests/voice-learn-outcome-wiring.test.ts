@@ -198,4 +198,37 @@ describe("voice-learn: what a re-learn request becomes", () => {
     }
     expect(await outcome()).toMatchObject({ state: "running", agent: "other-agent" });
   }, 30_000);
+
+  it("a request that arrives just as a run ends is left for the next tick, not written over the finished outcome", async () => {
+    let release!: () => void;
+    holdMailbox = new Promise<void>((r) => { release = r; });
+    const { default: schedule } = await import("../agent/schedules/voice-learn.js");
+    const first = schedule.run!(CTX as never);
+    await vi.waitFor(() => expect(seenAtMailbox).not.toBeNull());
+    // The run has recorded its end; this process has not yet left its run.
+    await pool.query("UPDATE schedule_run SET state = 'finished', counts = '{\"kept\": 3}'::jsonb WHERE job = 'chief-of-staff/voice-learn'");
+    await pool.query("UPDATE voice_profile SET relearn_requested_at = now() WHERE id = 'default'");
+    await schedule.run!(CTX as never);
+    expect(await outcome()).toMatchObject({ state: "finished" });
+    expect(await pending()).toBe(true);
+    release();
+    await first;
+  }, 30_000);
+
+  it("an outcome write that is blocked ends on the server and never holds the request: the claim still commits", async () => {
+    await pool.query("INSERT INTO schedule_run (job, state) VALUES ('chief-of-staff/voice-learn', 'finished')");
+    const blocker = await pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM schedule_run WHERE job = 'chief-of-staff/voice-learn' FOR UPDATE");
+      const tick = runOnce();
+      // Past the 4 s server-side limit, while the outcome row is still locked by someone else.
+      await new Promise((r) => setTimeout(r, 6_500));
+      expect(await pending()).toBe(false);
+      await blocker.query("COMMIT");
+      await tick;
+    } finally {
+      blocker.release();
+    }
+  }, 40_000);
 });
