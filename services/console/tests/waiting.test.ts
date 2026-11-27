@@ -5,7 +5,7 @@
 // agent's next step.
 import { beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { createStreamChecker } from "eve/events";
-import { APPROVED_PENDING, classifyReadFailure, decideWaiting, EXPIRED_NOTE, itemId, kindOfStatus, listWaiting, ownedFrom, readApprovals, readStreamLines, type WaitingDeps } from "../lib/waiting";
+import { APPROVED_PENDING, checkWaiting, classifyReadFailure, decideWaiting, EXPIRED_NOTE, itemId, kindOfStatus, listWaiting, ownedFrom, readApprovals, readStreamLines, SENT_UNCONFIRMED, type WaitingDeps } from "../lib/waiting";
 
 const grantAccess=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
 vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=grantAccess.captureUse;async captureUseWithExpiry(){const revision=await grantAccess.captureUse();return revision===undefined?undefined:{accessRevision:revision,validUntil:null};}}}));
@@ -668,9 +668,40 @@ describe("deciding", () => {
     });
   });
 
+  it("an answer not confirmed yet is read again until it is: sends nothing more, and says what came of it", async () => {
+    const f = fake({ streams: waiting(), after: "nothing" });
+    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true });
+    // Still nothing in the conversation: still unconfirmed, and nothing is sent again.
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true });
+    // eve accepted it: approved, the action not reported yet.
+    f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), resolved("req-1", "accepted")];
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true });
+    // The action ran.
+    f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), ran("call-req-1", "completed")];
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: true, outcome: "approved", message: "Approved, and example carried it out. Its reply appears in the Telegram conversation this came from." });
+    expect(f.posts).toHaveLength(1);
+  });
+
+  it("a re-check that finds the action failed says so, and a denial reads as denied", async () => {
+    const f = fake({ streams: waiting(), after: "resolve" });
+    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toMatchObject({ unconfirmed: true });
+    f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), ran("call-req-1", "failed", "the mail server said no")];
+    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: false, reason: "action-failed", message: "Your approval arrived, but the action did not go through: the mail server said no" });
+    const g = fake({ streams: { wrun_tg: [...asked("req-1", "Send it", "2026-10-15T11:00:00.000Z"), resolved("req-1", "declined")] } });
+    expect(await checkWaiting(OWNER, id, g.deps)).toEqual({ ok: true, outcome: "cancelled", message: "Denied. example will not do it." });
+    expect(g.posts).toHaveLength(0);
+  });
+
+  it("a re-check is only for the agent's owner, and only for an item this console made", async () => {
+    const f = fake({ streams: waiting(), agents: [] });
+    expect(await checkWaiting(OWNER, id, f.deps)).toMatchObject({ ok: false, reason: "refused" });
+    expect(await checkWaiting(OWNER, "approval:not-a-key", f.deps)).toMatchObject({ ok: false, reason: "gone" });
+    expect(await checkWaiting(OWNER, itemId("proposal", ["notion", "1"]), f.deps)).toMatchObject({ ok: false, reason: "gone" });
+  });
+
   it("Approve accepted and nothing run yet: the careful sentence, not a claim of success", async () => {
     const f = fake({ streams: waiting(), after: "resolve" });
-    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING });
+    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true });
   });
 
   it("Deny: answers with the framework's own 'deny', and says the agent will not do it", async () => {

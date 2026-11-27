@@ -8,7 +8,8 @@ import { pool } from "./db";
 import { readScheduleRuns, type ScheduleRunRow } from "@lares/agent-kit/schedule-heartbeat";
 import { VOICE_LEARN_SKIPS, voiceLearnJob } from "@lares/agent-kit/voice-learn-outcome";
 import type { RunState } from "@lares/ui/patterns";
-import { formatInOwnerTz, homeTz, ownerDayIn } from "./proactivity";
+import { homeTz } from "./proactivity";
+import { runWhen as whenText } from "./run-when";
 import type { VoiceCardDTO, VoiceExampleDTO, VoiceProposed } from "./contracts";
 
 export interface VoiceCardRow {
@@ -109,11 +110,6 @@ export const RELEARN_STALE_MS = 2 * 60 * 60_000;
 export const RELEARN_NOT_PICKED_UP_MS = 3 * 60_000;
 
 const RUNNING_WHY = "Reading Sent mail and learning how you write. This can take several minutes.";
-
-function whenText(at: Date, now: Date, tz: string): string {
-  const [day, time] = formatInOwnerTz(at, tz).split(" ");
-  return day === ownerDayIn(now, tz) ? `today at ${time}` : `on ${day} at ${time}`;
-}
 
 const agentPage = (a: VoiceLearnAgent) => `/agents/${encodeURIComponent(a.name)}`;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;

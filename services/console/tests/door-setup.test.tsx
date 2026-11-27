@@ -167,3 +167,19 @@ it.each([{enabled:false,pending:false},{enabled:true,pending:true},{enabled:true
  mocks.states[STATE.rows]=[row('slack',{configured:true,...state})];
  expect(find(DoorSetup({...props,origin:''}),'Show the one-time code')).toBeUndefined();
 });
+it('applies through the page (one owner for Apply), never reloads, and shows where the restart stands',async()=>{
+ const pageApply=vi.fn(async()=>undefined);
+ const reload=vi.fn();vi.stubGlobal('window',{location:{reload}});
+ try{
+  mocks.status.mockResolvedValue(ok([row('slack',{enabled:true,configured:true,pending:true})]));
+  mocks.states[STATE.rows]=[row('slack',{enabled:true,configured:true,pending:true})];
+  find(DoorSetup({...cos,apply:pageApply}),'Apply connection changes (restarts agent)')!.props.onClick();
+  await vi.waitFor(()=>expect(pageApply).toHaveBeenCalledWith('a'.repeat(64),'Applying (restarts the agent, about a minute)…'));
+  await vi.waitFor(()=>expect(mocks.setters[STATE.progress]).toHaveBeenLastCalledWith(''));
+  expect(mocks.apply).not.toHaveBeenCalled();
+  expect(reload).not.toHaveBeenCalled();
+ }finally{vi.unstubAllGlobals();}
+ mocks.setters=[];mocks.states=[];
+ const html=renderToStaticMarkup(DoorSetup({...cos,applyStatus:{state:'finished',when:'at 14:03',why:'Running and answering.',active:false}}));
+ expect(html).toContain('data-state="finished"');expect(html).toContain('Finished at 14:03. Running and answering.');
+});

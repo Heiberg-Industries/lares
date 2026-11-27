@@ -6,7 +6,7 @@
  */
 import { revalidatePath } from "next/cache";
 import { actingAddress } from "../../lib/auth";
-import { decideWaiting, type DecideResult } from "../../lib/waiting";
+import { checkWaiting, decideWaiting, type DecideResult } from "../../lib/waiting";
 import { waitingDeps } from "../../lib/waiting-deps";
 
 export async function decide(input: { id: string; actionId: string }): Promise<DecideResult> {
@@ -18,4 +18,13 @@ export async function decide(input: { id: string; actionId: string }): Promise<D
   const result = await decideWaiting(member, input.id, input.actionId, waitingDeps);
   revalidatePath("/reviews");
   return result;
+}
+
+/** Reads again what came of an answer the agent had not confirmed yet. Sends nothing; the page asks every few
+ *  seconds until the answer is confirmed or the action failed. */
+export async function checkDecision(input: { id: string }): Promise<DecideResult> {
+  const member = await actingAddress("admin");
+  if (!member) throw new Error("unauthenticated");
+  if (typeof input?.id !== "string") return { ok: false, reason: "gone", message: "That item could not be found." };
+  return checkWaiting(member, input.id, waitingDeps);
 }

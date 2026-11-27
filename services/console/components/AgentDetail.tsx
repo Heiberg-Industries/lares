@@ -16,6 +16,7 @@ import {
   Notice,
   Row,
   Rows,
+  RunStatus,
 } from "@lares/ui/patterns";
 import type { AgentFolder } from "../lib/agents";
 import type { BoardRowDTO } from "../lib/contracts";
@@ -23,10 +24,12 @@ import type { EventPage, Reading } from "../lib/console-overview";
 import { AutonomyControl } from "./AutonomyControl";
 import { PermissionEvents } from "./PermissionEvents";
 import { OutsideToolsSection, type OutsideToolView } from "./OutsideToolsSection";
+import type { ConnectionApplication } from "../lib/outside-connector-words";
 import { DeliveryGrid, type DeliveryGridProps } from "./DeliveryGrid";
 import type { OutsideToolEvidence } from "../lib/outside-tools";
 import type { AgentStatus } from "../lib/agent-detail";
 import { scheduleExplanation, scheduleLabel } from "../lib/schedule-labels";
+import type { ScheduleLastRun } from "../lib/schedule-runs";
 import styles from "./AgentDetail.module.css";
 
 // One badge and one sentence per status. "Running" is only said when the server reports the agent as started and answering.
@@ -57,10 +60,13 @@ export function AgentDetail({
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
   events: Reading<EventPage>;
-  schedules: Reading<Array<{ name: string; on: boolean }>>;
+  /** Each schedule's switch and, for one that is on, its last run (`lib/schedule-runs.ts`); null when nothing is recorded. */
+  schedules: Reading<Array<{ name: string; on: boolean; lastRun?: ScheduleLastRun | null }>>;
   /** The delivery grid's inputs; absent when the definition could not be read or the agent sends nothing on its own. */
   routing?: Omit<DeliveryGridProps, "agent">;
-  outsideTools?: { tools: OutsideToolView[]; inEffect: boolean; evidence?: OutsideToolEvidence; dangerLive?: Record<string, string[]> };
+  outsideTools?: { tools: OutsideToolView[]; inEffect: boolean; evidence?: OutsideToolEvidence; dangerLive?: Record<string, string[]>;
+    /** Per connection, whether it reached the agent; null when that could not be read. */
+    applied?: Record<string, ConnectionApplication> | null };
   /** The finished prompt-cache sentence; null when it could not be read (the line is then left out). */
   promptCache?: string | null;
   /** Who may use or edit this agent, shown first on the Access tab; absent when the definition could not be read. */
@@ -104,7 +110,11 @@ export function AgentDetail({
         title={scheduleLabel(s.name)}
         description={scheduleExplanation(s.name) || undefined}
         control={<Badge variant={on ? "success" : "neutral"}>{on ? "On" : "Off"}</Badge>}
-      />
+      >
+        {on && s.lastRun !== undefined && (s.lastRun
+          ? <RunStatus label={`${scheduleLabel(s.name)}, last run`} state={s.lastRun.state} when={s.lastRun.when} why={s.lastRun.why} />
+          : <p className="lares-muted">No run recorded yet.</p>)}
+      </Row>
     ));
   return (
     <>
@@ -201,7 +211,7 @@ export function AgentDetail({
           {accessSettings}
           {mailboxSettings}
           {providerKeySettings}
-          <OutsideToolsSection agent={agent.name} tools={outsideTools.tools} inEffect={outsideTools.inEffect} evidence={outsideTools.evidence} dangerLive={outsideTools.dangerLive} />
+          <OutsideToolsSection agent={agent.name} tools={outsideTools.tools} inEffect={outsideTools.inEffect} evidence={outsideTools.evidence} dangerLive={outsideTools.dangerLive} applied={outsideTools.applied} />
           {!board.available ? (
             <Notice error>
               Access controls could not be loaded. Reload before changing
@@ -272,7 +282,9 @@ export function AgentDetail({
             <CardHeader>
               <CardTitle role="heading" aria-level={2}>Recurring work</CardTitle>
               <CardDescription>
-                On means the setting is saved. It does not confirm the next run.
+                {schedules.available && schedules.value.some((s) => s.on && s.lastRun !== undefined)
+                  ? "Each schedule that is on shows when it last ran, from what it recorded."
+                  : "On means the setting is saved. It does not confirm the next run."}
               </CardDescription>
             </CardHeader>
             {!schedules.available ? (

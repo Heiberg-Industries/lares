@@ -66,6 +66,7 @@ const OWNER_ACTIONS: Record<string, string> = {
   "definition.retireAgent": "stops an agent for everyone",
   "definition.listConversations": "lists the conversations people have with an agent",
   "definition.agentRuntime": "part of the agent form, which is the owner's",
+  "definition.savedDefinition": "part of the agent form, which is the owner's",
   "definition.acceptOutsideDescriptions": "lets a tool whose description changed run again",
   "definition.acceptNotionSyncPreview": "an installation setting (Notion sync)",
   "definition.runNotionSyncPreview": "an installation setting (Notion sync)",

@@ -13,7 +13,7 @@ vi.mock("../lib/keeper-client", () => ({
     constructor(message: string, readonly outcomeMayBeUnknown = false) { super(message); this.name = "KeeperUnavailableError"; }
   },
 }));
-import { connectActivateCredential, connectApplyAgent, connectDeclare, connectSwitchOnTrust, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSetDanger, connectSetTools } from "../app/actions/outside-connect";
+import { connectActivateCredential, connectApplicationStates, connectApplyAgent, connectDeclare, connectSwitchOnTrust, connectLookUpTools, connectRemoveDeclaration, connectReviewAndStage, connectSetDanger, connectSetTools } from "../app/actions/outside-connect";
 import { KeeperRefusedError, KeeperUnavailableError } from "../lib/keeper-client";
 import { PENDING_TOOL } from "../lib/outside-connect-words";
 
@@ -295,5 +295,40 @@ describe("connect: the danger zone", () => {
     mocks.keeper.mockResolvedValueOnce(state({ connections: [] }));
     expect(await connectSetDanger(request)).toMatchObject({ ok: false, retryable: false });
     expect(calls()).toEqual(["outside.connections.get"]);
+  });
+});
+
+describe("connect: whether each connection reached its agents", () => {
+  const other = { name: "notes", url: "https://notes.example.org/mcp", description: "Notes", token: false, tools: { allow: ["find_note"], read: ["find_note"] } };
+  it("reads each agent once and says per connection: applied, pending, waiting for its token, or unknown to the keeper", async () => {
+    mocks.keeper.mockImplementation(async (_action: string, input: { name: string }) => ({
+      worker: state({ name: "worker", connections: [declared(["find_rate"], ["find_rate"]), other], applicationStatus: "pending",
+        // The notes entry is what the agent runs; the rates entry changed since.
+        appliedConnections: [declared(["find_rate"], []), other] }),
+      helper: state({ name: "helper", connections: [declared(["find_rate"], ["find_rate"])], applicationStatus: "pending", waitingForKey: ["rates"] }),
+      fresh: state({ name: "fresh", connections: [other], applicationStatus: "unavailable" }),
+      steady: state({ name: "steady", connections: [other], applicationStatus: "applied", appliedConnections: [other] }),
+    } as Record<string, unknown>)[input.name]);
+    const result = await connectApplicationStates({ agents: ["worker", "helper", "fresh", "steady", "worker"] });
+    expect(result).toEqual({ ok: true, value: {
+      worker: { rates: "pending", notes: "applied" },
+      helper: { rates: "waiting-key" },
+      fresh: { notes: "unavailable" },
+      steady: { notes: "applied" },
+    } });
+    expect(calls()).toEqual(["outside.connections.get", "outside.connections.get", "outside.connections.get", "outside.connections.get"]);
+    expect(mocks.keeper.mock.calls[0]![1]).toEqual({ sessionToken: session, name: "worker" });
+  });
+  it("leaves out an agent the keeper would not read, instead of failing the others", async () => {
+    mocks.keeper.mockImplementation(async (_action: string, input: { name: string }) => {
+      if (input.name === "locked") throw new KeeperRefusedError("You may not edit this agent.");
+      return state({ connections: [other], appliedConnections: [other] });
+    });
+    expect(await connectApplicationStates({ agents: ["locked", "worker"] })).toEqual({ ok: true, value: { worker: { notes: "applied" } } });
+  });
+  it("refuses names that are not agent names, and checks the sign-in first", async () => {
+    expect(await connectApplicationStates({ agents: ["Not A Name"] })).toMatchObject({ ok: false });
+    expect(mocks.keeper).not.toHaveBeenCalled();
+    expect(mocks.requireAction).toHaveBeenCalledWith("admin");
   });
 });

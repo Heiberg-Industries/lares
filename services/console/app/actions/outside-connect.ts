@@ -19,6 +19,7 @@ import { parseOutsideDescriptorAcceptance, parseOutsideDescriptorPublication, pa
   parseOutsideDiscoveryInspection, parseOutsideDiscoveryPreview, type OutsideDescriptorReviewDto, type OutsideDiscoveryDocumentDto,
   type OutsidePendingApplyDto } from "../../lib/outside-discovery-dto";
 import { PENDING_TOOL, BIND_TO_PINNED } from "../../lib/outside-connect-words";
+import type { ApplicationStates, ConnectionApplication } from "../../lib/outside-connector-words";
 
 /** `retryable: false`: pressing the same step again would be wrong (a token may already have been sent, or what the owner
  *  read is out of date), so the screen offers only "start again". */
@@ -131,6 +132,44 @@ function canonical(value: unknown): string {
     return `{${Object.keys(rec).sort().filter(k => rec[k] !== undefined).map(k => `${JSON.stringify(k)}:${canonical(rec[k])}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
+}
+
+/** The keeper's read of one agent's connections, with what the agent runs now (`connectionApplication` in the keeper). */
+const applicationSchema = stateSchema.extend({ appliedConnections: z.array(outsideToolSchema).optional(), waitingForKey: z.array(z.string()).optional() });
+
+/** Pure: how each saved connection stands against what the agent runs. The keeper's `applicationStatus` is for the
+ *  agent's whole list, so a connection whose own entry matches what is applied reads as applied even while another
+ *  connection on the same agent is still waiting. */
+function perConnection(state: z.infer<typeof applicationSchema>): Record<string, ConnectionApplication> {
+  const out: Record<string, ConnectionApplication> = {};
+  for (const c of state.connections) {
+    if (state.waitingForKey?.includes(c.name)) out[c.name] = "waiting-key";
+    else if (state.applicationStatus === "unavailable") out[c.name] = "unavailable";
+    else if (state.applicationStatus === "applied") out[c.name] = "applied";
+    else out[c.name] = sameBytes(state.appliedConnections?.find(a => a.name === c.name), c) ? "applied" : "pending";
+  }
+  return out;
+}
+
+/**
+ * For each agent, whether each of its saved outside connections reached it: the badges on the outside-tools pages
+ * say Connected only for that, never for a saved choice alone. Read-only. An agent the keeper would not read for
+ * this member, or that did not answer, is left out (the page then says it could not be read).
+ */
+export async function connectApplicationStates(input: unknown): Promise<ConnectStep<ApplicationStates>> {
+  await requireAction("admin");
+  const parsed = z.strictObject({ agents: z.array(nameSchema).max(200) }).safeParse(input);
+  if (!parsed.success) return fail("The agent names are not valid.");
+  return step("Whether the changes reached the agents could not be read.", async (who) => {
+    const out: ApplicationStates = {};
+    await Promise.all([...new Set(parsed.data.agents)].map(async (agent) => {
+      try {
+        const state = applicationSchema.parse(await keeper<unknown>("outside.connections.get", { sessionToken: who.sessionToken, name: agent }, who.actor));
+        out[agent] = perConnection(state);
+      } catch { /* left out: read as unknown */ }
+    }));
+    return out;
+  });
 }
 
 /**

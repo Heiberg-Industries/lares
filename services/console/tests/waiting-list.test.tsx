@@ -5,7 +5,7 @@ import React from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { age, WaitingList } from "../components/WaitingList";
+import { age, CONFIRM_FOLLOW_MS, following, WaitingList } from "../components/WaitingList";
 import type { DecideResult, WaitingItem } from "../lib/waiting";
 
 afterEach(cleanup);
@@ -166,4 +166,27 @@ it("Reject on a proposal sends its id and the reject action", async () => {
   const detail = setup([item("p", { id: "proposal:p", kind: "proposal", actions: [{ id: "reject", label: "Reject", tone: "neutral" }] })], onDecide);
   await userEvent.click(within(detail).getByRole("button", { name: "Reject" }));
   expect(onDecide).toHaveBeenCalledWith({ id: "proposal:p", actionId: "reject" });
+});
+
+// Real time: the page asks again after its own five seconds (`useKeepFresh`).
+it("an answer not confirmed yet is checked again by itself until it is, with no reload asked for", { timeout: 15_000 }, async () => {
+  const onDecide = vi.fn(async (): Promise<DecideResult> => ({ ok: true, outcome: "sent", message: "Your answer reached example. Waiting for it to confirm.", unconfirmed: true }));
+  const onCheck = vi.fn(async (): Promise<DecideResult> => ({ ok: true, outcome: "approved", message: "Approved, and example carried it out. Its reply appears in the Telegram conversation this came from." }));
+  render(<WaitingList items={[item("a")]} unreadable={[]} now={NOW} onDecide={onDecide} onCheck={onCheck} />);
+  const detail = screen.getByRole("article", { name: "Selected item" });
+  await userEvent.click(within(detail).getByRole("button", { name: "Approve" }));
+  await waitFor(() => expect(detail.querySelector('[data-state="waiting"]')).not.toBeNull());
+  expect(detail.textContent).toContain("Your answer reached example. Waiting for it to confirm.");
+  expect(detail.textContent).not.toMatch(/Reload/);
+  await waitFor(() => expect(onCheck).toHaveBeenCalledWith({ id: "approval:a" }), { timeout: 7_000 });
+  await waitFor(() => expect(detail.textContent).toContain("Approved, and example carried it out."));
+  expect(detail.querySelector('[data-state="waiting"]')).toBeNull();
+});
+
+it("follows an unconfirmed answer for ten minutes, and never a settled one", () => {
+  const unconfirmed: DecideResult = { ok: true, outcome: "sent", message: "m", unconfirmed: true };
+  expect(following({ item: item("a"), result: unconfirmed, at: 0 }, CONFIRM_FOLLOW_MS - 1)).toBe(true);
+  expect(following({ item: item("a"), result: unconfirmed, at: 0 }, CONFIRM_FOLLOW_MS)).toBe(false);
+  expect(following({ item: item("a"), result: { ok: true, outcome: "approved", message: "m" }, at: 0 }, 1)).toBe(false);
+  expect(following(undefined, 1)).toBe(false);
 });

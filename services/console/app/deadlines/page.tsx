@@ -20,6 +20,8 @@ import {
   MintForm,
   OpenRow,
 } from "../../components/DeadlineControls";
+import { DeadlineScanStatus } from "../../components/DeadlineScanStatus";
+import { emptyCandidatesText, getDeadlineScanStatus } from "../../lib/deadline-scan";
 import type {
   CandidateDTO,
   MintRule,
@@ -37,7 +39,7 @@ export const dynamic = "force-dynamic";
 export default async function DeadlinesPage() {
   await requirePage("admin");
   const now = new Date();
-  const view = await getDeadlinesView();
+  const [view, scan] = await Promise.all([getDeadlinesView(), getDeadlineScanStatus(now)]);
   const clock = resolveConsoleOwnerClock(now, { homeTz: homeTz() });
   const today = ownerDayIn(now, clock.tz);
 
@@ -133,6 +135,7 @@ export default async function DeadlinesPage() {
           <CardDescription>
             Deadlines the mail scanner has spotted but not yet turned into a row.
           </CardDescription>
+          <DeadlineScanStatus scan={scan} />
         </CardHeader>
         <div className="lares-table-scroll"><table>
           <thead>
@@ -148,7 +151,7 @@ export default async function DeadlinesPage() {
             {candidates.length === 0 && (
               <tr>
                 <td colSpan={5} className="lares-status-muted">
-                  No unresolved candidates.
+                  {emptyCandidatesText(scan)}
                 </td>
               </tr>
             )}

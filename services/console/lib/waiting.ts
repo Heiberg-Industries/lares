@@ -117,7 +117,14 @@ export interface WaitingList {
 }
 
 export type DecideResult =
-  | { readonly ok: true; readonly outcome: "approved" | "cancelled" | "sent"; readonly message: string }
+  | {
+      readonly ok: true;
+      readonly outcome: "approved" | "cancelled" | "sent";
+      readonly message: string;
+      /** The answer arrived, and the agent has not confirmed what came of it yet: the page keeps checking
+       *  (`checkWaiting`) until it has, or the action failed. */
+      readonly unconfirmed?: true;
+    }
   | {
       readonly ok: false;
       /** `action-failed`: the answer was accepted, and the action then failed or was refused. */
@@ -150,6 +157,22 @@ interface WaitingSource {
   /** Must return by the time `signal` aborts (the page's overall deadline). */
   list(member: string, deps: WaitingDeps, signal: AbortSignal): Promise<WaitingList>;
   decide(member: string, key: string, actionId: string, deps: WaitingDeps): Promise<DecideResult>;
+  /** Read again what came of an answer this member sent, without sending anything. Only a kind whose answers can
+   *  come back `unconfirmed` has it. */
+  check?(member: string, key: string, deps: WaitingDeps): Promise<DecideResult>;
+}
+
+/** An approval's key: agent, conversation, request. null when it is not one this console made. */
+function approvalKey(key: string): [string, string, string] | null {
+  let parts: unknown;
+  try {
+    parts = JSON.parse(Buffer.from(key, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parts) || parts.length !== 3 || !parts.every((p) => typeof p === "string")) return null;
+  const [name, sessionId, interactionId] = parts as [string, string, string];
+  return AGENT_NAME.test(name) && SESSION_ID.test(sessionId) && INTERACTION_ID.test(interactionId) ? [name, sessionId, interactionId] : null;
 }
 
 // ── Item ids ────────────────────────────────────────────────────────────────────────────────────
@@ -504,6 +527,8 @@ export function readApprovals(facts: readonly unknown[]): {
   pending: PendingApproval[];
   resolved: Map<string, Resolution>;
   results: Map<string, ActionOutcome>;
+  /** Every approval asked in this conversation, answered or not, and the call it is about ("" when relayed). */
+  calls: Map<string, string>;
 } {
   const calls = new Map<string, { name: string; input: unknown }>();
   const asked = new Map<string, { approval: Omit<PendingApproval, "toolName" | "input">; subjectCallId: string; relayed: { name: string; input: unknown } | null }>();
@@ -558,8 +583,27 @@ export function readApprovals(facts: readonly unknown[]): {
           const call = a.relayed ?? calls.get(a.subjectCallId);
           return { ...a.approval, toolName: call?.name ?? "", input: call?.input };
         });
-  return { pending, resolved, results };
+  return { pending, resolved, results, calls: new Map([...asked].map(([id, a]) => [id, a.approval.callId])) };
 }
+
+/** What the conversation says came of an answer: denied, refused, approved and carried out, or failed; null
+ *  while nothing is known yet, and `approved` once eve accepted the approval but the action has not reported. */
+function answerOutcome(seen: ReturnType<typeof readApprovals>, interactionId: string, callId: string, agent: string, door: string): DecideResult | "approved" | null {
+  const outcome = seen.resolved.get(interactionId);
+  if (outcome === "cancelled") return { ok: true, outcome: "cancelled", message: `Denied. ${agent} will not do it.` };
+  if (outcome === "other") return { ok: false, reason: "refused", message: `${agent} did not accept the answer. Nothing was done.` };
+  const result = callId === "" ? undefined : seen.results.get(callId);
+  if (result?.status === "completed") {
+    return { ok: true, outcome: "approved", message: `Approved, and ${agent} carried it out. Its reply appears in the ${channelOf(door)} conversation this came from.` };
+  }
+  if (result !== undefined) {
+    return { ok: false, reason: "action-failed", message: `Your approval arrived, but the action did not go through${result.error ? `: ${result.error}` : "."}` };
+  }
+  return outcome === "approved" ? "approved" : null;
+}
+
+/** Said while the answer has arrived and the agent has not confirmed it. The page keeps checking by itself. */
+export const SENT_UNCONFIRMED = (agent: string): string => `Your answer reached ${agent}. Waiting for it to confirm.`;
 
 function isExpired(approval: PendingApproval, now: number): boolean {
   const at = approval.at === null ? NaN : Date.parse(approval.at);
@@ -692,19 +736,9 @@ const approvals: WaitingSource = {
   },
 
   async decide(member, key, actionId, deps) {
-    let parts: unknown;
-    try {
-      parts = JSON.parse(Buffer.from(key, "base64url").toString("utf8"));
-    } catch {
-      return { ok: false, reason: "gone", message: "That item could not be found." };
-    }
-    if (!Array.isArray(parts) || parts.length !== 3 || !parts.every((p) => typeof p === "string")) {
-      return { ok: false, reason: "gone", message: "That item could not be found." };
-    }
-    const [name, sessionId, interactionId] = parts as [string, string, string];
-    if (!AGENT_NAME.test(name) || !SESSION_ID.test(sessionId) || !INTERACTION_ID.test(interactionId) || !["approve", "deny"].includes(actionId)) {
-      return { ok: false, reason: "gone", message: "That item could not be found." };
-    }
+    const parts = approvalKey(key);
+    if (!parts || !["approve", "deny"].includes(actionId)) return { ok: false, reason: "gone", message: "That item could not be found." };
+    const [name, sessionId, interactionId] = parts;
     const password = deps.routePassword();
     if (!password) return { ok: false, reason: "unavailable", message: "The console cannot reach the agents: no route password is mounted." };
 
@@ -774,26 +808,36 @@ const approvals: WaitingSource = {
       } catch {
         break;
       }
-      const outcome = seen.resolved.get(interactionId);
-      if (outcome === "cancelled") return { ok: true, outcome: "cancelled", message: `Denied. ${agent.name} will not do it.` };
-      if (outcome === "other") return { ok: false, reason: "refused", message: `${agent.name} did not accept the answer. Nothing was done.` };
+      const outcome = answerOutcome(seen, interactionId, approval.callId, agent.name, conversation.door);
       if (outcome === "approved") approved = true;
-      const result = approval.callId === "" ? undefined : seen.results.get(approval.callId);
-      if (result?.status === "completed") {
-        return { ok: true, outcome: "approved", message: `Approved, and ${agent.name} carried it out. Its reply appears in the ${channelOf(conversation.door)} conversation this came from.` };
-      }
-      if (result !== undefined) {
-        return {
-          ok: false,
-          reason: "action-failed",
-          message: `Your approval arrived, but the action did not go through${result.error ? `: ${result.error}` : "."}`,
-        };
-      }
+      else if (outcome !== null) return outcome;
     }
     if (approved) {
-      return { ok: true, outcome: "approved", message: APPROVED_PENDING };
+      return { ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true };
     }
-    return { ok: true, outcome: "sent", message: `Your answer reached ${agent.name}; it has not confirmed it yet. Reload in a moment to see.` };
+    return { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true };
+  },
+
+  async check(member, key, deps) {
+    const parts = approvalKey(key);
+    if (!parts) return { ok: false, reason: "gone", message: "That item could not be found." };
+    const [name, sessionId, interactionId] = parts;
+    const password = deps.routePassword();
+    if (!password) return { ok: false, reason: "unavailable", message: "The console cannot reach the agents: no route password is mounted." };
+    const [agent] = await ownedAgents(member, deps, name);
+    if (!agent) return { ok: false, reason: "refused", message: "Only the owner of this agent can decide its approvals." };
+    const [conversation] = await conversations(agent, deps, sessionId);
+    if (!conversation) return { ok: false, reason: "gone", message: "That conversation has ended, so what came of your answer cannot be read here." };
+    let seen: ReturnType<typeof readApprovals>;
+    try {
+      seen = readApprovals(await sessionFacts(agent, sessionId, password, deps, { door: conversation.door }));
+    } catch {
+      // Not an outcome: the page asks again on its next check.
+      return { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true };
+    }
+    const outcome = answerOutcome(seen, interactionId, seen.calls.get(interactionId) ?? "", agent.name, conversation.door);
+    if (outcome === "approved") return { ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true };
+    return outcome ?? { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true };
   },
 };
 
@@ -844,4 +888,12 @@ export async function decideWaiting(member: string, id: string, actionId: string
   const parsed = parseItemId(id);
   if (!parsed) return { ok: false, reason: "gone", message: "That item could not be found." };
   return SOURCES[parsed.kind].decide(member, parsed.key, actionId, deps);
+}
+
+/** What came of an answer that was `unconfirmed`, read again. Sends nothing. */
+export async function checkWaiting(member: string, id: string, deps: WaitingDeps): Promise<DecideResult> {
+  const parsed = parseItemId(id);
+  const check = parsed ? SOURCES[parsed.kind].check : undefined;
+  if (!parsed || !check) return { ok: false, reason: "gone", message: "That item could not be found." };
+  return check(member, parsed.key, deps);
 }

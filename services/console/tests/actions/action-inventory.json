@@ -38,7 +38,8 @@
         "agent-access.saveAgentAccess",
         "autonomy.setAutonomy",
         "definition.acceptOutsideDescriptions",
-        "delivery.saveDelivery"
+        "delivery.saveDelivery",
+        "outside-connect.connectApplicationStates"
       ],
       "routes": [
         "GET /api/agent-mailbox",
@@ -70,6 +71,7 @@
         "definition.registerTelegram",
         "definition.retireAgent",
         "definition.saveDefinition",
+        "definition.savedDefinition",
         "definition.setDoorEnabled",
         "definition.startFreshConversation",
         "definition.verifyDoor",
@@ -100,6 +102,7 @@
         "definition.registerTelegram",
         "definition.retireAgent",
         "definition.saveDefinition",
+        "definition.savedDefinition",
         "definition.setDoorEnabled",
         "definition.startFreshConversation",
         "definition.verifyDoor",
@@ -294,7 +297,7 @@
       "act": "admin",
       "guards": ["requireAction", "requirePage"],
       "source": "derived",
-      "actions": ["outside-connectors.listConnectors"],
+      "actions": ["outside-connect.connectApplicationStates", "outside-connectors.listConnectors"],
       "routes": []
     },
     {
@@ -308,6 +311,7 @@
       "ownerExtras": true,
       "actions": [
         "outside-connect.connectActivateCredential",
+        "outside-connect.connectApplicationStates",
         "outside-connect.connectApplyAgent",
         "outside-connect.connectDeclare",
         "outside-connect.connectLookUpTools",
@@ -372,7 +376,7 @@
       "guards": ["actingAddress", "requirePage"],
       "source": "derived",
       "ownerExtras": true,
-      "actions": ["waiting.decide"],
+      "actions": ["waiting.checkDecision", "waiting.decide"],
       "routes": []
     },
     {
@@ -762,6 +766,16 @@
       "see": "owner"
     },
     {
+      "id": "definition.savedDefinition",
+      "kind": "action",
+      "file": "app/actions/definition.ts",
+      "act": "owner",
+      "guards": ["actingAddress"],
+      "source": "derived",
+      "usedBy": ["/agents/[name]/edit", "/agents/new"],
+      "see": "owner"
+    },
+    {
       "id": "definition.setAgentLimit",
       "kind": "action",
       "file": "app/actions/definition.ts",
@@ -959,6 +973,16 @@
       "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
+      "see": "admin"
+    },
+    {
+      "id": "outside-connect.connectApplicationStates",
+      "kind": "action",
+      "file": "app/actions/outside-connect.ts",
+      "act": "admin",
+      "guards": ["requireAction"],
+      "source": "derived",
+      "usedBy": ["/agents/[name]", "/outside-tools", "/outside-tools/[id]"],
       "see": "admin"
     },
     {
@@ -1490,6 +1514,16 @@
       "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/writing-style"],
+      "see": "admin"
+    },
+    {
+      "id": "waiting.checkDecision",
+      "kind": "action",
+      "file": "app/actions/waiting.ts",
+      "act": "admin",
+      "guards": ["actingAddress"],
+      "source": "derived",
+      "usedBy": ["/reviews"],
       "see": "admin"
     },
     {

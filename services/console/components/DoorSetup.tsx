@@ -1,5 +1,5 @@
 "use client";
-import { Field, FieldGroup, Notice } from "@lares/ui/patterns";
+import { Field, FieldGroup, Notice, RunStatus } from "@lares/ui/patterns";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { Input } from "@lares/ui/primitives/input";
 import {useEffect,useRef,useState} from 'react';
@@ -9,6 +9,7 @@ import { Button } from '@lares/ui/primitives/button';
 import { SaveEndsConversations } from './SaveEndsConversations';
 import {sendTestBrief,testBriefStatus,type TestBriefStatus} from '../app/actions/delivery';
 import {messagesFollowText} from '../lib/delivery';
+import type {AgentRunView} from '../lib/agent-apply-status';
 export interface DoorStatus {kind:string;enabled:boolean;configured?:boolean;claimed:boolean;pending:boolean;pending_reason?:string;applied:boolean;webhook_set_at?:string}
 /** What the owner still has to do once a chat door is applied: tap the link (Telegram) or send the message (Slack). */
 export interface ConnectStep {kind:'slack'|'telegram';code:string;expiresAt:string;link?:string;message?:string;username?:string;who?:string}
@@ -22,6 +23,13 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
  running?:boolean|null;
  /** Called after every door action, whether it worked or not: a door change can stop or start the agent. */
  onRuntimeChanged?:()=>void;
+ /** The edit page's Apply (`lib/use-agent-runtime.ts`), so a restart started here is followed and worded like one
+  * started from the Status card. Throws when it fails. Without it, the door section applies on its own. */
+ apply?:(hash:string,label:string)=>Promise<unknown>;
+ /** Where a restart started here stands: Running, Finished or Failed with why (null when nothing is). */
+ applyStatus?:AgentRunView|null;
+ /** When the last Apply succeeded, wherever it was pressed: the door rows are read again then. */
+ appliedAt?:number|null;
  /** True for the installation's owner. The claim (the last step, which decides who the agent answers to) and the
   * test brief (sent to and paid by the owner) are the owner's; an admin sets the door up and is told the owner
   * finishes it. The actions behind both refuse anyone else whatever this says. */
@@ -36,8 +44,9 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
  const latestHash=useRef(p.hash),polling=useRef(false);
  const unwrap=<T,>(r:DefinitionActionResult<T>):T=>{if(!r.ok)throw Object.assign(new Error([r.error.message,...(r.error.findings??[]).map(f=>f.message)].join(' ')),{unknown:r.error.outcomeMayBeUnknown});return r.result;};
  async function refresh(){const next=unwrap(await doorStatus(p.name));setRows(next);return next;}
- const reload=()=>{if(typeof window!=='undefined')window.location.reload();};
  useEffect(()=>{void refresh().catch(e=>setError(e.message));},[p.name]);
+ // An Apply pressed anywhere on the page changes which doors are waiting: read them again.
+ useEffect(()=>{if(p.appliedAt)void refresh().catch(()=>{});},[p.appliedAt]);
  useEffect(()=>{latestHash.current=p.hash;},[p.hash]);
  // "Send a test brief": the newest request's status line, polled at this section's own pace while it is on its way.
  async function refreshBrief(){try{setBrief(await testBriefStatus(p.name));}catch{}}
@@ -56,9 +65,9 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
  async function run(fn:()=>Promise<void>){setProgress('Working…');setError('');setMessage('');try{await fn();}catch(e){setError(e instanceof Error?e.message:'Door operation failed.');setUnknown(previous=>previous||!(e instanceof Error&&'unknown'in e&&e.unknown===false));}finally{setProgress('');try{await refresh();}catch{}p.onRuntimeChanged?.();}}
  /** Applies whatever is waiting. A failed Apply can put the earlier definition back, door and "Where messages go"
   * alike, so the "now go to" sentence goes with it rather than stay untrue next to the error. */
- async function applyWaiting(){try{return unwrap(await applyConnections({name:p.name,hash:latestHash.current}));}catch(e){setFollows('');throw e;}}
- /** Applies whatever is waiting, then reloads the page so every part of it shows the new state. */
- async function applyAndReload(label:string){setProgress(label);await applyWaiting();reload();}
+ async function applyWaiting(label:string){try{return p.apply?await p.apply(latestHash.current,label):unwrap(await applyConnections({name:p.name,hash:latestHash.current}));}catch(e){setFollows('');throw e;}}
+ /** Applies whatever is waiting. The page follows the restart by itself (Running, then Finished or Failed). */
+ async function applyNow(label:string){setProgress(label);await applyWaiting(label);}
  // After the one-time step is shown: watch for the owner to arrive, then apply the claim by itself.
  useEffect(()=>{
   if(!connect)return;let stopped=false;
@@ -66,7 +75,7 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
    if(stopped||polling.current)return;polling.current=true;
    try{
     const next=unwrap(await doorStatus(p.name));setRows(next);
-    if(next.find(r=>r.kind===connect.kind)?.claimed){stopped=true;clearInterval(id);setConnect(null);await applyAndReload('Connected. Applying the last step (restarts the agent, about a minute)…');}
+    if(next.find(r=>r.kind===connect.kind)?.claimed){stopped=true;clearInterval(id);setConnect(null);await applyNow('Connected. Applying the last step (restarts the agent, about a minute)…');setProgress('');setMessage('Connected. The agent restarted with this door.');try{await refresh();}catch{}}
    }catch(e){stopped=true;clearInterval(id);setProgress('');setError(e instanceof Error?e.message:'Could not check the connection.');setUnknown(true);}
    finally{polling.current=false;}
   })();},POLL_MS);
@@ -91,7 +100,7 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
    setProgress('Switching the door on…');const saved=unwrap(await setDoorEnabled(p.name,kind,true));
    latestHash.current=saved.hash;p.onDefinitionChanged?.(saved.hash);if(saved.messagesFollow)setFollows(messagesFollowText(saved.messagesFollow));current=await refresh();
   }
-  if(current.some(r=>r.pending)){setProgress('Applying (restarts the agent, about a minute)…');await applyWaiting();}
+  if(current.some(r=>r.pending))await applyNow('Applying (restarts the agent, about a minute)…');
   if(!p.owner){
    if(kind==='telegram'){setProgress('Registering the Telegram webhook…');unwrap(await registerTelegram(p.name));}
    setMessage(OWNER_LAST_STEP);return;
@@ -108,6 +117,8 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
  <SaveEndsConversations running={p.running}/>
  {!createUrl&&<Notice error>Set the public HTTPS address for incoming messages before creating new apps or connecting a chat door.</Notice>}
  {busy&&<Notice tone="working"><strong>{progress}</strong> Keep this page open.</Notice>}
+ {/* A failed Apply's reason is the error below (and the Failed line in Status), so it is not said twice here. */}
+ {!busy&&p.applyStatus&&p.applyStatus.state!=='failed'&&<RunStatus label="The agent" state={p.applyStatus.state} when={p.applyStatus.when} why={p.applyStatus.why}/>}
  {!busy&&touchedPending&&<Notice tone="needs-you"><strong>Changes are waiting to be applied.</strong> The agent restarts when you apply them.</Notice>}
  {SUPPORTED[p.role]?.map(kind=>{const row=rows.find(r=>r.kind===kind);const touched=doorTouched(row);const step=connect?.kind===kind?connect:null;return <Card key={kind}>
  <CardHeader><CardTitle role="heading" aria-level={3}>{LABEL[kind]}</CardTitle><CardDescription>{doorStateText(row)}</CardDescription></CardHeader>
@@ -137,7 +148,7 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
  {kind==='slack'&&<p className="lares-muted">To use the agent in a channel, invite the app to that channel and mention it there. In a channel it answers only the people it answers in a direct message (usually just you); everyone else in the channel can read its answers but cannot ask it anything. In a channel it answers from general knowledge and the public Lares pages{p.role==='chief-of-staff'?'. It can also look up your contacts (when contacts are connected), deadlines and reminders there, read-only, and everyone in the channel can read what it finds':''}. It is not given your mail, calendar, notes or what you asked it to remember. When you ask it for something it can only do in a direct message, it tells you to write to it there, and anything that needs your approval has to be asked for in a direct message, never in the channel. A private channel counts as a channel here too. A conversation in a channel is stored and learned from the same way a direct message is.</p>}
  </div>
  </FieldGroup></CardContent></Card>;})}
- {touchedPending&&<Button variant="outline" type="button" disabled={busy||unknown} onClick={()=>void run(()=>applyAndReload('Applying (restarts the agent, about a minute)…'))}>Apply connection changes (restarts agent)</Button>}
+ {touchedPending&&<Button variant="outline" type="button" disabled={busy||unknown} onClick={()=>void run(()=>applyNow('Applying (restarts the agent, about a minute)…'))}>Apply connection changes (restarts agent)</Button>}
  {follows&&<Notice>{follows}</Notice>}
  {message&&<Notice tone="success">{message}</Notice>}{error&&<Notice error>{error}{unknown?' Some changes may already have taken effect. Reload and check before trying again.':''}</Notice>}
  {unknown&&<p><a href={`/agents/${encodeURIComponent(p.name)}/edit`}>Reload this agent’s current state</a> before trying again.</p>}

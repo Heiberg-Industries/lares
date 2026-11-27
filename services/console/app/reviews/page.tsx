@@ -2,7 +2,7 @@ import { actingAddress, mayUse, requirePage } from "../../lib/auth";
 import { PageHeader, Page } from "@lares/ui/patterns";
 import { listWaiting } from "../../lib/waiting";
 import { waitingDeps } from "../../lib/waiting-deps";
-import { decide } from "../actions/waiting";
+import { checkDecision, decide } from "../actions/waiting";
 import { WaitingList } from "../../components/WaitingList";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +29,7 @@ export default async function WaitingPage({ searchParams }: { searchParams: Prom
         unreadable={list.unreadable}
         now={Date.now()}
         onDecide={decide}
+        onCheck={checkDecision}
         {...(mayUse(person, "owner") ? {} : { emptyNote: "Approvals are answered by each agent's owner, so there is nothing here for you to decide." })}
         {...(typeof request === "string" ? { selectedRef: request } : {})}
       />

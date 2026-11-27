@@ -1,15 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
-const m = vi.hoisted(() => ({ uses: vi.fn(), list: vi.fn() }));
+const m = vi.hoisted(() => ({ uses: vi.fn(), list: vi.fn(), states: vi.fn() }));
 vi.mock("../lib/auth", () => ({ requirePage: async () => ({ id: "m" }), mayUse: (member: unknown, _level: string) => !!member }));
 vi.mock("next/navigation", () => ({ notFound: () => { throw new Error("not found"); }, useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
 vi.mock("../app/actions/outside-connectors", () => ({ listConnectors: m.list, addConnector: vi.fn(), checkConnector: vi.fn(), renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: vi.fn() }));
-vi.mock("../app/actions/outside-connect", () => ({}));
+vi.mock("../app/actions/outside-connect", () => ({ connectApplicationStates: m.states }));
 vi.mock("../lib/agents", () => ({ listAgents: async () => [{ name: "ada", displayName: "Ada" }] }));
 vi.mock("../lib/outside-tools", () => ({ getOutsideToolEvidence: async () => ({ keys: { available: false }, locks: { available: false } }) }));
 vi.mock("../lib/outside-connector-view", () => ({ agentUsesByConnector: m.uses, knownToolNames: async () => ({}) }));
 import ConnectorPage from "../app/outside-tools/[id]/page";
+import OutsideToolsDirectoryPage from "../app/outside-tools/page";
 
 const id = "00000000-0000-4000-8000-000000000001";
 const row = { id, slug: "rates", displayName: "Rates", url: "https://tools.example.org/mcp", authKind: "token", description: "", state: "setup", createdBy: "owner", createdAt: "", probedAt: null, toolCount: null, catalogueAt: null };
@@ -26,5 +27,44 @@ describe("the connector page", () => {
     m.list.mockResolvedValue({ ok: true, value: [row] }); m.uses.mockResolvedValue({});
     const html = renderToStaticMarkup(await ConnectorPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve({}) }));
     expect(html).toContain("Give an agent access");
+  });
+});
+
+describe("the badge says whether the change reached the agents", () => {
+  const use = (agent: string, displayName: string) => ({ agent, displayName, needsKey: false, tools: [{ name: "find_rate", kind: "read", free: false, danger: null }] });
+  const connected = { ...row, state: "connected" };
+  it("reads Connected on both pages only when the keeper says every agent runs it as saved", async () => {
+    m.list.mockResolvedValue({ ok: true, value: [connected] }); m.uses.mockResolvedValue({ rates: [use("ada", "Ada")] });
+    m.states.mockResolvedValue({ ok: true, value: { ada: { rates: "applied" } } });
+    const detail = renderToStaticMarkup(await ConnectorPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve({}) }));
+    const list = renderToStaticMarkup(await OutsideToolsDirectoryPage());
+    for (const html of [detail, list]) { expect(html).toContain("Connected"); expect(html).not.toContain("Waiting"); }
+    expect(m.states).toHaveBeenCalledWith({ agents: ["ada"] });
+  });
+  it("reads a saved but unapplied connection as Waiting, with why, not as Connected", async () => {
+    m.list.mockResolvedValue({ ok: true, value: [connected] }); m.uses.mockResolvedValue({ rates: [use("ada", "Ada")] });
+    m.states.mockResolvedValue({ ok: true, value: { ada: { rates: "pending" } } });
+    const detail = renderToStaticMarkup(await ConnectorPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve({}) }));
+    const list = renderToStaticMarkup(await OutsideToolsDirectoryPage());
+    for (const html of [detail, list]) {
+      expect(html).toContain("Waiting");
+      expect(html).toContain("Saved for Ada, not applied yet.");
+      expect(html).not.toContain(">Connected<");
+    }
+    expect(detail).toContain('data-state="waiting"');
+  });
+  it("reads an agent the keeper cannot tell about as Failed, with why", async () => {
+    m.list.mockResolvedValue({ ok: true, value: [connected] }); m.uses.mockResolvedValue({ rates: [use("ada", "Ada")] });
+    m.states.mockResolvedValue({ ok: true, value: { ada: { rates: "unavailable" } } });
+    const detail = renderToStaticMarkup(await ConnectorPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve({}) }));
+    expect(detail).toContain("Failed");
+    expect(detail).toContain("Lares cannot tell whether Ada uses it");
+  });
+  it("claims nothing when the keeper could not be asked", async () => {
+    m.list.mockResolvedValue({ ok: true, value: [connected] }); m.uses.mockResolvedValue({ rates: [use("ada", "Ada")] });
+    m.states.mockResolvedValue({ ok: false, message: "Sign in again.", retryable: true });
+    const list = renderToStaticMarkup(await OutsideToolsDirectoryPage());
+    expect(list).toContain("Status unavailable");
+    expect(list).not.toContain(">Connected<");
   });
 });
