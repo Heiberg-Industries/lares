@@ -62,10 +62,12 @@ function keyOr(make: () => string): string | null {
 
 /** The tab's read: every schedule that is on, for one agent. Throws when either source cannot be read, so
  *  the tab keeps its saved-setting caveat instead of showing a partial or older answer as the last run. */
+/** `started`: whether this agent has ever been started. One that has not has no pass of its own, so the
+ *  heartbeat (shared by every agent of its kind) is not shown for it. How many agents share the
+ *  heartbeat is counted from the saved definitions that are not retired, started or not. */
 export async function readScheduleLastRuns(
-  agent: { name: string; role: string },
+  agent: { name: string; role: string; started: boolean },
   on: readonly string[],
-  sameKind: number,
   now: Date = new Date(),
   db: Pick<PoolClient, "query"> = pool,
 ): Promise<Record<string, ScheduleLastRun | null>> {
@@ -74,14 +76,17 @@ export async function readScheduleLastRuns(
   for (const name of on) {
     const job = OUTCOME_JOBS[name] ? keyOr(() => OUTCOME_JOBS[name]!(agent.name)) : null;
     if (job) jobs.set(job, name);
-    const beat = keyOr(() => scheduleKey(agent.role, name));
+    const beat = agent.started ? keyOr(() => scheduleKey(agent.role, name)) : null;
     if (beat) beats.set(beat, name);
   }
-  const [runs, passes] = await Promise.all([
+  const [runs, passes, sameKind] = await Promise.all([
     readScheduleRuns(db, [...jobs.keys()]),
     beats.size === 0 ? [] : db.query<{ agent: string; updated_at: Date | string }>(
       "SELECT agent, updated_at FROM heartbeat WHERE agent = ANY($1::text[])", [[...beats.keys()]],
     ).then((r) => r.rows),
+    beats.size === 0 ? 0 : db.query<{ n: string | number }>(
+      "SELECT count(*) AS n FROM agent_definitions WHERE definition->>'role' = $1 AND status <> 'retired'", [agent.role],
+    ).then((r) => Number(r.rows[0]?.n ?? 0)),
   ]);
   const facts: ScheduleRunFacts = { outcomes: {}, passes: {}, shared: sameKind > 1 };
   for (const r of runs) { const name = jobs.get(r.job); if (name) facts.outcomes[name] = r; }

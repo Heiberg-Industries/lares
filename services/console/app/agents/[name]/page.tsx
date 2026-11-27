@@ -92,8 +92,8 @@ export default async function AgentPage({
   // otherwise its heartbeat. Never fails the page: when it cannot be read, the tab shows the switches only.
   const savedSchedules = saved ? Object.entries(saved.schedules).map(([schedule, s]) => ({ name: schedule, on: s.on })) : [];
   const lastRuns = saved?.role
-    ? await readScheduleLastRuns({ name, role: saved.role }, savedSchedules.filter((s) => s.on).map((s) => s.name),
-        agents.filter((a) => a.role === agent.role).length).catch(() => undefined)
+    ? await readScheduleLastRuns({ name, role: saved.role, started: Boolean(agent.startedAt) },
+        savedSchedules.filter((s) => s.on).map((s) => s.name)).catch(() => undefined)
     : undefined;
   const mailbox = saved?.role === "chief-of-staff" ? await agentMailboxView(actor, name, saved).catch(() => mailboxUnavailableView(name)) : undefined;
   return (

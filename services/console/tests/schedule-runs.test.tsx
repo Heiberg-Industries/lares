@@ -53,13 +53,33 @@ describe("a schedule's last run, from what it recorded", () => {
         expect(values).toEqual([["example/voice-learn"]]);
         return { rows: [{ job: "example/voice-learn", agent: "example", state: "skipped", reason: "no-mailbox", detail: "No mailbox is chosen.", counts: {}, started_at: null, updated_at: "2026-11-27T09:30:00Z" }] };
       }
+      if (sql.includes("FROM agent_definitions")) { expect(values).toEqual(["chief-of-staff"]); return { rows: [{ n: "1" }] }; }
       expect(values).toEqual([["chief-of-staff/voice-learn", "chief-of-staff/morning-brief", "chief-of-staff/digest"]]);
       return { rows: [{ agent: "chief-of-staff/morning-brief", updated_at: "2026-11-27T07:00:00Z" }] };
     });
-    const runs = await readScheduleLastRuns({ name: "example", role: "chief-of-staff" }, ["voice-learn", "morning-brief", "digest"], 1, now, { query } as never);
+    const runs = await readScheduleLastRuns({ name: "example", role: "chief-of-staff", started: true }, ["voice-learn", "morning-brief", "digest"], now, { query } as never);
     expect(runs["voice-learn"]).toMatchObject({ state: "skipped", why: "No mailbox is chosen." });
     expect(runs["morning-brief"]).toMatchObject({ state: "finished" });
     expect(runs.digest).toBeNull();
+    expect(runs["morning-brief"]?.why).toBeUndefined();
+  });
+
+  it("counts every saved agent of the kind, started or not, before calling a heartbeat its own", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM agent_definitions")) return { rows: [{ n: "2" }] };
+      return { rows: [{ agent: "chief-of-staff/morning-brief", updated_at: "2026-11-27T07:00:00Z" }] };
+    });
+    const runs = await readScheduleLastRuns({ name: "example", role: "chief-of-staff", started: true }, ["morning-brief"], now, { query } as never);
+    expect(runs["morning-brief"]?.why).toBe("That is the last pass by any agent of this kind.");
+  });
+
+  it("an agent that has never started gets no heartbeat time, only its own outcome records", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("FROM schedule_run")) return { rows: [] };
+      throw new Error(`no other read is expected: ${sql}`);
+    });
+    const runs = await readScheduleLastRuns({ name: "example", role: "chief-of-staff", started: false }, ["voice-learn", "morning-brief"], now, { query } as never);
+    expect(runs).toEqual({ "voice-learn": null, "morning-brief": null });
   });
 
   it("a source that cannot be read is said as unreadable, never as nothing recorded or an older pass", async () => {
@@ -68,9 +88,9 @@ describe("a schedule's last run, from what it recorded", () => {
       if (sql.includes("FROM schedule_run")) throw new Error("no such table");
       return { rows: [{ agent: "chief-of-staff/voice-learn", updated_at: "2026-11-20T04:00:00Z" }] };
     });
-    await expect(readScheduleLastRuns({ name: "example", role: "chief-of-staff" }, ["voice-learn"], 1, now, { query } as never)).rejects.toThrow();
+    await expect(readScheduleLastRuns({ name: "example", role: "chief-of-staff", started: true }, ["voice-learn"], now, { query } as never)).rejects.toThrow();
     const down = vi.fn(async () => { throw new Error("database down"); });
-    await expect(readScheduleLastRuns({ name: "example", role: "chief-of-staff" }, ["digest"], 1, now, { query: down } as never)).rejects.toThrow();
+    await expect(readScheduleLastRuns({ name: "example", role: "chief-of-staff", started: true }, ["digest"], now, { query: down } as never)).rejects.toThrow();
   });
 });
 
