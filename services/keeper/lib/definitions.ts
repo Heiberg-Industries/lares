@@ -50,7 +50,7 @@ export interface DefinitionCompose {
     /** What the installation file alone gives this agent for the Notion meetings source. */
     meetingsSourceFallback?(name: string): string | undefined;
     /** What the installation file alone gives this agent for one console-settable environment key. */
-    environmentFallback?(name: string, key: string): string | undefined;
+    environmentFallback?(name: string, key: string, role?: string): string | undefined;
     /** What every agent gets for that key when nothing sets it (for the console address: the install domain). */
     environmentDefault?(key: string): string | undefined;
     /** The lifecycle owns provisioning, compose generation and start. Absent = refuse create BEFORE writes. */
@@ -749,8 +749,9 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             const settings = [];
             for (const entry of CONSOLE_ENVIRONMENT) {
                 const stored = await readSetting(o.pool, entry.setting);
-                const names = await rolesOf(entry.roles);
-                const fallback = names.map(n => o.compose.environmentFallback?.(n, entry.key)).find(v => !!v);
+                const agents = (await db().query("SELECT name,definition->>'role' AS role FROM agent_definitions WHERE status<>'retired' AND definition->>'role'=ANY($1::text[]) ORDER BY name", [entry.roles])).rows;
+                const names = agents.map(r => String(r.name));
+                const fallback = agents.map(r => o.compose.environmentFallback?.(String(r.name), entry.key, String(r.role))).find(v => !!v);
                 // What the agents get when nothing is saved: shown, so the owner sees what is used.
                 const byDefault = o.compose.environmentDefault?.(entry.key);
                 const [value, from] = typeof stored === 'string' && stored ? [stored, 'console']

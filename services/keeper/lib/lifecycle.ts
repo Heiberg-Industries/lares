@@ -710,8 +710,9 @@ export class AgentLifecycle {
         return CONSOLE_ENVIRONMENT_BY_KEY.get(key)?.defaultValue?.({ publicOrigin: this.paths.publicDoorOrigin });
     }
     /** What the installation file alone gives this agent for one console-settable environment key. */
-    environmentFallback(name: string, key: string): string | undefined {
-        return (this.config.bindings?.[name] ?? this.config.defaultBindings?.['chief-of-staff'])?.environment[key as 'TZ'];
+    environmentFallback(name: string, key: string, role = 'chief-of-staff'): string | undefined {
+        const roleDefault = role === 'creative' ? this.config.defaultBindings?.creative : this.config.defaultBindings?.['chief-of-staff'];
+        return (this.config.bindings?.[name] ?? roleDefault)?.environment[key as 'TZ'];
     }
     /** What the installation file alone says about the meetings database (the older way to set it). */
     meetingsSourceFallback(name: string): string | undefined {

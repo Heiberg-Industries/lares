@@ -1482,6 +1482,16 @@ it('gives a chief of staff the install address as the console address when none 
  l=withOrigin('http://lares.example.org');await l.reconcile('bookkeeper',chief);expect(composeEnv().LARES_CONSOLE_URL).toBeUndefined();
  await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
 });
+it('reads an installation-file fallback from the agent\'s own role defaults',async()=>{
+ const binding=(url:string)=>({role:'creative',environment:{LARES_CONSOLE_URL:url},mounts:[],secrets:{}});
+ config.defaultBindings={'chief-of-staff':{...binding('https://chief.example.org'),role:'chief-of-staff'},creative:binding('https://creative.example.org')} as any;
+ const l=lifecycle();
+ expect(l.environmentFallback('writer','LARES_CONSOLE_URL','creative')).toBe('https://creative.example.org');
+ expect(l.environmentFallback('chief','LARES_CONSOLE_URL','chief-of-staff')).toBe('https://chief.example.org');
+ expect(l.environmentFallback('chief','LARES_CONSOLE_URL')).toBe('https://chief.example.org');
+ config.bindings={writer:binding('https://own.example.org')} as any;
+ expect(l.environmentFallback('writer','LARES_CONSOLE_URL','creative')).toBe('https://own.example.org');
+});
 it('gives a creative agent the console address too, since its Slack cards link to the console',async()=>{
  await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
  const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),publicDoorOrigin:'https://lares.example.org'},
