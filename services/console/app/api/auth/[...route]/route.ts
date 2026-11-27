@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { MemberStoreError } from "@lares/agent-kit/member-store";
-import { members, isConsoleOwner, SESSION_MAX_AGE } from "../../../../lib/auth";
+import { members, mayUse, SESSION_MAX_AGE } from "../../../../lib/auth";
 import { consoleRedirect, startSignIn, openFlow, finishSignIn, type SignInProvider } from "../../../../lib/console-oidc";
 import { safeNext, sameOriginTarget } from "../../../../lib/safe-next";
 import {
@@ -54,7 +54,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ rout
         await members.bootstrapFirstOwnerIdentity(selection.ownerId, selection.organisationId, proof);
       } else {
         const owner = await members.currentMember(ownerId);
-        if (!owner || !isConsoleOwner(owner) || !await members.firstOwnerBootstrapEligible(ownerId, owner.organisationId)) return failure();
+        if (!mayUse(owner, "owner") || !await members.firstOwnerBootstrapEligible(ownerId, owner.organisationId)) return failure();
         const installationOrigin = new URL(consoleRedirect()).origin;
         const receipt = { installationOrigin, identity: proof.identity, digest: ownerDiscoveryDigest(installationOrigin, proof.identity) };
         const res = clearFlow(NextResponse.redirect(new URL("/sign-in?setup=owner", consoleRedirect())));
@@ -63,7 +63,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ rout
       }
     }
     const session = await members.createSession(proof, new Date(Date.now() + SESSION_MAX_AGE * 1000));
-    const destination = isConsoleOwner(session.member) ? safeNext(flow.next) : "/your-membership";
+    // The owner and an admin go where they were headed; a page above their level sends them on.
+    const destination = mayUse(session.member, "admin") ? safeNext(flow.next) : "/your-membership";
     const res = clearFlow(NextResponse.redirect(sameOriginTarget(destination, consoleRedirect())));
     res.cookies.set("lares_session", session.token, { ...cookieOptions(), maxAge: SESSION_MAX_AGE });
     return res;

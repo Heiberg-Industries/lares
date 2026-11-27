@@ -1,4 +1,4 @@
-import { requireConsolePage } from "../../../lib/auth";
+import { requirePage } from "../../../lib/auth";
 import Link from "next/link";
 import { getCatalogue } from "../../../lib/signals";
 import { JsonEditor } from "../../../components/JsonEditor";
@@ -8,7 +8,7 @@ import { Button } from "@lares/ui/primitives/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 export const dynamic = "force-dynamic";
 export default async function CataloguePage() {
-  await requireConsolePage();
+  await requirePage("admin");
   const r = await getCatalogue();
   return (
     <Page>

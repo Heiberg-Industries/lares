@@ -27,7 +27,9 @@ export function IntegrationHeader({ card, actions }: { card: IntegrationCard; ac
 
 /** Which agents use a service, what each may do with it, when it was last used and where its key is
  *  kept. `board` null means the permission rows could not be read. */
-export function IntegrationDetail({ card, rows, board }: { card: IntegrationCard; rows: ConnectionRowDTO[]; board: BoardRowDTO[] | null }) {
+export function IntegrationDetail({ card, rows, board, owner }: { card: IntegrationCard; rows: ConnectionRowDTO[]; board: BoardRowDTO[] | null;
+  /** True for the owner, who alone changes how freely an agent acts. */
+  owner: boolean }) {
   const several = rows.length > 1;
   const permissions = board ? boardRowsFor(card.id, board) : [];
   return (
@@ -52,7 +54,7 @@ export function IntegrationDetail({ card, rows, board }: { card: IntegrationCard
       ) : permissions.length > 0 && (
         <section className="lares-stack">
           <h2 className="lares-section-title">What agents may do with it</h2>
-          <ServicePermissions rows={permissions} />
+          <ServicePermissions rows={permissions} canChange={owner} />
         </section>
       )}
     </>

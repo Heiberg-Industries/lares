@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
-  verify: vi.fn(), keeper: vi.fn(), cookie: vi.fn(),
+  actingAddress: vi.fn(), keeper: vi.fn(), cookie: vi.fn(),
   getClippingView: vi.fn(), enqueueRequest: vi.fn(), saveMapping: vi.fn(), setChoice: vi.fn(),
   hasSavedSource: vi.fn(), chiefOfStaffForSwitch: vi.fn(),
 }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: mocks.cookie }) }));
-vi.mock('../lib/auth', () => ({ verify: mocks.verify }));
+vi.mock('../lib/auth', () => ({ actingAddress: mocks.actingAddress }));
 vi.mock('../lib/keeper-client', async original => ({ ...await original<typeof import('../lib/keeper-client')>(), keeper: mocks.keeper }));
 vi.mock('../lib/clipping', () => ({
   getClippingView: mocks.getClippingView, enqueueRequest: mocks.enqueueRequest, saveMapping: mocks.saveMapping,
@@ -22,7 +22,7 @@ const preview = { agent: 'chief', purpose: 'clipping', inventoryRevision: 'b'.re
 
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubEnv('CONSOLE_OAUTH_REDIRECT', `${origin}/api/auth/callback`); vi.stubEnv('NODE_ENV', 'production');
-  mocks.cookie.mockReturnValue({ value: 'signed-cookie' }); mocks.verify.mockResolvedValue('owner@example.test');
+  mocks.cookie.mockReturnValue({ value: 'signed-cookie' }); mocks.actingAddress.mockResolvedValue('owner@example.test');
   mocks.getClippingView.mockResolvedValue(view);
   mocks.enqueueRequest.mockResolvedValue({ ok: true }); mocks.saveMapping.mockResolvedValue({ ok: true });
   mocks.setChoice.mockResolvedValue({ ok: true }); mocks.hasSavedSource.mockResolvedValue(true);
@@ -32,7 +32,7 @@ afterEach(() => vi.unstubAllEnvs());
 
 describe('sessions and origin', () => {
   it.each([null, 'invalid', 'expired'])('reverifies %s sessions before any read or write', async session => {
-    mocks.cookie.mockReturnValue(session ? { value: session } : undefined); mocks.verify.mockResolvedValue(null);
+    mocks.cookie.mockReturnValue(session ? { value: session } : undefined); mocks.actingAddress.mockResolvedValue(null);
     expect((await GET(new Request(url))).status).toBe(401);
     expect((await post({ action: 'test' })).status).toBe(401);
     expect(mocks.getClippingView).not.toHaveBeenCalled(); expect(mocks.enqueueRequest).not.toHaveBeenCalled(); expect(mocks.keeper).not.toHaveBeenCalled();

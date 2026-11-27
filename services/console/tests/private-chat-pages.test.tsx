@@ -3,7 +3,7 @@ import React from 'react';
 import {beforeEach,expect,it,vi} from 'vitest';
 import {render,screen,cleanup} from '@testing-library/react';
 const fake=vi.hoisted(()=>({member:vi.fn(),use:vi.fn(),agents:vi.fn(),chat:vi.fn()}));
-vi.mock('../lib/auth',()=>({requireMember:fake.member}));
+vi.mock('../lib/auth',()=>({requirePage:fake.member}));
 vi.mock('../lib/agents',()=>({listPrivateChatAgents:fake.agents}));
 vi.mock('../lib/db',()=>({pool:{}}));
 vi.mock('@lares/agent-kit/console-turn-authority',()=>({requireConsoleAgentUse:fake.use}));

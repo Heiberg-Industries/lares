@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { requireConsolePage } from "../../../lib/auth";
+import { mayUse, requirePage } from "../../../lib/auth";
 import { Notice, Page } from "@lares/ui/patterns";
 import { getConnectionRows } from "../../../lib/connections";
 import { getBoardRows } from "../../../lib/board";
@@ -37,7 +37,7 @@ const when = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 
 /** Every Notion setting, in one place and in the order a person sets them up: the key, the meetings
  *  database, the people sync, clipping, then the changes waiting for a decision. */
-function NotionExtras({ credential, notion }: { credential: Credential; notion: NotionSettings }) {
+function NotionExtras({ credential, notion, owner }: { credential: Credential; notion: NotionSettings; owner: boolean }) {
   const { documents } = notion;
   const noNotionRun = !documents.unavailable && documents.lastRunAt === null &&
     documents.synced === 0 && documents.needsYou === 0 &&
@@ -64,14 +64,14 @@ function NotionExtras({ credential, notion }: { credential: Credential; notion: 
       {notion.proposals.unavailable ? (
         <Notice tone="needs-you">The changes waiting for you could not be read.</Notice>
       ) : (
-        <NotionProposalsCard proposals={notion.proposals.proposals} frozen={notion.proposals.frozen} />
+        <NotionProposalsCard proposals={notion.proposals.proposals} frozen={notion.proposals.frozen} canDecide={owner} />
       )}
     </>
   );
 }
 
 export default async function IntegrationPage({ params }: { params: Promise<{ id: string }> }) {
-  await requireConsolePage();
+  const member = await requirePage("admin");
   const { id } = await params;
   const [rows, credential, outsideToolsInUse, gateway] = await Promise.all([getConnectionRows(), getCredentialView(), anyOutsideToolsInUse(), getGatewayStatusView()]);
   const input = { rows, credential, outsideToolsInUse, gateway };
@@ -96,8 +96,8 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
   });
   return (
     <Page className="lares-stack">
-      <IntegrationDetail card={card} rows={shown} board={board} />
-      {notion && <NotionExtras credential={credential} notion={notion} />}
+      <IntegrationDetail card={card} rows={shown} board={board} owner={mayUse(member, "owner")} />
+      {notion && <NotionExtras credential={credential} notion={notion} owner={mayUse(member, "owner")} />}
       {clipping && <ClippingCard initial={clipping} credential={credential} />}
       {card.id === "readability" && !clippingHere && <p className="lares-muted">Saving links from a Notion database is set up on the <Link href="/integrations/notion">Notion</Link> page, under Clipping.</p>}
     </Page>

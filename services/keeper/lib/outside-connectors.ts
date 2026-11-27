@@ -132,16 +132,32 @@ export interface ConnectorOptions {
 export function registerOutsideConnectorActions(o: ConnectorOptions): void {
   const { pool } = o;
 
-  /** Only the installation's designated owner, signed in now, active and an owner of the organisation. */
-  async function requireOwner(token: string): Promise<void> {
-    const refused = () => new KeeperRefusedError('Only the designated owner can change the outside connector directory.');
-    if (!o.designatedOwnerId) throw refused();
-    let row;
+  type Admitted = { id: string; status: string; org_role: string; with_owner: boolean } | undefined;
+  /** The person behind a session that is live right now. Any failure reads as nobody. */
+  async function sessionPerson(token: string): Promise<Admitted> {
     try {
-      row = (await pool.query(`SELECT u.id,u.status,u.org_role FROM member_sessions s JOIN users u ON u.id=s.member_id
-        WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp()`, [sha256(token)])).rows[0];
-    } catch { throw refused(); }
-    if (!row || row.id !== o.designatedOwnerId || row.status !== 'active' || row.org_role !== 'owner') throw refused();
+      // with_owner: this person belongs to the designated owner's organisation. An admin of any other one is nobody here.
+      return (await pool.query(`SELECT u.id,u.status,u.org_role,
+          COALESCE(u.org_id IS NOT NULL AND u.org_id=(SELECT o.org_id FROM users o WHERE o.id=$2),false) AS with_owner
+        FROM member_sessions s JOIN users u ON u.id=s.member_id
+        WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp()`, [sha256(token), o.designatedOwnerId ?? ''])).rows[0];
+    } catch { return undefined; }
+  }
+  const isDesignatedOwner = (row: Admitted) =>
+    !!o.designatedOwnerId && !!row && row.id === o.designatedOwnerId && row.status === 'active' && row.org_role === 'owner';
+  /** Only the installation's designated owner, signed in now, active and an owner of the organisation.
+   * Removing a connector stays here: it takes the connection away from every agent that uses it. */
+  async function requireOwner(token: string): Promise<void> {
+    if (!isDesignatedOwner(await sessionPerson(token))) throw new KeeperRefusedError('Only the designated owner can change the outside connector directory.');
+  }
+  /** The designated owner, or a person the owner made an admin, signed in now and active. For reading
+   * the directory, adding a connector, renaming one and checking one: the same set the console gives
+   * an admin. Without a configured owner there is no installation to be an admin of, so that refuses too. */
+  async function requireOwnerOrAdmin(token: string): Promise<void> {
+    const row = await sessionPerson(token);
+    if (isDesignatedOwner(row)) return;
+    if (!o.designatedOwnerId || !row || row.status !== 'active' || row.org_role !== 'admin' || row.with_owner !== true)
+      throw new KeeperRefusedError('Only the designated owner or an admin can use the outside connector directory.');
   }
 
   async function inTransaction<T>(work: (db: PoolClient) => Promise<T>): Promise<T> {
@@ -212,7 +228,7 @@ export function registerOutsideConnectorActions(o: ConnectorOptions): void {
   registerAction({
     name: 'outside.connector-list', input: z.strictObject({ sessionToken }), secretFields: ['sessionToken'],
     run: async ({ sessionToken: token }) => {
-      await requireOwner(token);
+      await requireOwnerOrAdmin(token);
       // Existing per-agent connections join the directory the first time anyone looks. Nothing is migrated.
       const result = await inTransaction(async db => {
         const adoption = await adopt(db);
@@ -230,7 +246,7 @@ export function registerOutsideConnectorActions(o: ConnectorOptions): void {
       url: z.string().min(1).max(2048), description: z.string().trim().max(500).default('') }),
     secretFields: ['sessionToken'],
     run: async ({ sessionToken: token, slug, displayName, url, description }) => {
-      await requireOwner(token);
+      await requireOwnerOrAdmin(token);
       const href = requireConnectorUrl(url);
       let row: Row;
       try {
@@ -250,7 +266,7 @@ export function registerOutsideConnectorActions(o: ConnectorOptions): void {
     name: 'outside.connector-rename', input: z.strictObject({ sessionToken, id: uuid, displayName: z.string().trim().min(1).max(80) }),
     secretFields: ['sessionToken'],
     run: async ({ sessionToken: token, id, displayName }) => {
-      await requireOwner(token);
+      await requireOwnerOrAdmin(token);
       // The label only. The technical name, and so every agent's declaration and held credential, stays as it is.
       const row = (await pool.query<Row>(`UPDATE outside_connectors SET display_name=$2 WHERE id=$1 AND retired_at IS NULL RETURNING ${COLUMNS}`, [id, displayName])).rows[0];
       if (!row) throw new KeeperRefusedError('There is no such connector (it may have been removed).');
@@ -276,7 +292,7 @@ export function registerOutsideConnectorActions(o: ConnectorOptions): void {
   registerAction({
     name: 'outside.connector-probe', input: z.strictObject({ sessionToken, id: uuid, expectToken: z.boolean().default(false) }), secretFields: ['sessionToken'],
     run: async ({ sessionToken: token, id, expectToken }) => {
-      await requireOwner(token);
+      await requireOwnerOrAdmin(token);
       if (!o.probe) throw new KeeperRefusedError('Outside tools are not switched on for this installation.');
       const row = await load(pool, id);
       const answer = await o.probe(row.url);

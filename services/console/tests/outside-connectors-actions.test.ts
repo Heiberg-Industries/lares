@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ cookies: vi.fn(), sessionMember: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn(), requireConsoleMember: vi.fn(),
+const mocks = vi.hoisted(() => ({ cookies: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn(), requireAction: vi.fn(),
   targets: vi.fn(), removeCredential: vi.fn(), removeDeclaration: vi.fn(), uses: vi.fn() }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
-vi.mock("../lib/auth", () => ({ sessionMember: mocks.sessionMember, memberAuditAddress: mocks.memberAuditAddress, requireConsoleMember: mocks.requireConsoleMember }));
+vi.mock("../lib/auth", () => ({ memberAuditAddress: mocks.memberAuditAddress, requireAction: mocks.requireAction }));
 vi.mock("../lib/keeper-client", () => ({
   keeper: mocks.keeper,
   KeeperRefusedError: class KeeperRefusedError extends Error { constructor(message: string, readonly findings?: { check: string; message: string }[]) { super(message); this.name = "KeeperRefusedError"; } },
@@ -23,7 +23,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.uses.mockResolvedValue({ rates: [{ agent: "ada" }] });
   mocks.cookies.mockResolvedValue({ get: () => ({ value: "A".repeat(43) }) });
-  mocks.sessionMember.mockResolvedValue({ id: "m" }); mocks.memberAuditAddress.mockResolvedValue("owner@example.test"); mocks.requireConsoleMember.mockResolvedValue({ id: "m" });
+  mocks.memberAuditAddress.mockResolvedValue("owner@example.test"); mocks.requireAction.mockResolvedValue({ id: "m" });
 });
 
 describe("the connector directory actions", () => {

@@ -1,13 +1,12 @@
 "use server";
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
-import { verify } from "../../lib/auth";
+import { actingAddress } from "../../lib/auth";
 import { pool } from "../../lib/db";
 import { MAX_AVATAR_BYTES, normalizeAvatar } from "../../lib/avatar-image";
 export async function saveAvatar(
   form: FormData,
 ): Promise<{ ok: boolean; message: string }> {
-  if (!(await verify((await cookies()).get("lares_session")?.value)))
+  if (!(await actingAddress("owner")))
     return { ok: false, message: "Sign in again to change this image." };
   const name = form.get("name");
   if (typeof name !== "string" || !/^[a-z][a-z0-9-]{1,30}$/.test(name))

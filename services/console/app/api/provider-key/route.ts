@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import { withConsoleAdmission } from '../../../lib/admission-error';
-import { isConsoleOwner, memberAuditAddress, sessionMember } from '../../../lib/auth';
+import { mayUse, memberAuditAddress, sessionMember } from '../../../lib/auth';
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from '../../../lib/keeper-client';
 import { providerKeyStatusFor } from '../../../lib/provider-key';
 import { providerKeyRequest } from '../../../lib/provider-key-schema';
@@ -34,9 +34,9 @@ async function input(req: Request): Promise<unknown> {
 async function handlePOST(req: Request): Promise<Response> {
   const member = await sessionMember((await cookies()).get('lares_session')?.value);
   const sessionToken = (await cookies()).get('lares_session')?.value;
-  if (!sessionToken || !member) return failed('sign-in-required', 401);
+  if (!sessionToken || !mayUse(member, 'member')) return failed('sign-in-required', 401);
   if (!sameOrigin(req)) return failed('origin-refused', 403);
-  if (!isConsoleOwner(member)) return failed('owner-required', 403);
+  if (!mayUse(member, 'owner')) return failed('owner-required', 403);
   const actor = await memberAuditAddress(member.id);
   if (!actor) return failed('sign-in-required', 401);
   let parsed;

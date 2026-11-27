@@ -1,13 +1,13 @@
 import { withConsoleAdmission } from "../../../../../lib/admission-error";
 import { cookies } from "next/headers";
-import { verify } from "../../../../../lib/auth";
+import { actingAddress } from "../../../../../lib/auth";
 import { pool } from "../../../../../lib/db";
 export const runtime = "nodejs";
 async function handleGET(
   _request: Request,
   { params }: { params: Promise<{ name: string }> },
 ) {
-  if (!(await verify((await cookies()).get("lares_session")?.value)))
+  if (!(await actingAddress("admin")))
     return new Response(null, { status: 401 });
   const { name } = await params;
   if (!/^[a-z][a-z0-9-]{1,30}$/.test(name))

@@ -1,10 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
-  verify: vi.fn(),
+  actingAddress: vi.fn(),
   query: vi.fn(),
   normalize: vi.fn(),
 }));
-vi.mock("../lib/auth", () => ({ verify: mocks.verify }));
+vi.mock("../lib/auth", () => ({ actingAddress: mocks.actingAddress }));
 vi.mock("../lib/db", () => ({ pool: { query: mocks.query } }));
 vi.mock("../lib/avatar-image", () => ({
   MAX_AVATAR_BYTES: 2 * 1024 * 1024,
@@ -18,10 +18,10 @@ import { saveAvatar } from "../app/actions/avatar";
 import { GET } from "../app/api/agents/[name]/avatar/route";
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.verify.mockResolvedValue("owner@example.test");
+  mocks.actingAddress.mockResolvedValue("owner@example.test");
 });
 it("denies unauthenticated reads and writes before touching storage", async () => {
-  mocks.verify.mockResolvedValue(null);
+  mocks.actingAddress.mockResolvedValue(null);
   expect((await saveAvatar(new FormData())).ok).toBe(false);
   expect(
     (

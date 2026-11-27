@@ -1,4 +1,4 @@
-import { credentialActor } from './credentials';
+import { actingAddress } from './auth';
 import { keeper } from './keeper-client';
 
 export interface AgentSettingView {
@@ -14,7 +14,7 @@ export interface AgentSettingsView { settings: AgentSettingView[]; canChange: bo
 
 /** One keeper read per page render. Null means it could not be read (no session, keeper down). */
 export async function getAgentSettingsView(): Promise<AgentSettingsView | null> {
-  const actor = await credentialActor();
+  const actor = await actingAddress("owner");
   if (!actor) return null;
   try { return await keeper<AgentSettingsView>('settings.agent_environment_get', {}, actor); }
   catch { return null; }

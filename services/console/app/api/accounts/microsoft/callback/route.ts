@@ -5,7 +5,7 @@ import { PgAccountStore } from "@lares/agent-kit/account-store";
 import { writeVerifiedAccountToken } from "@lares/agent-box/lib/oauth-tokens.js";
 import { ConsoleAdmissionUnavailableError, withConsoleAdmission } from "../../../../../lib/admission-error";
 import { pool } from "../../../../../lib/db";
-import { sessionMember } from "../../../../../lib/auth";
+import { mayUse, sessionMember } from "../../../../../lib/auth";
 import { tokenEncKeyHex } from "../../../../../lib/accounts";
 import { ACCOUNT_FLOW_COOKIE, accountSessionHash, openAccountFlow } from "../../../../../lib/account-oauth-state";
 import { callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
@@ -25,7 +25,7 @@ async function handleGET(req: Request): Promise<Response> {
     const member = await sessionMember(session);
     const flow = await openAccountFlow(jar.get(ACCOUNT_FLOW_COOKIE)?.value);
     const supplied = new URL(req.url);
-    if (!session || !member || !flow || flow.provider !== "microsoft" || flow.memberId !== member.id || flow.sessionHash !== accountSessionHash(session)
+    if (!session || !mayUse(member, "member") || !flow || flow.provider !== "microsoft" || flow.memberId !== member.id || flow.sessionHash !== accountSessionHash(session)
       || supplied.searchParams.has("error") || !supplied.searchParams.get("code") || supplied.searchParams.get("state") !== flow.state
       || flow.org !== MICROSOFT_DATA_ORG || microsoftDataSettings().clientId !== flow.clientId || microsoftDataSettings().tenantId !== flow.tenantId) return fail();
     const store = new PgAccountStore(pool);

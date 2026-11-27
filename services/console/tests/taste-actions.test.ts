@@ -12,7 +12,7 @@ import path from "node:path";
 import os from "node:os";
 
 const { verifyMock } = vi.hoisted(() => ({ verifyMock: vi.fn(async () => "owner@owner.example" as string | null) }));
-vi.mock("../lib/auth", () => ({ verify: verifyMock }));
+vi.mock("../lib/auth", () => ({ actingAddress: verifyMock }));
 vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: "c" }) })) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 

@@ -5,7 +5,7 @@
 // that has it and erases the tokens Lares holds for it, through the actions the older screens used.
 import { cookies } from "next/headers";
 import { z } from "zod";
-import { memberAuditAddress, requireConsoleMember, sessionMember } from "../../lib/auth";
+import { memberAuditAddress, requireAction } from "../../lib/auth";
 import { keeper } from "../../lib/keeper-client";
 import { keeperReason } from "../../lib/keeper-reason";
 import { suggestConnectionName, uniqueConnectionName } from "../../lib/outside-connect-words";
@@ -29,11 +29,11 @@ const TIMEOUT = { timeoutMs: 90_000 };
 class Said extends Error {}
 
 async function who(): Promise<{ sessionToken: string; actor: string }> {
-  await requireConsoleMember();
+  const member = await requireAction("admin");
   const sessionToken = (await cookies()).get("lares_session")?.value;
-  const member = await sessionMember(sessionToken);
-  const actor = member ? await memberAuditAddress(member.id) : undefined;
-  if (!sessionToken || !member || !actor) throw new Said("Sign in again to manage outside tools.");
+  // The person's own address: an admin's change is recorded as the admin's.
+  const actor = await memberAuditAddress(member.id);
+  if (!sessionToken || !actor) throw new Said("Sign in again to manage outside tools.");
   return { sessionToken, actor };
 }
 
@@ -58,7 +58,7 @@ async function list(w: { sessionToken: string; actor: string }): Promise<Connect
 
 /** The directory. Connections agents already had are adopted into it the first time it is read. */
 export async function listConnectors(): Promise<ConnectorResult<Connector[]>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   return run("The outside tools could not be read. Reload the page to try again.", list);
 }
 
@@ -67,7 +67,7 @@ export async function listConnectors(): Promise<ConnectorResult<Connector[]>> {
  * saved connector in place and returns its id, so Try again continues at the check instead of creating it twice.
  */
 export async function addConnector(input: unknown): Promise<{ ok: true; id: string; authKind: Connector["authKind"]; sentence: string } | { ok: false; message: string; id?: string }> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const parsed = z.strictObject({ name: z.string().trim().min(1).max(80), url: z.string().trim().min(1).max(2048), auth: z.enum(["automatic", "token"]), existingId: uuid.optional() }).safeParse(input);
   if (!parsed.success) return { ok: false, message: "Give the connector a name and the server's full address." };
   const { name, url, existingId } = parsed.data;
@@ -92,7 +92,7 @@ export async function addConnector(input: unknown): Promise<{ ok: true; id: stri
 
 /** "Check it works": asks the server again what it is, with no token and no override, so a server that stopped needing one is seen as that. */
 export async function checkConnector(id: string): Promise<ConnectorResult<{ authKind: Connector["authKind"]; sentence: string }>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   if (!uuid.safeParse(id).success) return { ok: false, message: "That connector is not valid." };
   return run("Lares could not reach that server. Check the address, then try again.", async (w) => {
     const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id }, w.actor, TIMEOUT);
@@ -103,7 +103,7 @@ export async function checkConnector(id: string): Promise<ConnectorResult<{ auth
 
 /** "Use a token instead": the owner says this server takes a token, so it is recorded as one, even if it also offers a sign-in page. */
 export async function switchConnectorToToken(id: string): Promise<ConnectorResult<{ authKind: Connector["authKind"]; sentence: string }>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   if (!uuid.safeParse(id).success) return { ok: false, message: "That connector is not valid." };
   return run("Lares could not reach that server. Check the address, then try again.", async (w) => {
     const r = await keeper<{ authKind: unknown }>("outside.connector-probe", { sessionToken: w.sessionToken, id, expectToken: true }, w.actor, TIMEOUT);
@@ -114,7 +114,7 @@ export async function switchConnectorToToken(id: string): Promise<ConnectorResul
 
 /** The label only. The technical name, every agent's declaration and every held token stay as they are. */
 export async function renameConnector(input: { id: string; displayName: string }): Promise<ConnectorResult<null>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const parsed = z.strictObject({ id: uuid, displayName: z.string().trim().min(1).max(80) }).safeParse(input);
   if (!parsed.success) return { ok: false, message: "Give the connector a name of 1 to 80 characters." };
   return run("The connector could not be renamed.", async (w) => {
@@ -128,7 +128,7 @@ export async function renameConnector(input: { id: string; displayName: string }
  * rest still to do, so pressing Remove again continues from there.
  */
 export async function removeConnector(id: string): Promise<ConnectorResult<{ agents: string[] }>> {
-  await requireConsoleMember();
+  await requireAction("owner");
   if (!uuid.safeParse(id).success) return { ok: false, message: "That connector is not valid." };
   return run("The connector could not be removed. Press Remove again to continue.", async (w) => {
     const connector = (await list(w)).find(c => c.id === id);
@@ -153,7 +153,7 @@ export async function removeConnector(id: string): Promise<ConnectorResult<{ age
 
 /** Takes the connector off one agent: the token Lares holds for that agent, then its declaration. The directory row stays. */
 export async function removeFromAgent(input: { agent: string; slug: string }): Promise<ConnectorResult<null>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const parsed = z.strictObject({ agent: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/), slug: z.string().regex(/^[a-z][a-z0-9-]{1,30}$/) }).safeParse(input);
   if (!parsed.success) return { ok: false, message: "That agent or connector is not valid." };
   return run("The connector could not be taken off this agent.", async () => {

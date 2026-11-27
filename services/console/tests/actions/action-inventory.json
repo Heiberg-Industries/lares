@@ -6,9 +6,9 @@
       "id": "/",
       "kind": "page",
       "file": "app/page.tsx",
-      "see": "owner",
+      "see": "admin",
       "act": "none",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [],
       "routes": ["GET /api/agents/[name]/avatar"]
@@ -17,9 +17,9 @@
       "id": "/agents",
       "kind": "page",
       "file": "app/agents/page.tsx",
-      "see": "owner",
+      "see": "admin",
       "act": "none",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [],
       "routes": ["GET /api/agents/[name]/avatar"]
@@ -28,10 +28,11 @@
       "id": "/agents/[name]",
       "kind": "page",
       "file": "app/agents/[name]/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
+      "ownerExtras": true,
       "actions": [
         "agent-access.adoptAgent",
         "agent-access.saveAgentAccess",
@@ -53,7 +54,7 @@
       "file": "app/agents/[name]/edit/page.tsx",
       "see": "owner",
       "act": "owner",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [
         "autonomy.setAutonomy",
@@ -83,7 +84,7 @@
       "file": "app/agents/new/page.tsx",
       "see": "owner",
       "act": "owner",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [
         "autonomy.setAutonomy",
@@ -111,9 +112,9 @@
       "id": "/alert-routing",
       "kind": "page",
       "file": "app/alert-routing/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": ["signals.saveConsumers", "signals.saveRules"],
       "routes": []
@@ -122,9 +123,9 @@
       "id": "/alert-routing/catalogue",
       "kind": "page",
       "file": "app/alert-routing/catalogue/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": ["signals.saveCatalogue"],
       "routes": []
@@ -133,9 +134,9 @@
       "id": "/alerts",
       "kind": "page",
       "file": "app/alerts/page.tsx",
-      "see": "owner",
+      "see": "admin",
       "act": "none",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [],
       "routes": []
@@ -146,7 +147,7 @@
       "file": "app/backups/page.tsx",
       "see": "owner",
       "act": "none",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [],
       "routes": []
@@ -157,7 +158,7 @@
       "file": "app/chat/page.tsx",
       "see": "member",
       "act": "none",
-      "guards": ["requireMember"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [],
       "routes": []
@@ -168,7 +169,7 @@
       "file": "app/chat/[name]/page.tsx",
       "see": "member",
       "act": "member",
-      "guards": ["requireMember"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": ["accounts.readPersonalSendCard"],
       "routes": [
@@ -181,9 +182,9 @@
       "id": "/deadlines",
       "kind": "page",
       "file": "app/deadlines/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [
         "deadlines.addDeadline",
@@ -203,7 +204,7 @@
       "file": "app/general/page.tsx",
       "see": "owner",
       "act": "owner",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": ["definition.setAgentLimit", "definition.setAgentSetting"],
       "routes": []
@@ -212,9 +213,9 @@
       "id": "/integrations",
       "kind": "page",
       "file": "app/integrations/page.tsx",
-      "see": "owner",
+      "see": "admin",
       "act": "none",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [],
       "routes": []
@@ -223,10 +224,11 @@
       "id": "/integrations/[id]",
       "kind": "page",
       "file": "app/integrations/[id]/page.tsx",
-      "see": "owner",
+      "see": "admin",
       "act": "owner",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
+      "ownerExtras": true,
       "actions": [
         "autonomy.setAutonomy",
         "definition.acceptNotionSyncPreview",
@@ -259,9 +261,9 @@
       "id": "/meeting-follow-ups",
       "kind": "page",
       "file": "app/meeting-follow-ups/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": ["meeting-series.revokeSeries"],
       "routes": []
@@ -272,13 +274,14 @@
       "file": "app/members/page.tsx",
       "see": "owner",
       "act": "owner",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [
         "members.createInvitation",
         "members.removeMember",
         "members.revokeInvitation",
         "members.setInitialMemberLimit",
+        "members.setMemberRole",
         "members.signOutMember"
       ],
       "routes": []
@@ -287,9 +290,9 @@
       "id": "/outside-tools",
       "kind": "page",
       "file": "app/outside-tools/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requireAction", "requirePage"],
       "source": "derived",
       "actions": ["outside-connectors.listConnectors"],
       "routes": []
@@ -298,10 +301,11 @@
       "id": "/outside-tools/[id]",
       "kind": "page",
       "file": "app/outside-tools/[id]/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "requireConsolePage", "sessionMember"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requireAction", "requirePage"],
       "source": "derived",
+      "ownerExtras": true,
       "actions": [
         "outside-connect.connectActivateCredential",
         "outside-connect.connectApplyAgent",
@@ -324,9 +328,9 @@
       "id": "/outside-tools/new",
       "kind": "page",
       "file": "app/outside-tools/new/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": ["outside-connectors.addConnector"],
       "routes": []
@@ -335,9 +339,9 @@
       "id": "/permission-checks",
       "kind": "page",
       "file": "app/permission-checks/page.tsx",
-      "see": "owner",
+      "see": "admin",
       "act": "none",
-      "guards": ["requireConsolePage"],
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [],
       "routes": []
@@ -346,9 +350,9 @@
       "id": "/quiet-hours-and-delivery",
       "kind": "page",
       "file": "app/quiet-hours-and-delivery/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [
         "proactivity.saveBriefLanguage",
@@ -363,10 +367,11 @@
       "id": "/reviews",
       "kind": "page",
       "file": "app/reviews/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage", "verify"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["actingAddress", "requirePage"],
       "source": "derived",
+      "ownerExtras": true,
       "actions": ["waiting.decide"],
       "routes": []
     },
@@ -374,9 +379,9 @@
       "id": "/saved-preferences",
       "kind": "page",
       "file": "app/saved-preferences/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [
         "taste.commitPaste",
@@ -395,7 +400,7 @@
       "file": "app/sign-in/page.tsx",
       "see": "public",
       "act": "none",
-      "guards": ["isConsoleOwner"],
+      "guards": [],
       "source": "override",
       "ownerExtras": true,
       "actions": [],
@@ -406,9 +411,9 @@
       "id": "/writing-style",
       "kind": "page",
       "file": "app/writing-style/page.tsx",
-      "see": "owner",
-      "act": "owner",
-      "guards": ["requireConsolePage"],
+      "see": "admin",
+      "act": "admin",
+      "guards": ["requirePage"],
       "source": "derived",
       "actions": [
         "voice.acceptProposed",
@@ -426,7 +431,7 @@
       "file": "app/your-accounts/page.tsx",
       "see": "member",
       "act": "member",
-      "guards": ["isConsoleOwner", "requireMember"],
+      "guards": ["requirePage"],
       "source": "derived",
       "ownerExtras": true,
       "actions": ["accounts.removeAccount"],
@@ -438,9 +443,8 @@
       "file": "app/your-membership/page.tsx",
       "see": "member",
       "act": "member",
-      "guards": ["isConsoleOwner", "requireMember"],
+      "guards": ["requirePage"],
       "source": "derived",
-      "ownerExtras": true,
       "actions": [
         "members.signOutEverywhere",
         "outside-discovery.acceptOutsideDescriptorReview",
@@ -468,12 +472,11 @@
       "file": "app/layout.tsx",
       "see": "public",
       "act": "none",
-      "guards": ["isConsoleOwner"],
+      "guards": [],
       "source": "override",
-      "ownerExtras": true,
       "actions": [],
       "routes": ["GET /api/inbox"],
-      "reason": "The shell around every page, including sign-in; it shows the owner navigation only to the owner."
+      "reason": "The shell around every page, including sign-in; it shows each person the menu for their level and reads no data."
     }
   ],
   "actions": [
@@ -482,7 +485,7 @@
       "kind": "action",
       "file": "app/actions/accounts.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/chat/[name]"],
       "see": "member"
@@ -492,7 +495,7 @@
       "kind": "action",
       "file": "app/actions/accounts.ts",
       "act": "member",
-      "guards": ["isConsoleOwner", "sessionMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "ownerExtras": true,
       "usedBy": ["/your-accounts"],
@@ -503,37 +506,37 @@
       "kind": "action",
       "file": "app/actions/agent-access.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/agents/[name]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "agent-access.saveAgentAccess",
       "kind": "action",
       "file": "app/actions/agent-access.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/agents/[name]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "autonomy.setAutonomy",
       "kind": "action",
       "file": "app/actions/autonomy.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]", "/agents/[name]/edit", "/agents/new", "/integrations/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "avatar.saveAvatar",
       "kind": "action",
       "file": "app/actions/avatar.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -542,108 +545,108 @@
       "id": "deadlines.addDeadline",
       "kind": "action",
       "file": "app/actions/deadlines.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/deadlines"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "deadlines.addFromCandidate",
       "kind": "action",
       "file": "app/actions/deadlines.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/deadlines"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "deadlines.dismiss",
       "kind": "action",
       "file": "app/actions/deadlines.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/deadlines"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "deadlines.ignoreCandidate",
       "kind": "action",
       "file": "app/actions/deadlines.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/deadlines"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "deadlines.markDone",
       "kind": "action",
       "file": "app/actions/deadlines.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/deadlines"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "deadlines.mintStatutoryYear",
       "kind": "action",
       "file": "app/actions/deadlines.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/deadlines"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "deadlines.resetRung",
       "kind": "action",
       "file": "app/actions/deadlines.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/deadlines"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "deadlines.saveLadderEnabled",
       "kind": "action",
       "file": "app/actions/deadlines.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/deadlines"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "definition.acceptNotionSyncPreview",
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/integrations/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "definition.acceptOutsideDescriptions",
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "definition.agentRuntime",
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -653,7 +656,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -663,7 +666,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -673,7 +676,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -683,7 +686,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -693,7 +696,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -703,7 +706,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -713,7 +716,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -723,7 +726,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -733,7 +736,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -743,17 +746,17 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/integrations/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "definition.saveDefinition",
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -763,7 +766,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/general"],
       "see": "owner"
@@ -773,7 +776,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/general"],
       "see": "owner"
@@ -783,7 +786,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -793,27 +796,27 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/integrations/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "definition.setNotionSync",
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/integrations/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "definition.startFreshConversation",
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -823,7 +826,7 @@
       "kind": "action",
       "file": "app/actions/definition.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -832,18 +835,18 @@
       "id": "delivery.saveDelivery",
       "kind": "action",
       "file": "app/actions/delivery.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "delivery.sendTestBrief",
       "kind": "action",
       "file": "app/actions/delivery.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -853,7 +856,7 @@
       "kind": "action",
       "file": "app/actions/delivery.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/agents/[name]/edit", "/agents/new"],
       "see": "owner"
@@ -863,7 +866,7 @@
       "kind": "action",
       "file": "app/actions/inbox.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": [],
       "see": "none"
@@ -872,18 +875,18 @@
       "id": "meeting-series.revokeSeries",
       "kind": "action",
       "file": "app/actions/meeting-series.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/meeting-follow-ups"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "members.createInvitation",
       "kind": "action",
       "file": "app/actions/members.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/members"],
       "see": "owner"
@@ -893,7 +896,7 @@
       "kind": "action",
       "file": "app/actions/members.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember", "verify"],
+      "guards": ["actingAddress", "requireAction"],
       "source": "derived",
       "usedBy": ["/members"],
       "see": "owner"
@@ -903,7 +906,7 @@
       "kind": "action",
       "file": "app/actions/members.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/members"],
       "see": "owner"
@@ -913,7 +916,17 @@
       "kind": "action",
       "file": "app/actions/members.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember"],
+      "guards": ["requireAction"],
+      "source": "derived",
+      "usedBy": ["/members"],
+      "see": "owner"
+    },
+    {
+      "id": "members.setMemberRole",
+      "kind": "action",
+      "file": "app/actions/members.ts",
+      "act": "owner",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/members"],
       "see": "owner"
@@ -923,7 +936,7 @@
       "kind": "action",
       "file": "app/actions/members.ts",
       "act": "member",
-      "guards": ["requireMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -933,7 +946,7 @@
       "kind": "action",
       "file": "app/actions/members.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/members"],
       "see": "owner"
@@ -942,38 +955,38 @@
       "id": "outside-connect.connectActivateCredential",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connect.connectApplyAgent",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connect.connectDeclare",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connect.connectListAgents",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": [],
       "see": "none"
@@ -982,18 +995,18 @@
       "id": "outside-connect.connectLookUpTools",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connect.connectRemoveDeclaration",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": [],
       "see": "none"
@@ -1002,118 +1015,119 @@
       "id": "outside-connect.connectReviewAndStage",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connect.connectSetDanger",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connect.connectSetTools",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
+      "ownerExtras": true,
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connect.connectSwitchOnTrust",
       "kind": "action",
       "file": "app/actions/outside-connect.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connectors.addConnector",
       "kind": "action",
       "file": "app/actions/outside-connectors.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/new"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connectors.checkConnector",
       "kind": "action",
       "file": "app/actions/outside-connectors.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connectors.listConnectors",
       "kind": "action",
       "file": "app/actions/outside-connectors.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools", "/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connectors.removeConnector",
       "kind": "action",
       "file": "app/actions/outside-connectors.ts",
       "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connectors.removeFromAgent",
       "kind": "action",
       "file": "app/actions/outside-connectors.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connectors.renameConnector",
       "kind": "action",
       "file": "app/actions/outside-connectors.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-connectors.switchConnectorToToken",
       "kind": "action",
       "file": "app/actions/outside-connectors.ts",
-      "act": "owner",
-      "guards": ["requireConsoleMember", "sessionMember"],
+      "act": "admin",
+      "guards": ["requireAction"],
       "source": "derived",
       "usedBy": ["/outside-tools/[id]"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "outside-discovery.acceptOutsideDescriptorReview",
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1123,7 +1137,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1133,7 +1147,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1143,7 +1157,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1153,7 +1167,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1163,7 +1177,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1173,7 +1187,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1183,7 +1197,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1193,7 +1207,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1203,7 +1217,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1213,7 +1227,7 @@
       "kind": "action",
       "file": "app/actions/outside-discovery.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1223,7 +1237,7 @@
       "kind": "action",
       "file": "app/actions/private-metadata.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1233,7 +1247,7 @@
       "kind": "action",
       "file": "app/actions/private-metadata.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1243,7 +1257,7 @@
       "kind": "action",
       "file": "app/actions/private-metadata.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1253,7 +1267,7 @@
       "kind": "action",
       "file": "app/actions/private-metadata.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1263,7 +1277,7 @@
       "kind": "action",
       "file": "app/actions/private-metadata.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "usedBy": ["/your-membership"],
       "see": "member"
@@ -1272,221 +1286,221 @@
       "id": "proactivity.saveBriefLanguage",
       "kind": "action",
       "file": "app/actions/proactivity.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/quiet-hours-and-delivery"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "proactivity.saveCeilings",
       "kind": "action",
       "file": "app/actions/proactivity.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/quiet-hours-and-delivery"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "proactivity.saveDnd",
       "kind": "action",
       "file": "app/actions/proactivity.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/quiet-hours-and-delivery"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "proactivity.saveQuietHours",
       "kind": "action",
       "file": "app/actions/proactivity.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/quiet-hours-and-delivery"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "proactivity.saveScheduleHours",
       "kind": "action",
       "file": "app/actions/proactivity.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/quiet-hours-and-delivery"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "signals.saveCatalogue",
       "kind": "action",
       "file": "app/actions/signals.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/alert-routing/catalogue"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "signals.saveConsumers",
       "kind": "action",
       "file": "app/actions/signals.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/alert-routing"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "signals.saveRules",
       "kind": "action",
       "file": "app/actions/signals.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/alert-routing"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "taste.commitPaste",
       "kind": "action",
       "file": "app/actions/taste.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/saved-preferences"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "taste.commitTakeout",
       "kind": "action",
       "file": "app/actions/taste.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/saved-preferences"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "taste.deriveMissingPlaceNames",
       "kind": "action",
       "file": "app/actions/taste.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/saved-preferences"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "taste.previewTakeout",
       "kind": "action",
       "file": "app/actions/taste.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/saved-preferences"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "taste.removeEntry",
       "kind": "action",
       "file": "app/actions/taste.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/saved-preferences"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "taste.repairContradictedPins",
       "kind": "action",
       "file": "app/actions/taste.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/saved-preferences"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "taste.setListCountry",
       "kind": "action",
       "file": "app/actions/taste.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/saved-preferences"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "voice.acceptProposed",
       "kind": "action",
       "file": "app/actions/voice.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/writing-style"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "voice.dismissProposed",
       "kind": "action",
       "file": "app/actions/voice.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/writing-style"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "voice.requestRelearn",
       "kind": "action",
       "file": "app/actions/voice.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/writing-style"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "voice.saveCard",
       "kind": "action",
       "file": "app/actions/voice.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/writing-style"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "voice.saveSettings",
       "kind": "action",
       "file": "app/actions/voice.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/writing-style"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "voice.setExampleIncluded",
       "kind": "action",
       "file": "app/actions/voice.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/writing-style"],
-      "see": "owner"
+      "see": "admin"
     },
     {
       "id": "waiting.decide",
       "kind": "action",
       "file": "app/actions/waiting.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "usedBy": ["/reviews"],
-      "see": "owner"
+      "see": "admin"
     }
   ],
   "routes": [
@@ -1495,7 +1509,7 @@
       "kind": "route",
       "file": "app/api/accounts/google/callback/route.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "methods": "GET",
       "changesState": true,
@@ -1506,7 +1520,7 @@
       "kind": "route",
       "file": "app/api/accounts/microsoft/callback/route.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "methods": "GET",
       "changesState": true,
@@ -1517,7 +1531,7 @@
       "kind": "route",
       "file": "app/api/agent-mailbox/route.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "methods": "GET",
       "changesState": false,
@@ -1527,8 +1541,8 @@
       "id": "GET /api/agents/[name]/avatar",
       "kind": "route",
       "file": "app/api/agents/[name]/avatar/route.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "methods": "GET",
       "changesState": false,
@@ -1539,7 +1553,7 @@
       "kind": "route",
       "file": "app/api/auth/[...route]/route.ts",
       "act": "public",
-      "guards": ["isConsoleOwner"],
+      "guards": [],
       "source": "override",
       "ownerExtras": true,
       "methods": "GET",
@@ -1562,8 +1576,8 @@
       "id": "GET /api/clipping",
       "kind": "route",
       "file": "app/api/clipping/route.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "methods": "GET",
       "changesState": false,
@@ -1574,7 +1588,7 @@
       "kind": "route",
       "file": "app/api/credentials/notion/route.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "methods": "GET",
       "changesState": false,
@@ -1585,7 +1599,7 @@
       "kind": "route",
       "file": "app/api/inbox/route.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "methods": "GET",
       "changesState": false,
@@ -1595,8 +1609,8 @@
       "id": "GET /api/notion-proposals",
       "kind": "route",
       "file": "app/api/notion-proposals/route.ts",
-      "act": "owner",
-      "guards": ["verify"],
+      "act": "admin",
+      "guards": ["actingAddress"],
       "source": "derived",
       "methods": "GET",
       "changesState": false,
@@ -1607,7 +1621,7 @@
       "kind": "route",
       "file": "app/api/accounts/google/start/route.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "methods": "POST",
       "changesState": true,
@@ -1618,7 +1632,7 @@
       "kind": "route",
       "file": "app/api/accounts/microsoft/start/route.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "methods": "POST",
       "changesState": true,
@@ -1629,7 +1643,7 @@
       "kind": "route",
       "file": "app/api/agent-mailbox/route.ts",
       "act": "member",
-      "guards": ["sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "methods": "POST",
       "changesState": true,
@@ -1663,7 +1677,7 @@
       "kind": "route",
       "file": "app/api/clipping/route.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "methods": "POST",
       "changesState": true,
@@ -1674,7 +1688,7 @@
       "kind": "route",
       "file": "app/api/credentials/notion/route.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "methods": "POST",
       "changesState": true,
@@ -1697,7 +1711,7 @@
       "kind": "route",
       "file": "app/api/notion-proposals/route.ts",
       "act": "owner",
-      "guards": ["verify"],
+      "guards": ["actingAddress"],
       "source": "derived",
       "methods": "POST",
       "changesState": true,
@@ -1720,7 +1734,7 @@
       "kind": "route",
       "file": "app/api/provider-key/route.ts",
       "act": "owner",
-      "guards": ["isConsoleOwner", "sessionMember"],
+      "guards": ["mayUse"],
       "source": "derived",
       "methods": "POST",
       "changesState": true,

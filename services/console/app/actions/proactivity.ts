@@ -20,10 +20,9 @@
  * owner-facing schedules `lib/schedule-hours.ts`'s `OWNER_FACING_SCHEDULES` names may be changed
  * here — `dream` and `voice-learn` are internal night jobs the kit knows but this page refuses.
  */
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { pool } from "../../lib/db";
-import { verify } from "../../lib/auth";
+import { actingAddress } from "../../lib/auth";
 import { checkCeilings, ownerId, readDoors, readProactiveAgents, validateQuietHours } from "../../lib/proactivity";
 import type { Ceilings } from "../../lib/proactivity";
 import { isBriefLanguageCode } from "../../lib/brief-settings";
@@ -33,7 +32,7 @@ import { briefConflicts, loadConflictInputs } from "../../lib/delivery-check";
 export type SaveResult = { ok: true } | { ok: false; message: string };
 
 async function requireUser(): Promise<string> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
+  const email = await actingAddress("admin");
   if (!email) throw new Error("unauthenticated");
   return email;
 }

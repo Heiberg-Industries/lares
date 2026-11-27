@@ -2,7 +2,7 @@ import Link from "next/link";
 import { EmptyState, Notice, Page, PageHeader, Row, Rows, StatusBadge } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Card } from "@lares/ui/primitives/card";
-import { requireConsolePage } from "../../lib/auth";
+import { requirePage } from "../../lib/auth";
 import { listConnectors } from "../actions/outside-connectors";
 import { agentUsesByConnector } from "../../lib/outside-connector-view";
 import { DANGER_BADGE, dangerCount } from "../../lib/outside-tools-words";
@@ -11,7 +11,7 @@ import { authWords, nextActionWords, stateTone, stateWords } from "../../lib/out
 export const dynamic = "force-dynamic";
 
 export default async function OutsideToolsDirectoryPage() {
-  await requireConsolePage();
+  await requirePage("admin");
   const [result, uses] = await Promise.all([listConnectors(), agentUsesByConnector()]);
   const add = <Button asChild><Link href="/outside-tools/new">Add custom connector</Link></Button>;
   return <Page className="lares-stack">

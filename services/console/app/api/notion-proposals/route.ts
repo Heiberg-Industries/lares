@@ -16,13 +16,18 @@ import { withConsoleAdmission } from "../../../lib/admission-error";
  */
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { verify } from "../../../lib/auth";
+import { actingAddress } from "../../../lib/auth";
 import { getNotionProposalsView, applyProposalAction, type ProposalAction } from "../../../lib/notion-proposals";
 
 export const runtime = "nodejs";
 
+/** An admin may read what is waiting. */
 async function requireSession(): Promise<string | null> {
-  return verify((await cookies()).get("lares_session")?.value);
+  return actingAddress("admin");
+}
+/** Answering one changes the installation's notes: the owner only, as on Reviews. */
+async function requireOwnerSession(): Promise<string | null> {
+  return actingAddress("owner");
 }
 
 async function handleGET(): Promise<Response> {
@@ -45,7 +50,7 @@ function isProposalAction(value: unknown): value is ProposalAction {
 }
 
 async function handlePOST(req: Request): Promise<Response> {
-  if (!(await requireSession())) {
+  if (!(await requireOwnerSession())) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

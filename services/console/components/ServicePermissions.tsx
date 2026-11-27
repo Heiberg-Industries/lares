@@ -15,7 +15,7 @@ function answersLine(a: BoardRowDTO["answers"]): string {
 }
 
 /** What each agent may do with this service, with the same controls as the agent's own page. */
-export function ServicePermissions({ rows }: { rows: BoardRowDTO[] }) {
+export function ServicePermissions({ rows, canChange }: { rows: BoardRowDTO[]; canChange: boolean }) {
   return (
     <>
       <p className="lares-muted lares-operational-note">
@@ -46,7 +46,7 @@ export function ServicePermissions({ rows }: { rows: BoardRowDTO[] }) {
               </td>
               <td>
                 {b.controllable ? (
-                  <AutonomyControl agent={b.agent} capability={b.capability} action={b.action || undefined} level={b.level} />
+                  <AutonomyControl agent={b.agent} capability={b.capability} action={b.action || undefined} level={b.level} canChange={canChange} />
                 ) : (
                   <NoControl scope={b.scope} />
                 )}

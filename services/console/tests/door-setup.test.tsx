@@ -11,7 +11,7 @@ const STATE={rows:0,progress:1,message:2,error:3,unknown:4,connect:5,tokens:6,si
 vi.mock('react',async original=>({...await original<typeof import('react')>(),useEffect:()=>{},useRef:(v:unknown)=>({current:v}),useState:(initial:unknown)=>{const i=mocks.setters.length,set=vi.fn();mocks.setters.push(set);return [mocks.states[i]??initial,set];}}));
 vi.mock('../app/actions/definition',()=>({doorStatus:mocks.status,connectDoor:mocks.connect,verifyDoor:mocks.verify,setDoorEnabled:mocks.enable,applyConnections:mocks.apply,registerTelegram:mocks.webhook,claimCode:mocks.claim}));
 import {DoorSetup} from '../components/DoorSetup';
-const props={name:'example',display:'Example',role:'creative',origin:'https://doors.example.test',hash:'a'.repeat(64)};
+const props={name:'example',display:'Example',role:'creative',origin:'https://doors.example.test',hash:'a'.repeat(64),owner:true};
 const cos={...props,role:'chief-of-staff'};
 function find(node:ReactNode,label:string):ReactElement<{onClick:()=>void;disabled?:boolean}>|undefined {
  if(!node||typeof node!=='object')return;if(Array.isArray(node)){for(const c of node){const f=find(c,label);if(f)return f;}return;}

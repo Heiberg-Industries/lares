@@ -4,7 +4,7 @@
 // check lives in the box's database (`outside_tool_pins`), which the console reads. Every source
 // can be unavailable, and unavailable is never shown as "missing" or "not locked".
 import { pool } from "./db";
-import { credentialActor } from "./credentials";
+import { actingAddress } from "./auth";
 import { keeper } from "./keeper-client";
 import type { Reading } from "./console-overview";
 
@@ -46,7 +46,7 @@ function described(value: unknown): DescribedTool[] | null {
 }
 
 async function keys(name: string): Promise<OutsideToolEvidence["keys"]> {
-  const actor = await credentialActor();
+  const actor = await actingAddress("admin");
   if (!actor) return { available: false };
   try {
     const raw = await keeper<{ tools?: unknown }>("outside.status", { name }, actor);

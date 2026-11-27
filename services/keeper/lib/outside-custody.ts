@@ -14,6 +14,7 @@ import { requireConsoleSessionBinding } from "@lares/agent-kit/console-turn-auth
 import { PgGrantStore, type GrantDatabase } from "@lares/agent-kit/grant-store";
 import { recordOutsideExecutionApproval, consumeOutsideExecutionApproval, outsideExecutionApprovalSchema, outsidePayloadHash, type OutsideExecutionApproval } from "@lares/agent-kit/outside-execution-receipts";
 import { currentMember } from "@lares/agent-kit/member-store";
+import { ORG_ROLES } from "@lares/agent-kit/identity";
 import { descriptionsHash, entryConfigHash, keptTools, allowedTools, pgPinStore } from "@lares/agent-kit/outside-pins";
 import { z } from "zod";
 import { KeeperRefusedError } from './actions.js';
@@ -138,7 +139,7 @@ const descriptorProjectionSchema=z.strictObject({version:z.literal(1),connection
   scope:z.enum(['read','write','write-with-confirm']),allow:z.array(z.string().min(1).max(256)).max(256),read:z.array(z.string().min(1).max(256)).max(256),
   tools:z.array(z.strictObject({name:z.string().min(1).max(256),description:z.string().max(8192).optional(),inputSchema:z.record(z.string(),z.unknown())})).max(256)});
 const descriptorEditCaptureSchema=z.strictObject({version:z.literal(1),
-  actor:z.strictObject({memberId:memberIdSchema,organisationId:z.string().min(1).max(256),role:z.enum(['owner','member','restricted'])}),
+  actor:z.strictObject({memberId:memberIdSchema,organisationId:z.string().min(1).max(256),role:z.enum(ORG_ROLES)}),
   agent:z.strictObject({name:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),ownerMemberId:memberIdSchema,
     accessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),definitionHash:z.string().min(1).max(256),connectionName:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/)}),
   grant:z.union([z.strictObject({kind:z.literal('owner'),validUntil:z.null()}),z.strictObject({kind:z.literal('grant'),id:z.string().min(1).max(256),
@@ -150,7 +151,7 @@ const activationReviewSchema=z.strictObject({version:z.literal(1),accountId:uuid
   policyHash:hashSchema,capture:descriptorEditCaptureSchema,route:z.strictObject({policyHash:hashSchema,sourceAddress:z.string().max(64),proxyUrl:z.string().max(256)}),
   consentGeneration:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)});
 const outsideUseCaptureSchema=z.strictObject({version:z.literal(1),actor:z.strictObject({memberId:memberIdSchema,organisationId:z.string().min(1).max(256),
-    role:z.enum(['owner','member','restricted'])}),agent:z.strictObject({name:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),ownerMemberId:memberIdSchema,
+    role:z.enum(ORG_ROLES)}),agent:z.strictObject({name:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),ownerMemberId:memberIdSchema,
     accessRevision:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),definitionHash:z.string().min(1).max(256)}),
   ownerPolicy:z.union([z.strictObject({kind:z.literal('unrestricted')}),z.strictObject({kind:z.literal('ceiling'),requiredCapabilities:z.array(z.string().min(1).max(256)).max(256)})]),
   outside:z.strictObject({scope:z.enum(['read','write-with-confirm']),autonomy:z.enum(['gated','autonomous']),connection:z.strictObject({
@@ -924,7 +925,7 @@ export class OutsideCustodyStore {
       "SELECT id,org_id,org_role,status FROM users WHERE id=$1 AND org_id=$2 AND status='active' FOR SHARE",[memberId,organisationId]);
     const row=result.rows[0];
     if(result.rows.length!==1||row?.id!==memberId||row.org_id!==organisationId||row.status!=='active'||
-        !['owner','member','restricted'].includes(row.org_role))return denied();
+        !(ORG_ROLES as readonly string[]).includes(row.org_role))return denied();
   }
 
   async #captureDescriptorEditor(db:PoolClient,editorMemberId:string,actingMemberId:string,organisationId:string,agentName:string,

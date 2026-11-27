@@ -10,7 +10,9 @@ import { REMOVE_WARNING } from "../lib/outside-connector-words";
 type Message = { tone: "working" | "success" | "error" | "info"; text: string } | null;
 
 /** Rename (label only), Check it works, and Remove. Replace token sits with the agents' access, where the tokens are. */
-export function ConnectorActions({ id, displayName, authKind }: { id: string; displayName: string; authKind?: "none" | "token" | "signin" }) {
+export function ConnectorActions({ id, displayName, authKind, canRemove }: { id: string; displayName: string; authKind?: "none" | "token" | "signin";
+  /** True for the owner. Removing takes the connector away from every agent and erases its held tokens; the action refuses anyone else. */
+  canRemove: boolean }) {
   const router = useRouter();
   const [renaming, setRenaming] = useState(false), [label, setLabel] = useState(displayName);
   const [confirming, setConfirming] = useState(false), [busy, setBusy] = useState(false), [message, setMessage] = useState<Message>(null);
@@ -42,8 +44,9 @@ export function ConnectorActions({ id, displayName, authKind }: { id: string; di
     <div className="lares-actions">
       <Button type="button" variant="outline" disabled={busy} onClick={() => { setRenaming(true); setConfirming(false); }}>Rename</Button>
       <Button type="button" variant="outline" disabled={busy} onClick={() => void check()}>Check it works</Button>
-      <Button type="button" variant="outline" disabled={busy} onClick={() => { setConfirming(true); setRenaming(false); }}>Remove</Button>
+      {canRemove && <Button type="button" variant="outline" disabled={busy} onClick={() => { setConfirming(true); setRenaming(false); }}>Remove</Button>}
     </div>
+    {!canRemove && <p className="lares-muted">Only the owner can remove a connector.</p>}
     {renaming && <div className="lares-stack">
       <Field label="Name" hint="Only the label changes. Agents and tokens are not touched."><Input maxLength={80} value={label} onChange={e => setLabel(e.target.value)} /></Field>
       <div className="lares-actions"><Button type="button" disabled={busy || !label.trim()} onClick={() => void rename()}>Save name</Button><Button type="button" variant="outline" onClick={() => setRenaming(false)}>Cancel</Button></div>

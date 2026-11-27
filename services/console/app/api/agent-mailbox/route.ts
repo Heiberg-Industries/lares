@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { z } from "zod";
 import { PgAgentMailboxStore } from "@lares/agent-kit/agent-mailbox-store";
 import { withConsoleAdmission } from "../../../lib/admission-error";
-import { sessionMember } from "../../../lib/auth";
+import { mayUse, sessionMember } from "../../../lib/auth";
 import { pool } from "../../../lib/db";
 import { accountStatusLabel, agentDefinitionFor, agentMailboxView, refusalSentence } from "../../../lib/agent-mailbox";
 
@@ -43,7 +43,7 @@ const statusFor = (code: string) => code === "not-owner" ? 403 : code === "outco
 /** The owner's view of the agent's mailbox line. */
 async function handleGET(req: Request): Promise<Response> {
   const member = await sessionMember((await cookies()).get("lares_session")?.value);
-  if (!member) return failed("sign-in-required", 401);
+  if (!mayUse(member, "member")) return failed("sign-in-required", 401);
   const parsed = name.safeParse(new URL(req.url).searchParams.get("name"));
   if (!parsed.success) return failed("invalid-request", 400);
   const definition = await agentDefinitionFor(parsed.data);
@@ -54,7 +54,7 @@ async function handleGET(req: Request): Promise<Response> {
 /** Choose, confirm after a reconnect, or clear. Who and what are decided here, never by the page. */
 async function handlePOST(req: Request): Promise<Response> {
   const member = await sessionMember((await cookies()).get("lares_session")?.value);
-  if (!member) return failed("sign-in-required", 401);
+  if (!mayUse(member, "member")) return failed("sign-in-required", 401);
   if (!sameOrigin(req)) return failed("origin-refused", 403);
   let parsed;
   try { parsed = request.safeParse(await input(req)); } catch { return failed("invalid-request", 400); }

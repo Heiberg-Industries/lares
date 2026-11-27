@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 const mocks = vi.hoisted(() => ({ member: vi.fn(), current: vi.fn(), eligible: vi.fn(), receipt: vi.fn() }));
-vi.mock("../lib/auth", () => ({ signedInMember: mocks.member, members: { currentMember: mocks.current, firstOwnerBootstrapEligible: mocks.eligible }, isConsoleOwner: (member: {id: string; role?: string; status?: string}) => member.id === process.env.AGENT_OWNER_USER_ID && (member.role === undefined || member.role === "owner") && (member.status === undefined || member.status === "active") }));
+vi.mock("../lib/auth", () => ({ signedInMember: mocks.member, members: { currentMember: mocks.current, firstOwnerBootstrapEligible: mocks.eligible }, mayUse: (member: {id: string; role?: string; status?: string} | null | undefined, level: string) => !!member && (member.status === undefined || member.status === "active") && (level === "member" || (level === "admin" && member.role === "admin") || (member.id === process.env.AGENT_OWNER_USER_ID && (member.role === undefined || member.role === "owner"))) }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "signed-receipt" }) }) }));
 vi.mock("../lib/console-oidc", () => ({ consoleRedirect: () => "https://console.example.test/api/auth/callback" }));
 vi.mock("../lib/owner-bootstrap-receipt", () => ({ OWNER_DISCOVERY_COOKIE: "lares_owner_discovery", openOwnerDiscoveryReceipt: mocks.receipt }));

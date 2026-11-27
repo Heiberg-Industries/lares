@@ -221,6 +221,8 @@ it('an update whose migration adds a table gives the engine logins that table\'s
     // one already applied, so they all reapply in order, as on a real update. 038 only adds
     // columns and constraints to an existing table, and every statement in it can run again, so
     // its columns stay and only its ledger row goes.
+    // 040 only swaps a check on users for a wider one and can run again, so only its ledger row goes.
+    await engine.query("DELETE FROM schema_migrations WHERE filename='040_admin_role.sql'");
     await engine.query('DROP TABLE outside_connectors');
     await engine.query("DELETE FROM schema_migrations WHERE filename='039_outside_connectors.sql'");
     await engine.query("DELETE FROM schema_migrations WHERE filename='038_approval_card_record.sql'");

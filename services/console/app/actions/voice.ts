@@ -1,11 +1,10 @@
 "use server";
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { pool } from "../../lib/db";
-import { verify } from "../../lib/auth";
+import { actingAddress } from "../../lib/auth";
 
 async function requireUser(): Promise<string> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
+  const email = await actingAddress("admin");
   if (!email) throw new Error("unauthenticated");
   return email;
 }

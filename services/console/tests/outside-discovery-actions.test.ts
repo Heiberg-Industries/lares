@@ -1,7 +1,8 @@
 import { beforeEach,expect,it,vi } from 'vitest';
 const mocks=vi.hoisted(()=>({member:vi.fn(),auditAddress:vi.fn(),keeper:vi.fn(),cookie:vi.fn()}));
 vi.mock('next/headers',()=>({cookies:async()=>({get:()=>({value:mocks.cookie()})})}));
-vi.mock('../lib/auth',()=>({sessionMember:mocks.member,memberAuditAddress:mocks.auditAddress}));
+// signedInMember reads the session cookie itself; the stand-in does the same, so the tests still see which token was looked up.
+vi.mock('../lib/auth',()=>({signedInMember:async()=>mocks.member(mocks.cookie()),mayUse:(member:unknown,level:string)=>!!member&&level==='member',memberAuditAddress:mocks.auditAddress}));
 vi.mock('../lib/keeper-client',()=>({keeper:mocks.keeper,KeeperRefusedError:class extends Error{},KeeperUnavailableError:class extends Error{outcomeMayBeUnknown=false;}}));
 import { acceptOutsideDescriptorReview,discoverOutsideTools,inspectOutsideDiscovery,listOutsideDiscoveryTargets,previewOutsideDescriptorReview,
   previewOutsideDiscovery,publishOutsideDescriptorReview,stageOutsideCredentialCandidate,applyOutsideCredentialCandidate,previewOutsideCredentialApply,

@@ -1,4 +1,4 @@
-import { requireConsolePage } from "../../../../lib/auth";
+import { mayUse, requirePage } from "../../../../lib/auth";
 import Link from "next/link";
 import { Notice, PageHeader, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
@@ -10,7 +10,7 @@ export default async function EditAgentPage({
 }: {
   params: Promise<{ name: string }>;
 }) {
-  await requireConsolePage();
+  const member = await requirePage("owner");
   const { name } = await params;
   try {
     const data = await builderData(name);
@@ -37,7 +37,7 @@ export default async function EditAgentPage({
             .
           </Notice>
         )}
-        <DefinitionForm {...data} />
+        <DefinitionForm {...data} owner={mayUse(member, "owner")} />
       </Page>
     );
   } catch (error) {

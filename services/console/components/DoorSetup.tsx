@@ -15,11 +15,17 @@ export interface ConnectStep {kind:'slack'|'telegram';code:string;expiresAt:stri
 const SUPPORTED:Record<string,('slack'|'telegram')[]>={creative:['slack'],'chief-of-staff':['slack','telegram']};
 const LABEL:Record<string,string>={slack:'Slack',telegram:'Telegram'};
 const POLL_MS=3000;
+/** What an admin reads where the owner would get the one-time code. */
+export const OWNER_LAST_STEP='The door is set up. The owner does the last step, connecting themselves, from this page.';
 export function DoorSetup(p:{name:string;display:string;description?:string;role:string;origin:string;hash:string;onDefinitionChanged?:(hash:string)=>void;
  /** Whether the agent runs now (the page's runtime state); the save warning shows only then. */
  running?:boolean|null;
  /** Called after every door action, whether it worked or not: a door change can stop or start the agent. */
- onRuntimeChanged?:()=>void}) {
+ onRuntimeChanged?:()=>void;
+ /** True for the installation's owner. The claim (the last step, which decides who the agent answers to) and the
+  * test brief (sent to and paid by the owner) are the owner's; an admin sets the door up and is told the owner
+  * finishes it. The actions behind both refuse anyone else whatever this says. */
+ owner:boolean}) {
  const [rows,setRows]=useState<DoorStatus[]>([]),[progress,setProgress]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),[unknown,setUnknown]=useState(false),[connect,setConnect]=useState<ConnectStep|null>(null);
  const [tokens,setTokens]=useState<Record<string,string>>({}),[signing,setSigning]=useState('');
  /** Set once a door switch also moved "Where messages go" to that door; stays until the page reloads. */
@@ -86,6 +92,10 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
    latestHash.current=saved.hash;p.onDefinitionChanged?.(saved.hash);if(saved.messagesFollow)setFollows(messagesFollowText(saved.messagesFollow));current=await refresh();
   }
   if(current.some(r=>r.pending)){setProgress('Applying (restarts the agent, about a minute)…');await applyWaiting();}
+  if(!p.owner){
+   if(kind==='telegram'){setProgress('Registering the Telegram webhook…');unwrap(await registerTelegram(p.name));}
+   setMessage(OWNER_LAST_STEP);return;
+  }
   await showConnectStep(kind);
  }
  const copy=(text:string,note:string)=>{void (async()=>{try{await navigator.clipboard.writeText(text);setMessage(note);}catch{setError('Could not copy; select the text and copy it by hand.');}})();};
@@ -112,11 +122,12 @@ export function DoorSetup(p:{name:string;display:string;description?:string;role
  {kind==='telegram'&&<><ol>{telegramSteps(p.display).map(s=><li key={s.step}>{s.text}</li>)}</ol><Field label="Bot token"><Input type="password" autoComplete="off" value={tokens.telegram??''} onChange={e=>setTokens({...tokens,telegram:e.target.value})}/></Field></>}
  <div className="lares-actions">
  <Button variant="outline" type="button" disabled={!tokens[kind]||(kind==='slack'&&!signing)||(kind==='telegram'&&!createUrl)||(kind==='slack'&&!createUrl)} onClick={()=>void run(()=>connectChat(kind))}>{touched?'Replace credentials and connect':'Connect'}</Button>
- {!step&&row?.enabled&&!row.claimed&&!row.pending&&<Button variant="outline" type="button" onClick={()=>void run(()=>showConnectStep(kind))}>{kind==='telegram'?'Show the tap-to-connect link':'Show the one-time code'}</Button>}
- {testsBrief&&doorStateText(row)==='Connected'&&<Button variant="outline" type="button" disabled={asking||Boolean(brief?.view?.waiting)} onClick={()=>void askTestBrief(kind)}>{`Send a test brief to ${LABEL[kind]}`}</Button>}
+ {p.owner&&!step&&row?.enabled&&!row.claimed&&!row.pending&&<Button variant="outline" type="button" onClick={()=>void run(()=>showConnectStep(kind))}>{kind==='telegram'?'Show the tap-to-connect link':'Show the one-time code'}</Button>}
+ {p.owner&&testsBrief&&doorStateText(row)==='Connected'&&<Button variant="outline" type="button" disabled={asking||Boolean(brief?.view?.waiting)} onClick={()=>void askTestBrief(kind)}>{`Send a test brief to ${LABEL[kind]}`}</Button>}
  {kind==='telegram'&&row?.enabled&&!row.pending&&createUrl&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{unwrap(await registerTelegram(p.name));setMessage('Telegram is set to send messages here.');})}>Register Telegram webhook</Button>}
  {touched&&<Button variant="outline" type="button" onClick={()=>void run(async()=>{const result=unwrap(await setDoorEnabled(p.name,kind,!row?.enabled));latestHash.current=result.hash;p.onDefinitionChanged?.(result.hash);if(result.messagesFollow)setFollows(messagesFollowText(result.messagesFollow));setMessage(`Door ${row?.enabled?'disabled':'enabled'} in the saved definition.${result.backup.ok?'':` ${result.backup.message??'Git backup failed; definition remains saved.'}`} Apply connection changes for this to take effect.`);})}>{row?.enabled?'Disable door':'Enable door'}</Button>}
  </div>
+ {!p.owner&&row?.enabled&&!row.claimed&&!row.pending&&<p className="lares-muted">{OWNER_LAST_STEP}</p>}
  {testsBrief&&doorStateText(row)==='Connected'&&<>
   {briefRefusal?.kind===kind?<Notice error>{briefRefusal.text}</Notice>:brief?.view?.door===kind&&<Notice>{brief.view.text}</Notice>}
   {brief?.dnd&&<p className="lares-muted">Do-not-disturb is on; this test still goes out because you asked.</p>}

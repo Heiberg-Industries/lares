@@ -8,7 +8,9 @@ vi.mock("next/navigation", () => ({ usePathname: () => path.current }));
 vi.mock("next/link", () => ({ default: ({ href, children, ...p }: React.ComponentProps<"a">) => <a href={href} {...p}>{children}</a> }));
 vi.mock("../components/ThemeControl", () => ({ ThemeControl: () => <div role="group" aria-label="Color theme" />, useConsoleTheme: () => ({ theme: "system", onChange: () => {} }) }));
 vi.mock("../components/InboxDot", () => ({ InboxDot: () => <span data-testid="unread-dot" /> }));
-import { COMING, Nav, currentHref, OWNER_MENU, MEMBERSHIP } from "../components/Nav";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ADMIN_MENU, COMING, MEMBER_MENU, Nav, currentHref, OWNER_MENU, OWNER_ONLY_PAGES, MEMBERSHIP } from "../components/Nav";
 afterEach(() => { cleanup(); path.current = "/"; });
 
 /** The sidebar as a person reads it: group labels, then each entry as "words -> address", or "words (coming)". */
@@ -26,7 +28,7 @@ const current = () => within(sidebar()).getAllByRole("link").filter((a) => a.get
 
 describe("the owner's menu", () => {
   it("is exactly the agreed list, in order, each address reading like its words", () => {
-    render(<Nav owner={true} person="Sam Example" />);
+    render(<Nav level="owner" person="Sam Example" />);
     expect(menu(sidebar())).toEqual([
       "Overview -> /",
       "Reviews -> /reviews",
@@ -64,7 +66,7 @@ describe("the owner's menu", () => {
   });
 
   it("keeps the unread dot on Chat, and signs out by posting to the same address as before", () => {
-    render(<Nav owner={true} />);
+    render(<Nav level="owner" />);
     const side = within(sidebar());
     expect(within(side.getByRole("link", { name: "Chat" })).getByTestId("unread-dot")).toBeTruthy();
     expect(side.getAllByTestId("unread-dot")).toHaveLength(1);
@@ -81,7 +83,7 @@ describe("the owner's menu", () => {
 describe("pages that are coming", () => {
   it("are the four agreed ones, greyed with a Coming tag", () => {
     expect(COMING.map((item) => item.label)).toEqual(["Skills", "Profiles", "Knowledge sources", "Brands"]);
-    render(<Nav owner={true} />);
+    render(<Nav level="owner" />);
     for (const { label } of COMING) {
       const entry = within(sidebar()).getByText(label).closest("[data-slot=sidebar-menu-button]")!;
       expect(entry.getAttribute("aria-disabled"), label).toBe("true");
@@ -90,7 +92,7 @@ describe("pages that are coming", () => {
   });
 
   it("are not links or buttons, cannot take focus, and lead nowhere", () => {
-    render(<Nav owner={true} />);
+    render(<Nav level="owner" />);
     for (const { label } of COMING) {
       const entry = within(sidebar()).getByText(label).closest("[data-slot=sidebar-menu-button]") as HTMLElement;
       expect(entry.tagName, label).toBe("SPAN");
@@ -102,10 +104,61 @@ describe("pages that are coming", () => {
   });
 });
 
+describe("an admin", () => {
+  it("sees exactly the pages an admin may use: the owner's menu without Members, General and Backups", () => {
+    path.current = "/";
+    render(<Nav level="admin" person="Robin Example" />);
+    expect(menu(sidebar())).toEqual([
+      "Overview -> /",
+      "Reviews -> /reviews",
+      "Chat -> /chat",
+      "# Agents",
+      "Agents -> /agents",
+      "Writing style -> /writing-style",
+      "# Connections",
+      "Your accounts -> /your-accounts",
+      "Integrations -> /integrations",
+      "Outside tools -> /outside-tools",
+      "# Tools",
+      "Deadlines -> /deadlines",
+      "Meeting follow-ups -> /meeting-follow-ups",
+      "Saved preferences -> /saved-preferences",
+      "# Activity",
+      "Permission checks -> /permission-checks",
+      "Alerts -> /alerts",
+      "# Installation",
+      "Quiet hours and delivery -> /quiet-hours-and-delivery",
+      "Alert routing -> /alert-routing",
+      "# Robin Example",
+      "Your membership -> /your-membership",
+      "Appearance: Color theme",
+      "Sign out [button]",
+    ]);
+    for (const label of ["Members", "General", "Backups"]) expect(within(sidebar()).queryByRole("link", { name: new RegExp(`^${label}$`) }), label).toBeNull();
+    // The owner's message dot is the owner's: the address behind it refuses an admin.
+    expect(within(sidebar()).queryByTestId("unread-dot")).toBeNull();
+  });
+
+  it("is offered every page the pages themselves let an admin open, and none they refuse", () => {
+    // What each page says (derived from the code into the inventory) against what the menu offers.
+    const inventory = JSON.parse(readFileSync(join(__dirname, "actions/action-inventory.json"), "utf8")) as { pages: { id: string; kind: string; see: string }[] };
+    const level = new Map(inventory.pages.filter((p) => p.kind === "page").map((p) => [p.id, p.see]));
+    const offered = (groups: typeof OWNER_MENU) => [...groups.flatMap((group) => group.pages), MEMBERSHIP].map((page) => page.href);
+    for (const href of offered(ADMIN_MENU)) expect(["admin", "member"], `the admin menu offers ${href}`).toContain(level.get(href));
+    for (const href of offered(MEMBER_MENU)) expect(level.get(href), `the member menu offers ${href}`).toBe("member");
+    // The menu's owner-only list is exactly the owner-only pages the owner's menu offers.
+    expect(OWNER_ONLY_PAGES.slice().sort()).toEqual(offered(OWNER_MENU).filter((href) => level.get(href) === "owner").sort());
+    for (const href of OWNER_ONLY_PAGES) expect(level.get(href), href).toBe("owner");
+    // Nothing an admin may open from the menu is left out: every owner-menu page that is not owner-only is there.
+    expect(offered(ADMIN_MENU)).toEqual(offered(OWNER_MENU).filter((href) => level.get(href) !== "owner"));
+    expect(OWNER_MENU.flatMap((group) => group.pages).filter((page) => level.get(page.href) === "owner").map((page) => page.label)).toEqual(["Members", "General", "Backups"]);
+  });
+});
+
 describe("a member who is not the owner", () => {
   it("sees only Chat, Your accounts and Your membership, with Appearance and Sign out", () => {
     path.current = "/chat";
-    render(<Nav owner={false} person="Alex Example" />);
+    render(<Nav level="member" person="Alex Example" />);
     expect(menu(sidebar())).toEqual([
       "Chat -> /chat",
       "# Connections",
@@ -143,14 +196,14 @@ describe("the current page", () => {
       ["/your-accounts", "/your-accounts"],
       ["/your-membership", "/your-membership"],
     ] as const) {
-      path.current = pathname; cleanup(); render(<Nav owner={true} />);
+      path.current = pathname; cleanup(); render(<Nav level="owner" />);
       expect(current(), pathname).toEqual([href]);
       expect([...sidebar().querySelectorAll("[data-active]")].map((el) => el.getAttribute("href")), pathname).toEqual([href]);
     }
   });
 
   it("is none of them on an address the menu does not have", () => {
-    path.current = "/somewhere-else"; render(<Nav owner={true} />);
+    path.current = "/somewhere-else"; render(<Nav level="owner" />);
     expect(current()).toEqual([]);
   });
 
@@ -166,7 +219,7 @@ describe("the current page", () => {
 describe("the menu on a phone", () => {
   it("opens as a named sheet from a button that says whether it is open, closes on Escape and hands focus back", async () => {
     const user = userEvent.setup();
-    render(<Nav owner={true} />);
+    render(<Nav level="owner" />);
     const button = screen.getByRole("button", { name: "Open navigation" });
     expect(button.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -182,7 +235,7 @@ describe("the menu on a phone", () => {
 
   it("closes when a page is chosen", async () => {
     const user = userEvent.setup();
-    render(<Nav owner={true} />);
+    render(<Nav level="owner" />);
     await user.click(screen.getByRole("button", { name: "Open navigation" }));
     const link = within(screen.getByRole("dialog")).getByRole("link", { name: "Deadlines" });
     link.addEventListener("click", (event) => event.preventDefault());

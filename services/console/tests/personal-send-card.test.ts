@@ -2,7 +2,10 @@ import {beforeEach,it,expect,vi} from 'vitest';
 const f=vi.hoisted(()=>({member:vi.fn(),query:vi.fn(),custody:vi.fn(),proposal:vi.fn(),reference:vi.fn(),binding:vi.fn(),session:vi.fn()}));
 vi.mock('next/headers',()=>({cookies:async()=>({get:()=>({value:'opaque-session'})})}));
 vi.mock('next/cache',()=>({revalidatePath:vi.fn()}));
-vi.mock('../lib/auth',()=>({sessionMember:f.member,isConsoleOwner:()=>false}));
+vi.mock('../lib/auth',()=>{
+ const mayUse=(member:unknown,level:string)=>!!member&&level==='member';
+ return {mayUse,requireAction:async(level:string)=>{const member=await f.member();if(!mayUse(member,level))throw new Error(`Console ${level} admission required`);return member;}};
+});
 vi.mock('../lib/db',()=>({pool:{query:f.query}}));
 vi.mock('../lib/accounts',()=>({consolePrincipal:()=>'',tokenEncKeyHex:()=> '1'.repeat(64)}));
 vi.mock('@lares/agent-kit/account-store',()=>({PgAccountStore:class{withPersonalResourceCredential=f.custody;}}));
@@ -35,5 +38,5 @@ it.each(['unauthenticated','wrong-member','retired-binding','cancelled','expired
  if(failure==='logout')f.session.mockResolvedValue(null);
  if(failure==='account-generation')f.custody.mockRejectedValue(new Error('PRIVATE ACCOUNT'));
  if(failure==='tamper')f.proposal.mockRejectedValue(new Error('PRIVATE CIPHERTEXT'));
- await expect(readPersonalSendCard('request')).rejects.toThrow(/Personal mail review/);
+ await expect(readPersonalSendCard('request')).rejects.toThrow(failure==='unauthenticated'?/^Console member admission required$/:/Personal mail review/);
 });

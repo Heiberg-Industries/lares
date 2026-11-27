@@ -1,10 +1,10 @@
-import { requireMember } from "../../lib/auth";
+import { requirePage } from "../../lib/auth";
 import { redirect } from "next/navigation";
 import { listPrivateChatAgents } from "../../lib/agents";
 import { EmptyState, PageHeader, Page } from "@lares/ui/patterns";
 export const dynamic = "force-dynamic";
 export default async function ChatPage() {
-  const member=await requireMember();
+  const member=await requirePage("member");
   const agents = await listPrivateChatAgents(member).catch(() => null);
   if (agents?.length) redirect(`/chat/${encodeURIComponent(agents[0].name)}`);
   return (

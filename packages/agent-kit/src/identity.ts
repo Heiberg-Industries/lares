@@ -10,7 +10,9 @@
 // — or worse, silently hand a stranger the unscoped legacy path.
 import type { Pool } from "pg";
 
-export type OrgRole = "owner" | "member" | "restricted";
+/** The one list of stored roles (users.org_role, services/box/sql/040_admin_role.sql). */
+export const ORG_ROLES = ["owner", "admin", "member", "restricted"] as const;
+export type OrgRole = (typeof ORG_ROLES)[number];
 
 export interface ResolvedUser {
   id: string;

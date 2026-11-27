@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const mocks = vi.hoisted(() => ({ query: vi.fn(), verify: vi.fn() }));
+const mocks = vi.hoisted(() => ({ query: vi.fn(), actingAddress: vi.fn() }));
 vi.mock("../lib/db", () => ({ pool: { query: mocks.query } }));
-vi.mock("../lib/auth", () => ({ verify: mocks.verify }));
+vi.mock("../lib/auth", () => ({ actingAddress: mocks.actingAddress }));
 vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: "c" }) })) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
@@ -18,8 +18,8 @@ const row = (id: number, read = false) => ({
 
 beforeEach(() => {
   mocks.query.mockReset();
-  mocks.verify.mockReset();
-  mocks.verify.mockResolvedValue("owner@owner.example");
+  mocks.actingAddress.mockReset();
+  mocks.actingAddress.mockResolvedValue("owner@owner.example");
 });
 
 describe("reading the inbox", () => {
@@ -69,7 +69,7 @@ describe("GET /api/inbox", () => {
   const get = (qs = "") => GET(new Request(`http://console.test/api/inbox${qs}`));
 
   it("needs a signed-in owner", async () => {
-    mocks.verify.mockResolvedValue(null);
+    mocks.actingAddress.mockResolvedValue(null);
     expect((await get()).status).toBe(401);
   });
 
@@ -92,9 +92,9 @@ describe("GET /api/inbox", () => {
 
 describe("markRead", () => {
   it("needs a session, and refuses a bad agent or id without a write", async () => {
-    mocks.verify.mockResolvedValue(null);
+    mocks.actingAddress.mockResolvedValue(null);
     await expect(markRead({ agent: "chief" })).rejects.toThrow("unauthenticated");
-    mocks.verify.mockResolvedValue("owner@owner.example");
+    mocks.actingAddress.mockResolvedValue("owner@owner.example");
     expect(await markRead({ agent: "Not A Name" })).toEqual({ ok: false });
     expect(await markRead({ agent: "chief", id: 1.5 })).toEqual({ ok: false });
     expect(mocks.query).not.toHaveBeenCalled();

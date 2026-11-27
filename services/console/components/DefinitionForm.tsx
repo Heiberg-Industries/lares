@@ -49,6 +49,9 @@ import { afterCreationPath } from "../lib/first-conversation";
 import { withStartingDelivery } from "../lib/delivery";
 
 export interface DefinitionFormProps {
+  /** True for the installation's owner. Deleting the agent, ending a conversation and the last step of a chat door
+   * are the owner's; an admin does not get those buttons. The actions behind them refuse anyone else whatever this says. */
+  owner: boolean;
   publicDoorOrigin?: string;
   startingPoints: StartingPoint[];
   aliases: { alias: string; label: string; when: string }[];
@@ -331,7 +334,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 : "Start agent (applies saved definition)"}
             </Button>
           )}
-          {active && <ConversationControl name={definition.name} />}
+          {active && <ConversationControl name={definition.name} owner={p.owner} />}
           </CardContent>
         </Card>
       )}
@@ -737,6 +740,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                             capability={row.capability}
                             action={row.action || undefined}
                             level={row.level}
+                            canChange={p.owner}
                           />
                         ) : (
                           <span>
@@ -913,6 +917,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
       {editing && active && <AvatarEditor name={definition.name} role={definition.role ?? ""} initialVersion={p.initial?.avatarVersion} />}
       {editing && active && p.initial && (
         <DoorSetup
+          owner={p.owner}
           name={p.initial.definition.name}
           display={p.initial.definition.display ?? p.initial.definition.name}
           description={p.initial.definition.description}
@@ -973,7 +978,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
               Retire agent
             </Button>
           )}
-          <Button
+          {p.owner && <Button
             variant="outline"
             type="button"
             disabled={busy || uncertain || dirty}
@@ -983,8 +988,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
             }}
           >
             Delete agent…
-          </Button>
+          </Button>}
           </div>
+          {!p.owner && <p className="lares-muted">Only the owner can delete an agent.</p>}
           {dirty && (
             <p>
               Save your definition changes before changing the agent lifecycle.

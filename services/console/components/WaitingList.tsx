@@ -27,6 +27,8 @@ export interface WaitingListProps {
   readonly selectedRef?: string;
   readonly now: number;
   readonly onDecide: (input: { id: string; actionId: string }) => Promise<DecideResult>;
+  /** Said instead of the usual words when nothing is listed. For a person who is not the owner. */
+  readonly emptyNote?: string;
 }
 
 const REASON: Record<UnreadableKind, string> = {
@@ -89,7 +91,7 @@ interface Decided {
   readonly result: DecideResult;
 }
 
-export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: WaitingListProps) {
+export function WaitingList({ items, unreadable, selectedRef, now, onDecide, emptyNote }: WaitingListProps) {
   // A decided item drops out of the server's list on the next render; it stays here, with what came
   // back, until the page is reloaded — so the owner sees the result instead of a vanishing row.
   const [decided, setDecided] = useState<Record<string, Decided>>({});
@@ -135,7 +137,7 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
       ))}
       {shown.length === 0 ? (
         <EmptyState title="Nothing is waiting on you">
-          When an agent asks for your approval, or Notion or the shared notes propose a change, it shows up here.
+          {emptyNote ?? "When an agent asks for your approval, or Notion or the shared notes propose a change, it shows up here."}
         </EmptyState>
       ) : (
         <>

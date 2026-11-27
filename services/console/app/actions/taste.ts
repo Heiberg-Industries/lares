@@ -1,5 +1,4 @@
 "use server";
-import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 
 import { parseResolvedTakeoutCsv, parseTakeoutCsv } from "@lares/taste/takeout";
@@ -11,7 +10,7 @@ import { auditStoredPins } from "../../lib/pin-audit";
 import { metresBetween } from "@lares/taste/s2";
 import { derivePlaceName } from "../../lib/city-lookup";
 
-import { verify } from "../../lib/auth";
+import { actingAddress } from "../../lib/auth";
 import {
   assertDomain,
   deleteEntry,
@@ -25,7 +24,7 @@ import {
 // Every page is behind the session middleware, but a server action is its own entry point —
 // same belt-and-braces `requireUser` every other action file here uses (app/actions/voice.ts).
 async function requireUser(): Promise<string> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
+  const email = await actingAddress("admin");
   if (!email) throw new Error("unauthenticated");
   return email;
 }

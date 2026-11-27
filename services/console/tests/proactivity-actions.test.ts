@@ -13,7 +13,7 @@ vi.mock("../lib/db", () => ({
     }),
   },
 }));
-vi.mock("../lib/auth", () => ({ verify: vi.fn(async () => "owner@owner.example") }));
+vi.mock("../lib/auth", () => ({ actingAddress: vi.fn(async () => "owner@owner.example") }));
 vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: "c" }) })) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
@@ -198,19 +198,19 @@ describe("saveScheduleHours", () => {
 describe("authentication", () => {
   it("throws before any write when there is no session", async () => {
     const auth = await import("../lib/auth");
-    vi.mocked(auth.verify).mockResolvedValueOnce(null);
+    vi.mocked(auth.actingAddress).mockResolvedValueOnce(null);
     await expect(saveDnd({ agent: "*", dnd: true })).rejects.toThrow(/unauthenticated/);
     expect(writes()).toHaveLength(0);
   });
   it("throws before any write on saveBriefLanguage when there is no session", async () => {
     const auth = await import("../lib/auth");
-    vi.mocked(auth.verify).mockResolvedValueOnce(null);
+    vi.mocked(auth.actingAddress).mockResolvedValueOnce(null);
     await expect(saveBriefLanguage({ language: "nb" })).rejects.toThrow(/unauthenticated/);
     expect(briefWrites()).toHaveLength(0);
   });
   it("throws before any write on saveScheduleHours when there is no session", async () => {
     const auth = await import("../lib/auth");
-    vi.mocked(auth.verify).mockResolvedValueOnce(null);
+    vi.mocked(auth.actingAddress).mockResolvedValueOnce(null);
     await expect(saveScheduleHours({ schedule: "morning-brief", hours: [8] })).rejects.toThrow(/unauthenticated/);
     expect(scheduleWrites()).toHaveLength(0);
   });

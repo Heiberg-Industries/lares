@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({ accept: vi.fn(), actor: vi.fn(), keeper: vi.fn(), query: vi.fn() }));
 vi.mock("../app/actions/definition", () => ({ acceptOutsideDescriptions: mocks.accept }));
-vi.mock("../lib/credentials", () => ({ credentialActor: mocks.actor }));
+vi.mock("../lib/auth", () => ({ actingAddress: mocks.actor }));
 vi.mock("../lib/keeper-client", () => ({ keeper: mocks.keeper }));
 vi.mock("../lib/db", () => ({ pool: { query: mocks.query } }));
 

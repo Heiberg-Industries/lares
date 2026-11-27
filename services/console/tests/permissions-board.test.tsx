@@ -9,7 +9,7 @@ import { PermissionsBoard } from "../components/PermissionsBoard";
 // shows a switch only there — a switch on a read or plain-write integration saved a row no agent reads.
 describe("PermissionsBoard (agent page)", () => {
   const html = (scope: "read" | "write" | "write-with-confirm") => renderToStaticMarkup(
-    <PermissionsBoard detail={{ name: "helper", role: "assistant", status: "idle", capabilities: [{ name: "atlas", scope, defaultLevel: "gated" }] }} />,
+    <PermissionsBoard canChange={true} detail={{ name: "helper", role: "assistant", status: "idle", capabilities: [{ name: "atlas", scope, defaultLevel: "gated" }] }} />,
   );
   it("a write-with-confirm integration gets the switch", () => {
     expect(html("write-with-confirm")).toContain('aria-label="atlas permission"');

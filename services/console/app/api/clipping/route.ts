@@ -1,7 +1,7 @@
 import { withConsoleAdmission } from "../../../lib/admission-error";
 import { clippingActionInput } from '@lares/agent-kit/clipping-console';
 import { CREDENTIAL_SLOT, credentialGrantPreviewSchema } from '@lares/agent-kit/credential-lifecycle';
-import { credentialActor } from '../../../lib/credentials';
+import { actingAddress } from '../../../lib/auth';
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from '../../../lib/keeper-client';
 import {
   chiefOfStaffForSwitch, enqueueRequest, getClippingView, hasSavedSource, saveMapping, setChoice,
@@ -14,7 +14,7 @@ const response = (body: unknown, status = 200) => Response.json(body, { status, 
 const failed = (code: string, status: number) => response({ ok: false, code }, status);
 
 async function handleGET(req: Request): Promise<Response> {
-  const actor = await credentialActor();
+  const actor = await actingAddress("admin");
   if (!actor) return failed('sign-in-required', 401);
   if (new URL(req.url).search) return failed('invalid-request', 400);
   return response({ ok: true, view: await getClippingView() });
@@ -59,7 +59,7 @@ async function needsSource(): Promise<Response | null> {
 }
 
 async function handlePOST(req: Request): Promise<Response> {
-  const actor = await credentialActor();
+  const actor = await actingAddress("owner");
   if (!actor) return failed('sign-in-required', 401);
   if (!sameOrigin(req)) return failed('origin-refused', 403);
   let parsed;

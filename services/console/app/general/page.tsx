@@ -1,4 +1,4 @@
-import { requireConsolePage } from "../../lib/auth";
+import { requirePage } from "../../lib/auth";
 import { Notice, PageHeader, Page, Row, Rows } from "@lares/ui/patterns";
 import { Card, CardContent, CardHeader, CardTitle } from "@lares/ui/primitives/card";
 import { ModelsSection } from "../../components/ModelsSection";
@@ -10,7 +10,7 @@ import { getGatewayStatusView } from "../../lib/gateway-status";
 import { getProactivityView } from "../../lib/proactivity";
 export const dynamic = "force-dynamic";
 export default async function GeneralPage() {
-  await requireConsolePage();
+  await requirePage("owner");
   const [view, gateway, limit, agentSettings] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView(), getAgentSettingsView()]);
   return (
     <Page>

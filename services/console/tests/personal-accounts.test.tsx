@@ -4,7 +4,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 const m = vi.hoisted(() => ({ member: vi.fn(), owner: vi.fn(), list: vi.fn(), uses: vi.fn(), remove: vi.fn(), refresh: vi.fn(), agents: vi.fn() }));
-vi.mock("../lib/auth", () => ({ requireMember: m.member, isConsoleOwner: m.owner }));
+vi.mock("../lib/auth", () => ({ requirePage: m.member, mayUse: (member: unknown, level: string) => !!member && (level === "member" || m.owner(member)),
+  consoleLevel: (member: unknown) => !member ? null : m.owner(member) ? "owner" : "member" }));
 vi.mock("../lib/db", () => ({ pool: {} }));
 vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { list = m.list; } }));
 vi.mock("../lib/agents", () => ({ listAgents: m.agents }));
@@ -180,7 +181,7 @@ it("says so when the accounts cannot be read, instead of an empty list", async (
 });
 
 it("moves the personal accounts off the membership page, leaving a link", async () => {
-  render(await MembershipPage());
+  render(await MembershipPage({ searchParams: Promise.resolve({}) }));
   expect(m.list).not.toHaveBeenCalled();
   expect(screen.getByRole("link", { name: "Your accounts" }).getAttribute("href")).toBe("/your-accounts");
   expect(document.body.textContent).toContain("Private chat is available");

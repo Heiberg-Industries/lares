@@ -5,7 +5,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderToStaticMarkup } from "react-dom/server";
 const m = vi.hoisted(() => ({ rows: vi.fn(), credential: vi.fn(), outside: vi.fn(), guard: vi.fn(), gateway: vi.fn() }));
-vi.mock("../lib/auth", () => ({ requireConsolePage: m.guard }));
+vi.mock("../lib/auth", () => ({ requirePage: m.guard }));
 vi.mock("../lib/connections", () => ({ getConnectionRows: m.rows }));
 vi.mock("../lib/credentials", () => ({ getCredentialView: m.credential }));
 vi.mock("../lib/outside-tools", () => ({ anyOutsideToolsInUse: m.outside }));

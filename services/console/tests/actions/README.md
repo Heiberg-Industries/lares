@@ -30,16 +30,20 @@ Then read the diff of `action-inventory.json`. A row that appears, disappears or
 - `kind`: `page`, `layout` (the shell around every page), `action` (a `"use server"` function) or `route` (one row per HTTP method).
 - `see`: who may open it. For an action, the most open page that reaches it (`none` if no page does).
 - `act`: who may do something. For an action or a route, its own guard. For a page, what the actions it reaches allow, never more than `see` allows.
-- Values: `owner` (only the designated owner), `member` (any signed-in member), `public` (no session; the row says in `reason` what protects it instead), `none` (nothing to act on), `unknown` (could not be read).
-- `ownerExtras`: a member passes the guard, but part of it is owner-only (a section of the page, or one branch of the action).
-- `guards`: the functions in `lib/auth.ts` the guard goes through.
+- Values: `owner` (only the designated owner), `admin` (the owner, or a person the owner made an admin), `member` (any signed-in member), `public` (no session; the row says in `reason` what protects it instead), `none` (nothing to act on), `unknown` (could not be read).
+- `ownerExtras`: someone below the owner passes the guard, but part of it is owner-only (a section of the page, or one branch of the action). `adminExtras`: the same for a part that needs an admin.
+- `guards`: the guards of `lib/auth.ts` it goes through: `requirePage`, `requireAction`, `actingAddress`, `mayUse`, or a session lookup that is checked.
 - `actions`, `routes`: what a page reaches. `usedBy`: which pages reach an action or route.
 - `source`: `derived` (read from the code), `override` (resolved by `overrides.json`), `unknown`.
 - `changesState` (routes): any method other than GET, plus the GET handlers named in `overrides.json`.
 
 ## How the guard is derived
 
-The generator follows each page, action and route into the guard calls it makes, down into `lib/auth.ts`. A guard counts only if it really refuses: a helper that throws or redirects, or a result that is checked and then ends the function. A lookup that is never checked does not count, and neither does a call whose failure is swallowed (`.catch`, `Promise.allSettled`). If the strictest guard it finds is the owner check the row is `owner`; if it is only a signed-in-member check the row is `member`. If it finds no guard the row is `unknown`.
+The console has one function that decides who may use what: `mayUse(person, level)` in `lib/auth.ts`, with three levels: `owner`, `admin`, `member`. Pages, actions and routes reach it through four guards, and each call writes its level out as a word: `requirePage("admin")`, `requireAction("owner")`, `actingAddress("admin")`, `mayUse(person, "owner")`.
+
+The generator follows each page, action and route to those calls and reads the word. A guard counts only if it really refuses: `requirePage` and `requireAction` throw or redirect by themselves; `actingAddress` returns nothing for a refused person, so its result has to be checked and end the function; `mayUse` counts where a "no" ends the function. A level that is not written out as a plain word cannot be read and counts as no guard. A call whose failure is swallowed (`.catch`, `Promise.allSettled`) does not count. The strictest guard found is the row's level. If none is found the row is `unknown`.
+
+The generator's table of guards (`AUTH_GUARDS` in `generate.ts`) says how each one refuses. The test runs the real `lib/auth.ts` against that table for all three levels, and fails if `lib/auth.ts` exports a function the table does not know.
 
 "Reaches" means imports: a page reaches an action when the page, or a component or library file it imports, imports that action. It does not mean a person can click it. Route use is found from the path strings in those files.
 
@@ -72,12 +76,21 @@ Removing or loosening any of these is a change to who can reach the console, and
 
 The test fails. A person reads the code, and either changes it so the guard can be read, or adds a line to `overrides.json` under `guards` with the level and a one-line reason. The test also fails on an override that is no longer needed, so the table stays small.
 
-## Who may reach a page
+## Who may use what
 
-The owner decided: every page except chat and membership stays owner-only for now. The test fails when any other page can be reached by someone who is not the owner. Three short lists are allowed in `overrides.json`, each entry with a reason:
+The owner decided three levels. The lists are written out at the top of `action-inventory.test.ts`, and the test fails when the code and the lists disagree in either direction:
 
-- `publicByDesign`: pages a signed-out person must reach (sign-in, invitation).
-- `awaitingOwnerDecision`: pages members can reach today that the owner has not yet ruled on. Each should end up either owner-only or moved into the rule.
+- `MEMBER_PAGES`: Chat, Your accounts, Your membership. A member is exactly as before the admin level existed.
+- `ADMIN_PAGES`: the shared pages an admin may also open.
+- `OWNER_PAGES`: Members, Backups, General.
+- `MEMBER_ACTIONS`: the actions any member may call. Nothing that was owner-only may appear here.
+- `OWNER_ACTIONS`: the actions that stay with the owner, each with its reason. Many sit on a page an admin may open.
+- Every other action is `admin`.
+- `ROUTE_LEVELS`: every route that uses a session, with its level.
+
+The default is owner: a new page, action or route that nobody placed in a list fails the test. Opening something to an admin or a member is a line added there on purpose. `publicByDesign` in `overrides.json` names the pages a signed-out person must reach (sign-in, invitation).
+
+`tests/console-levels.test.tsx` checks the same thing by running the code: it calls every page, action and route in the inventory as the owner, an admin, a member and a person with an unknown role, and fails if anyone below the level gets in or anything is read for them.
 
 ## Change-over rule for the redesign
 

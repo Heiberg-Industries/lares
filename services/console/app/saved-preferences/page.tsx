@@ -1,6 +1,6 @@
 import { Input } from "@lares/ui/primitives/input";
 import { Select } from "@lares/ui/primitives/select";
-import { requireConsolePage } from "../../lib/auth";
+import { requirePage } from "../../lib/auth";
 import { EmptyState, Field, Notice, PageHeader, StatusBadge, Page } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@lares/ui/primitives/card";
@@ -112,7 +112,7 @@ export default async function TastePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireConsolePage();
+  await requirePage("admin");
   const filters = readFilters(await searchParams);
   const store = listAll();
   const everything = TASTE_DOMAINS.flatMap((d) => store[d]);

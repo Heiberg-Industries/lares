@@ -15,7 +15,7 @@ vi.mock("../lib/db", () => ({
     }),
   },
 }));
-vi.mock("../lib/auth", () => ({ verify: vi.fn(async () => "owner@owner.example") }));
+vi.mock("../lib/auth", () => ({ actingAddress: vi.fn(async () => "owner@owner.example") }));
 vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: "c" }) })) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("../lib/keeper-client", async (importOriginal) => ({

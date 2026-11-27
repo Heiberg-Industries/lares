@@ -5,7 +5,7 @@ const m = vi.hoisted(() => ({
   guard: vi.fn(), rows: vi.fn(), board: vi.fn(), credential: vi.fn(), clipping: vi.fn(), sync: vi.fn(), proposals: vi.fn(), meetings: vi.fn(), people: vi.fn(),
   inUse: vi.fn(), evidence: vi.fn(), gateway: vi.fn(), agents: vi.fn(),
 }));
-vi.mock("../lib/auth", () => ({ requireConsolePage: m.guard }));
+vi.mock("../lib/auth", () => ({ requirePage: m.guard, mayUse: (member: unknown, _level: string) => !!member }));
 vi.mock("next/navigation", () => ({ notFound: () => { throw new Error("NEXT_NOT_FOUND"); } }));
 vi.mock("../lib/connections", () => ({ getConnectionRows: m.rows }));
 vi.mock("../lib/board", () => ({ getBoardRows: m.board }));
@@ -42,7 +42,7 @@ const board = (capability: string, over: Partial<BoardRowDTO> = {}): BoardRowDTO
 const show = async (id: string) => renderToStaticMarkup(await IntegrationPage({ params: Promise.resolve({ id }) }));
 let rows: ConnectionRowDTO[];
 beforeEach(() => {
-  vi.clearAllMocks(); m.guard.mockResolvedValue(undefined);
+  vi.clearAllMocks(); m.guard.mockResolvedValue({ id: "owner-1" });
   rows = catalogue.map(id => row(id));
   m.rows.mockImplementation(async () => rows);
   m.board.mockResolvedValue([board("twenty"), board("vault", { action: "private", actionLabel: "Private notes" }), board("gmail"), board("deadline", { scope: "read", controllable: false })]);
@@ -57,7 +57,7 @@ beforeEach(() => {
 it("refuses a non-owner the way the grid does, and finds no page for an unknown or personal id", async () => {
   m.guard.mockRejectedValue(new Error("NEXT_REDIRECT"));
   await expect(show("twenty")).rejects.toThrow("NEXT_REDIRECT");
-  m.guard.mockResolvedValue(undefined);
+  m.guard.mockResolvedValue({ id: "owner-1" });
   for (const id of ["nope", "google", "microsoft", "details"]) await expect(show(id), id).rejects.toThrow("NEXT_NOT_FOUND");
   rows = rows.filter(r => r.connectionId !== "karakeep");
   await expect(show("karakeep")).rejects.toThrow("NEXT_NOT_FOUND");

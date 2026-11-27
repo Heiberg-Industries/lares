@@ -103,7 +103,19 @@ export const COMING: { group: string; label: string; Icon: Icon }[] = [
 /** Under the signed-in person's name, for everyone. */
 export const MEMBERSHIP: MenuPage = { href: "/your-membership", label: "Your membership", Icon: UserRound };
 
-/** What a member who is not the owner sees. */
+/** The pages only the owner may open. An admin's menu is the owner's without them. The pages decide
+    for themselves who gets in (lib/auth.ts); a test keeps this list equal to what they say. */
+export const OWNER_ONLY_PAGES = ["/members", "/general", "/backups"];
+
+/** What an admin sees: every page they may use, in the owner's order. A group left empty is dropped. */
+export const ADMIN_MENU: MenuGroup[] = OWNER_MENU
+  .map((group) => ({ ...group, pages: group.pages.filter((page) => !OWNER_ONLY_PAGES.includes(page.href)) }))
+  .filter((group) => group.pages.length > 0);
+
+/** Which menu a person gets. The console works it out from who is signed in (lib/auth.ts, consoleLevel). */
+export type MenuLevel = "owner" | "admin" | "member";
+
+/** What a member who is neither the owner nor an admin sees. */
 export const MEMBER_MENU: MenuGroup[] = [
   { label: null, pages: [OWNER_MENU[0]!.pages[2]!] },
   { label: "Connections", pages: [OWNER_MENU[2]!.pages[0]!] },
@@ -119,11 +131,12 @@ export function currentHref(pathname: string, pages: MenuPage[]): string | null 
   return best;
 }
 
-export function Nav({ owner, person }: { owner: boolean; person?: string | null }) {
+export function Nav({ level, person }: { level: MenuLevel; person?: string | null }) {
+  const owner = level === "owner";
   const pathname = usePathname();
   const theme = useConsoleTheme();
   const [open, setOpen] = useState(false);
-  const menu = owner ? OWNER_MENU : MEMBER_MENU;
+  const menu = owner ? OWNER_MENU : level === "admin" ? ADMIN_MENU : MEMBER_MENU;
   const current = currentHref(pathname, [...menu.flatMap((group) => group.pages), MEMBERSHIP]);
   const close = () => setOpen(false);
   const page = ({ href, label, Icon }: MenuPage) => (
@@ -137,7 +150,7 @@ export function Nav({ owner, person }: { owner: boolean; person?: string | null 
       </SidebarMenuButton>
     </SidebarMenuItem>
   );
-  const home = owner ? "/" : "/chat";
+  const home = level === "member" ? "/chat" : "/";
   const contents = (
     <>
       <SidebarHeader>

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const mocks = vi.hoisted(() => ({ cookies: vi.fn(), sessionMember: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn(), listAgents: vi.fn(), requireConsoleMember: vi.fn() }));
+const mocks = vi.hoisted(() => ({ cookies: vi.fn(), memberAuditAddress: vi.fn(), keeper: vi.fn(), listAgents: vi.fn(), requireAction: vi.fn() }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
-vi.mock("../lib/auth", () => ({ sessionMember: mocks.sessionMember, memberAuditAddress: mocks.memberAuditAddress, requireConsoleMember: mocks.requireConsoleMember }));
+vi.mock("../lib/auth", () => ({ memberAuditAddress: mocks.memberAuditAddress, requireAction: mocks.requireAction,
+  mayUse: (member: { level?: string } | null, level: string) => level !== "owner" || member?.level === "owner" }));
 vi.mock("../lib/agents", () => ({ listAgents: mocks.listAgents }));
 vi.mock("../lib/keeper-client", () => ({
   keeper: mocks.keeper,
@@ -34,9 +35,8 @@ const review = { descriptor: { version: 1, connectionName: "rates", scope: "writ
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.cookies.mockResolvedValue({ get: () => ({ value: session }) });
-  mocks.sessionMember.mockResolvedValue({ id: "member-id" });
   mocks.memberAuditAddress.mockResolvedValue(actor);
-  mocks.requireConsoleMember.mockResolvedValue({ id: "member-id" });
+  mocks.requireAction.mockResolvedValue({ id: "member-id", level: "owner" });
 });
 const calls = () => mocks.keeper.mock.calls.map(c => c[0] as string);
 
@@ -103,7 +103,7 @@ describe("connect: declare", () => {
   it("refuses malformed input without calling the keeper, and asks for a new sign-in without a session", async () => {
     expect((await connectDeclare({ agent: "worker", provisional: false, connection: { ...connection, credential: "x" } })).ok).toBe(false);
     expect(mocks.keeper).not.toHaveBeenCalled();
-    mocks.sessionMember.mockResolvedValueOnce(undefined);
+    mocks.cookies.mockResolvedValueOnce({ get: () => undefined });
     expect(await connectDeclare({ agent: "worker", provisional: false, connection })).toMatchObject({ ok: false, message: expect.stringMatching(/Sign in again/) });
   });
 });
@@ -209,6 +209,12 @@ describe("connect: switch on run without asking", () => {
     const result = await connectSwitchOnTrust({ agent: "worker", name: "rates", tools: ["find_rate"] });
     expect(result).toMatchObject({ ok: false, message: expect.stringMatching(/has not read its description/) });
   });
+  it("is the owner's alone: it asks for the owner level before anything else", async () => {
+    mocks.requireAction.mockRejectedValueOnce(new Error("Console owner admission required"));
+    await expect(connectSwitchOnTrust({ agent: "worker", name: "rates", tools: ["find_rate"] })).rejects.toThrow("owner admission required");
+    expect(mocks.requireAction).toHaveBeenCalledWith("owner");
+    expect(mocks.keeper).not.toHaveBeenCalled();
+  });
 });
 
 const trust = (tool: string) => ({ tool, pin: h("f"), by: "owner@example.test", at: "2026-11-25T00:00:00.000Z" });
@@ -240,6 +246,27 @@ describe("connect: set one agent's tools from the connector page", () => {
     mocks.keeper.mockResolvedValueOnce(state({ connections: [withTools(["find_rate"], ["find_rate"])] }));
     expect(await connectSetTools({ agent: "worker", name: "rates", tools: [{ name: "find_rate", allowed: false, kind: "read", free: false }] }))
       .toMatchObject({ ok: false, message: expect.stringContaining("at least one tool") });
+  });
+});
+
+describe("connect: an admin sets tools but cannot let a new one run without asking", () => {
+  const withTools = (allow: string[], read: string[], trusted: unknown[] = []) => ({ ...declared(allow, read), tools: { allow, read, trusted } });
+  beforeEach(() => mocks.requireAction.mockResolvedValue({ id: "admin-id", level: "admin" }));
+  it("refuses a new switch and saves nothing", async () => {
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [withTools(["find_rate"], ["find_rate"])] }));
+    const result = await connectSetTools({ agent: "worker", name: "rates", tools: [{ name: "find_rate", allowed: true, kind: "read", free: true }] });
+    expect(result).toMatchObject({ ok: false, message: expect.stringContaining("Only the owner can let a tool run without asking") });
+    expect(calls()).toEqual(["outside.connections.get"]);
+  });
+  it("keeps a switch the owner set, may take one off, and may change which tools are allowed", async () => {
+    const on = withTools(["find_rate", "list_rates"], ["find_rate", "list_rates"], [trust("find_rate"), trust("list_rates")]);
+    mocks.keeper.mockResolvedValueOnce(state({ connections: [on] })).mockResolvedValueOnce(state({ connections: [withTools(["find_rate", "list_rates", "set_rate"], ["find_rate", "list_rates"], [trust("find_rate")])] }));
+    const result = await connectSetTools({ agent: "worker", name: "rates", tools: [
+      { name: "find_rate", allowed: true, kind: "read", free: true }, { name: "list_rates", allowed: true, kind: "read", free: false }, { name: "set_rate", allowed: true, kind: "change", free: false }] });
+    expect(result).toMatchObject({ ok: true });
+    const sent = (mocks.keeper.mock.calls[1]![1] as { connections: { tools: { allow: string[]; trusted: { tool: string }[] } }[] }).connections[0]!.tools;
+    expect(sent.trusted.map(t => t.tool)).toEqual(["find_rate"]);
+    expect(sent.allow).toEqual(["find_rate", "list_rates", "set_rate"]);
   });
 });
 

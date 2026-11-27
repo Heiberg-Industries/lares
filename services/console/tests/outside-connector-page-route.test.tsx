@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 const m = vi.hoisted(() => ({ uses: vi.fn(), list: vi.fn() }));
-vi.mock("../lib/auth", () => ({ requireConsolePage: async () => ({ id: "m" }), isConsoleOwner: () => true }));
+vi.mock("../lib/auth", () => ({ requirePage: async () => ({ id: "m" }), mayUse: (member: unknown, _level: string) => !!member }));
 vi.mock("next/navigation", () => ({ notFound: () => { throw new Error("not found"); }, useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
 vi.mock("../app/actions/outside-connectors", () => ({ listConnectors: m.list, addConnector: vi.fn(), checkConnector: vi.fn(), renameConnector: vi.fn(), removeConnector: vi.fn(), removeFromAgent: vi.fn() }));
 vi.mock("../app/actions/outside-connect", () => ({}));

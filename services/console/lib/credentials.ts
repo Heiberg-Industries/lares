@@ -1,13 +1,9 @@
-import { cookies } from 'next/headers';
 import { CREDENTIAL_SLOT, credentialStatusSchema, type CredentialStatus } from '@lares/agent-kit/credential-lifecycle';
-import { verify } from './auth';
+import { actingAddress } from './auth';
 import { keeper, KeeperRefusedError } from './keeper-client';
 
 export type CredentialView = { kind: 'status'; status: CredentialStatus } |
   { kind: 'unavailable' | 'administrator-required' | 'sign-in-required' };
-export async function credentialActor(): Promise<string | null> {
-  return await verify((await cookies()).get('lares_session')?.value);
-}
 /** Keeper's explicit root-configured administrator is the sole authority. No provider read. */
 export async function credentialViewFor(actor: string): Promise<CredentialView> {
   try {
@@ -18,6 +14,8 @@ export async function credentialViewFor(actor: string): Promise<CredentialView> 
   }
 }
 export async function getCredentialView(): Promise<CredentialView> {
-  const actor = await credentialActor();
+  // An admin may open Integrations and sees the state; the keeper answers its administrator only,
+  // so for anyone else this comes back as 'administrator-required' and the key cannot be changed.
+  const actor = await actingAddress("admin");
   return actor ? credentialViewFor(actor) : { kind: 'sign-in-required' };
 }

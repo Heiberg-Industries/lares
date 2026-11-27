@@ -1,6 +1,6 @@
 "use server";
 import { cookies } from 'next/headers';
-import { memberAuditAddress,sessionMember } from '../../lib/auth';
+import { mayUse,memberAuditAddress,signedInMember } from '../../lib/auth';
 import { keeper,KeeperRefusedError } from '../../lib/keeper-client';
 import { keeperReason } from '../../lib/keeper-reason';
 import { PgAccountStore } from '@lares/agent-kit/account-store';
@@ -11,8 +11,8 @@ const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{
 const hash=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const name=(v:unknown):v is string=>typeof v==='string'&&/^[a-z][a-z0-9-]{1,30}$/.test(v);
 async function admitted(){
-  const member=await sessionMember((await cookies()).get('lares_session')?.value),token=(await cookies()).get('lares_session')?.value;
-  if(!token||!member)throw new Error('Sign in again to manage private metadata access.');
+  const member=await signedInMember(),token=(await cookies()).get('lares_session')?.value;
+  if(!token||!mayUse(member,'member'))throw new Error('Sign in again to manage private metadata access.');
   const audit=await memberAuditAddress(member.id);if(!audit)throw new Error('Sign in again to manage private metadata access.');
   return {sessionToken:token,audit,member};
 }

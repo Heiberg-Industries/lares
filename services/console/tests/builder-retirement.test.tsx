@@ -33,6 +33,7 @@ function setup() {
   const points = startingPoints();
   render(
     <DefinitionForm
+      owner
       startingPoints={points}
       aliases={modelAliases("example")}
       timing={{}}

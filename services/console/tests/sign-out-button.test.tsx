@@ -21,7 +21,7 @@ afterEach(cleanup);
 
 describe("sidebar sign out", () => {
   it("is a POST form button, not a link", () => {
-    render(<Nav owner={true} />);
+    render(<Nav level="owner" />);
     const button = screen.getAllByRole("button", { name: "Sign out" })[0];
     const form = button.closest("form")!;
     expect(form.getAttribute("method")).toBe("post");
@@ -31,7 +31,7 @@ describe("sidebar sign out", () => {
 });
 
 it('shows only private chat, your accounts and your membership to another member and never mounts owner inbox polling',()=>{
-  inbox.mounted.mockClear();render(<Nav owner={false} />);
+  inbox.mounted.mockClear();render(<Nav level="member" />);
   expect(screen.getAllByRole('link',{name:'Chat'}).length).toBeGreaterThan(0);
   expect(screen.getAllByRole('link',{name:'Your membership'}).length).toBeGreaterThan(0);
   expect(screen.getAllByRole('link',{name:'Your accounts'}).length).toBeGreaterThan(0);

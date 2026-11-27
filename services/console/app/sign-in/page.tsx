@@ -1,5 +1,5 @@
 import { DoorLayout } from "../../components/DoorLayout";
-import { signedInMember, isConsoleOwner, members } from "../../lib/auth";
+import { signedInMember, mayUse, members } from "../../lib/auth";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { safeNext } from "../../lib/safe-next";
@@ -21,12 +21,12 @@ const ERRORS: Record<string, string> = {
 export default async function SignIn({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const q = await searchParams;
   const member = await signedInMember();
-  if (member) redirect(isConsoleOwner(member) ? safeNext(q.next) : "/your-membership");
+  if (member) redirect(mayUse(member, "admin") ? safeNext(q.next) : "/your-membership");
   const receipt = await openOwnerDiscoveryReceipt((await cookies()).get(OWNER_DISCOVERY_COOKIE)?.value);
   const ownerId = process.env.AGENT_OWNER_USER_ID?.trim();
   const originMatches = !!receipt && receipt.installationOrigin === new URL(consoleRedirect()).origin;
   const owner = originMatches && ownerId ? await members.currentMember(ownerId) : undefined;
-  const showOwnerSetup = !!receipt && originMatches && !!owner && isConsoleOwner(owner) &&
+  const showOwnerSetup = !!receipt && originMatches && mayUse(owner, "owner") &&
     await members.firstOwnerBootstrapEligible(ownerId!, owner.organisationId);
   const next = safeNext(q.next);
   const error = typeof q.error === "string" ? (ERRORS[q.error] ?? ERRORS.failed) : null;

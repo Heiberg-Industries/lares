@@ -3,7 +3,7 @@
  * so `lib/waiting.ts` is tested with fakes, and out of the `"use server"` action file, where every
  * export would become a callable endpoint.
  */
-import { signedInMember, isConsoleOwner } from "./auth";
+import { signedInMember, mayUse } from "./auth";
 import { pool } from "./db";
 import { CREDENTIAL_SLOT } from "@lares/agent-kit/credential-lifecycle";
 import { keeper } from "./keeper-client";
@@ -12,7 +12,8 @@ import type { WaitingDeps } from "./waiting";
 
 export const waitingDeps: WaitingDeps = {
   connect: () => pool.connect(),
-  signedInMember: async () => { const member = await signedInMember(); return member && isConsoleOwner(member) ? member : null; },
+  // Reading or answering a Slack or Telegram conversation from the console stays with the owner.
+  signedInMember: async () => { const member = await signedInMember(); return mayUse(member, "owner") ? member : null; },
   query: (sql, values) => {
     // Built as a variable, as app/api/chat/[name]/[...path]/route.ts does: `pg`'s published
     // QueryConfig type does not name `query_timeout`, which its runtime honours.

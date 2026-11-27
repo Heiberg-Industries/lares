@@ -8,7 +8,8 @@ vi.mock('node:fs/promises',async importOriginal=>{
   return {...actual,chown:async()=>{},chmod:async()=>{}};
 });
 vi.mock('next/headers',()=>({cookies:async()=>({get:()=>({value:mocks.cookie()})})}));
-vi.mock('../lib/auth',()=>({sessionMember:mocks.member,memberAuditAddress:mocks.auditAddress}));
+// signedInMember reads the session cookie itself; the stand-in does the same.
+vi.mock('../lib/auth',()=>({signedInMember:async()=>mocks.member(mocks.cookie()),mayUse:(member:unknown,level:string)=>!!member&&level==='member',memberAuditAddress:mocks.auditAddress}));
 import { registerAction,resetActions,type AuditRecord } from '../../keeper/lib/actions.js';
 import { registerHumanOutsideDiscoveryActions } from '../../keeper/lib/outside-discovery-actions.js';
 import { serve } from '../../keeper/lib/socket-server.js';

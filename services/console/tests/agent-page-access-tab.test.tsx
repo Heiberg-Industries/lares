@@ -15,7 +15,7 @@ const agent = { name: "helper", displayName: "Helper", role: "assistant", skills
 
 describe("agent page", () => {
   it("keeps who may use the agent on the Access tab, not under every tab", async () => {
-    render(<AgentDetail agent={agent} board={{ available: true, value: [] }} events={{ available: false }} schedules={{ available: true, value: [] }} accessSettings={<section>Sharing settings</section>} />);
+    render(<AgentDetail owner={true} agent={agent} board={{ available: true, value: [] }} events={{ available: false }} schedules={{ available: true, value: [] }} accessSettings={<section>Sharing settings</section>} />);
     expect(screen.queryByText("Sharing settings")).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "Access" }));
     expect(screen.getByText("Sharing settings")).toBeTruthy();

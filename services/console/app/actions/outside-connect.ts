@@ -11,7 +11,7 @@
 import { cookies } from "next/headers";
 import { z } from "zod";
 import { outsideToolSchema, type OutsideToolDeclaration } from "@lares/agent-kit/definition";
-import { memberAuditAddress, requireConsoleMember, sessionMember } from "../../lib/auth";
+import { mayUse, memberAuditAddress, requireAction } from "../../lib/auth";
 import { listAgents } from "../../lib/agents";
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
 import { keeperReason } from "../../lib/keeper-reason";
@@ -47,10 +47,11 @@ const TIMEOUT = { timeoutMs: 90_000 };
 const fail = (message: string, retryable = true): { ok: false; message: string; retryable: boolean } => ({ ok: false, message, retryable });
 
 async function admitted(): Promise<{ sessionToken: string; actor: string }> {
+  const member = await requireAction("admin");
   const sessionToken = (await cookies()).get("lares_session")?.value;
-  const member = await sessionMember(sessionToken);
-  const actor = member ? await memberAuditAddress(member.id) : undefined;
-  if (!sessionToken || !member || !actor) throw new Error("Sign in again to connect an outside tool.");
+  // The person's own address: an admin's change is recorded as the admin's.
+  const actor = await memberAuditAddress(member.id);
+  if (!sessionToken || !actor) throw new Error("Sign in again to connect an outside tool.");
   return { sessionToken, actor };
 }
 
@@ -76,7 +77,7 @@ function declarationOf(c: z.infer<typeof connectionSchema>): OutsideToolDeclarat
 
 /** Agents the owner can tick. The keeper decides, per agent, whether the member may edit it. */
 export async function connectListAgents(): Promise<ConnectStep<{ name: string; displayName: string }[]>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   return step("The agent list could not be read.", async () => (await listAgents({ strict: true })).map(a => ({ name: a.name, displayName: a.displayName })));
 }
 
@@ -86,7 +87,7 @@ export async function connectListAgents(): Promise<ConnectStep<{ name: string; d
  * what it offers; it is replaced by the owner's chosen tools before anything is reviewed or activated.
  */
 export async function connectDeclare(input: unknown): Promise<ConnectStep<ConnectDeclared>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const parsed = z.strictObject({ agent: nameSchema, connection: connectionSchema, provisional: z.boolean(), applyNow: z.boolean().optional(), widen: z.boolean().optional() }).safeParse(input);
   if (!parsed.success) return fail("The connection details are not valid. Check the address, the name and the tool list.");
   const { agent, connection, provisional } = parsed.data, applyNow = parsed.data.applyNow !== false, widen = parsed.data.widen === true;
@@ -138,7 +139,7 @@ function canonical(value: unknown): string {
  * is lost on the way, the saved request is inspected once and never sent again.
  */
 export async function connectLookUpTools(input: { agent: string; name: string; credential: string }): Promise<ConnectStep<{ identity: ConnectIdentity; serverName: string; tools: ConnectTool[] }>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, credential: z.string().min(1).max(4096) }).safeParse(input);
   if (!parsed.success || Buffer.byteLength(parsed.data.credential) > 4096) return fail("The token is empty or too long.");
   const { agent, name, credential } = parsed.data;
@@ -173,7 +174,7 @@ export async function connectLookUpTools(input: { agent: string; name: string; c
  * step stops before anything is recorded, so the owner never accepts text they did not read.
  */
 export async function connectReviewAndStage(input: { identity: ConnectIdentity; seen?: ConnectTool[] }): Promise<ConnectStep<OutsidePendingApplyDto>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const parsed = z.strictObject({ identity: identitySchema, seen: z.array(z.unknown()).max(200).optional() }).safeParse(input);
   if (!parsed.success) return fail("The connection details are not valid. Start again.");
   const { identity } = parsed.data;
@@ -209,7 +210,7 @@ export async function connectReviewAndStage(input: { identity: ConnectIdentity; 
 
 /** Makes the staged credential the active one in the keeper's custody. */
 export async function connectActivateCredential(input: { staged: OutsidePendingApplyDto }): Promise<ConnectStep<{ credentialRevision: number }>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const staged = z.strictObject({ accountId: uuid, agentName: nameSchema, connectionName: nameSchema, requestId: uuid, claimOperationId: uuid, publicationId: uuid, acceptanceId: uuid,
     expectedGeneration: z.number().int().positive(), expectedCandidateRevision: z.number().int().positive().nullable(), expectedConsentGeneration: z.number().int().positive(),
     expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/), expectedAccessRevision: z.number().int().positive(), expectedPublicationHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -226,7 +227,7 @@ export async function connectActivateCredential(input: { staged: OutsidePendingA
 
 /** Applies the agent's saved connection declarations if any are waiting. */
 export async function connectApplyAgent(input: { agent: string }): Promise<ConnectStep<{ applied: boolean }>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const agent = nameSchema.safeParse(input.agent);
   if (!agent.success) return fail("The agent name is not valid.");
   return step("The agent could not be updated.", async (who) => {
@@ -243,7 +244,7 @@ export async function connectApplyAgent(input: { agent: string }): Promise<Conne
  * change. A token already held in custody is not touched; stopping its use is a separate, explicit control.
  */
 export async function connectRemoveDeclaration(input: { agent: string; name: string }): Promise<ConnectStep<{ removed: boolean }>> {
-  await requireConsoleMember();
+  await requireAction("admin");
   const parsed = z.strictObject({ agent: nameSchema, name: nameSchema }).safeParse(input);
   if (!parsed.success) return fail("The connection name is not valid.");
   const { agent, name } = parsed.data;
@@ -264,7 +265,9 @@ export async function connectRemoveDeclaration(input: { agent: string; name: str
  * who could not approve the agent's outside calls. A refusal is shown in the keeper's own words.
  */
 export async function connectSwitchOnTrust(input: { agent: string; name: string; tools: string[] }): Promise<ConnectStep<{ switchedOn: string[]; switchedOff: string[] }>> {
-  await requireConsoleMember();
+  // Whether an agent asks before it acts is the owner's decision alone. An admin may connect a tool to an agent they can edit, and
+  // could name any server: letting them also switch its lookups to run without asking would send what the agent reads to that server.
+  await requireAction("owner");
   const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, tools: z.array(z.string().min(1)).max(200) }).safeParse(input);
   if (!parsed.success) return fail("The tool list is not valid.");
   const { agent, name, tools } = parsed.data;
@@ -292,7 +295,7 @@ export async function connectSwitchOnTrust(input: { agent: string; name: string;
  * returned in `conflicts` with everything else saved; the owner's explicit answer comes back as `widen`.
  */
 export async function connectSetTools(input: unknown): Promise<ConnectStep<{ conflicts: string[]; droppedTrust: string[] }>> {
-  await requireConsoleMember();
+  const member = await requireAction("admin");
   const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, widen: z.boolean().optional(),
     tools: z.array(z.strictObject({ name: z.string().min(1), allowed: z.boolean(), kind: z.enum(["read", "change"]), free: z.boolean() })).max(200) }).safeParse(input);
   if (!parsed.success) return fail("The tool list is not valid.");
@@ -307,6 +310,9 @@ export async function connectSetTools(input: unknown): Promise<ConnectStep<{ con
     const wanted = tools.filter(t => t.allowed && t.kind === "read" && t.free).map(t => t.name);
     const kept = (current.tools.trusted ?? []).filter(k => wanted.includes(k.tool));
     const added = wanted.filter(t => !kept.some(k => k.tool === t)).map(tool => ({ tool, pin: BIND_TO_PINNED, by: "pending", at: new Date(0).toISOString() }));
+    // A NEW "run without asking" switch is the owner's alone (see connectSwitchOnTrust). An admin's save keeps the switches that are on
+    // and may take one off; nothing is saved when it asks for a new one.
+    if (added.length > 0 && !mayUse(member, "owner")) throw new StepFailure("Only the owner can let a tool run without asking. Switch that off and save again, or ask the owner.", false);
     const next = { ...current, tools: { ...current.tools, allow, read: read_, trusted: [...kept, ...added] } };
     const connections = [...state.connections.filter(c => c.name !== name), next];
     const saved = stateSchema.parse(await keeper<unknown>("outside.connections.save",
@@ -327,7 +333,7 @@ export async function connectSetTools(input: unknown): Promise<ConnectStep<{ con
  * applies the saved change like every other connection edit. A refusal comes back in the keeper's own words.
  */
 export async function connectSetDanger(input: unknown): Promise<ConnectStep<{ on: boolean }>> {
-  await requireConsoleMember();
+  await requireAction("owner");
   const parsed = z.strictObject({ agent: nameSchema, name: nameSchema, tool: z.string().min(1).max(200), on: z.boolean(), typedName: z.string().max(200) }).safeParse(input);
   if (!parsed.success) return fail("That request is not valid.");
   const { agent, name, tool, on, typedName } = parsed.data;

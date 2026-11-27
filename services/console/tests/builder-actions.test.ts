@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(()=>({keeper:vi.fn(),verify:vi.fn(),cookies:vi.fn()}));
+const mocks = vi.hoisted(()=>({keeper:vi.fn(),actingAddress:vi.fn(),cookies:vi.fn()}));
 vi.mock('next/headers',()=>({cookies:mocks.cookies}));
-vi.mock('../lib/auth',()=>({verify:mocks.verify}));
+vi.mock('../lib/auth',()=>({actingAddress:mocks.actingAddress}));
 vi.mock('../lib/keeper-client',async(importOriginal)=>({...await importOriginal<typeof import('../lib/keeper-client')>(),keeper:mocks.keeper}));
 import { DELIVERY_KIND_LIST } from '../lib/delivery';
 import { createAgent, saveDefinition, retireAgent, deleteAgent, connectDoor, applyConnections, listConversations, startFreshConversation, setDoorEnabled } from '../app/actions/definition';
-beforeEach(()=>{ vi.clearAllMocks(); mocks.cookies.mockResolvedValue({get:()=>({value:'cookie'})}); mocks.verify.mockResolvedValue('owner@example.test'); mocks.keeper.mockResolvedValue({hash:'abc',backup:{ok:false,message:'backup failed'},runtime:{pending:true,reason:'doors'}}); });
+beforeEach(()=>{ vi.clearAllMocks(); mocks.cookies.mockResolvedValue({get:()=>({value:'cookie'})}); mocks.actingAddress.mockResolvedValue('owner@example.test'); mocks.keeper.mockResolvedValue({hash:'abc',backup:{ok:false,message:'backup failed'},runtime:{pending:true,reason:'doors'}}); });
 const input={name:'example',definition:{},duties:'Duties',voice:'Voice'};
 it('verifies every mutation before keeper access',async()=>{
- mocks.verify.mockResolvedValue(null);
+ mocks.actingAddress.mockResolvedValue(null);
  for(const action of [()=>createAgent({...input,startingPoint:'creative'}),()=>saveDefinition(input),()=>retireAgent({name:'example'}),()=>deleteAgent({name:'example',confirm:true}),()=>connectDoor({name:'example',kind:'slack',secret:'secret'}),()=>applyConnections({name:'example',hash:'abc'}),()=>listConversations({name:'example'}),()=>startFreshConversation({name:'example',incarnation:'id',sessionId:'wrun_one',confirm:true})]) await expect(action()).rejects.toThrow('unauthenticated');
  expect(mocks.keeper).not.toHaveBeenCalled();
 });

@@ -1,6 +1,6 @@
 import { withConsoleAdmission } from "../../../lib/admission-error";
 import { cookies } from "next/headers";
-import { verify } from "../../../lib/auth";
+import { actingAddress } from "../../../lib/auth";
 import { readInbox, unreadCount } from "../../../lib/web-inbox";
 
 export const runtime = "nodejs";
@@ -15,7 +15,7 @@ const AGENT = /^[a-z][a-z0-9-]{0,40}$/;
  * The console looks when a page is open and visible; nothing is pushed.
  */
 async function handleGET(req: Request): Promise<Response> {
-  if (!(await verify((await cookies()).get("lares_session")?.value))) {
+  if (!(await actingAddress("owner"))) {
     return Response.json({ error: "sign-in-required" }, { status: 401, headers: { "cache-control": "no-store" } });
   }
   const agent = new URL(req.url).searchParams.get("agent");

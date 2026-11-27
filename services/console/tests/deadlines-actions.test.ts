@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../lib/db", () => ({ pool: { query: vi.fn(), connect: vi.fn() } }));
-vi.mock("../lib/auth", () => ({ verify: vi.fn(async () => "owner@owner.example") }));
+vi.mock("../lib/auth", () => ({ actingAddress: vi.fn(async () => "owner@owner.example") }));
 vi.mock("next/headers", () => ({ cookies: vi.fn(async () => ({ get: () => ({ value: "c" }) })) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
@@ -380,7 +380,7 @@ describe("addFromCandidate", () => {
 describe("authentication", () => {
   it("throws before any write when there is no session", async () => {
     const auth = await import("../lib/auth");
-    vi.mocked(auth.verify).mockResolvedValueOnce(null);
+    vi.mocked(auth.actingAddress).mockResolvedValueOnce(null);
     await expect(saveLadderEnabled({ enabled: true })).rejects.toThrow(/unauthenticated/);
     expect(queries).toHaveLength(0);
   });

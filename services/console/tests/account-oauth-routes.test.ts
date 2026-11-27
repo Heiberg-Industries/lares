@@ -3,7 +3,7 @@ import { ACCOUNT_FLOW_COOKIE, accountSessionHash, sealAccountFlow, openAccountFl
 const mock = vi.hoisted(() => ({ member: vi.fn(), currentSession: vi.fn(), writeToken: vi.fn(), transaction: {}, query: vi.fn(), start: vi.fn(), finish: vi.fn(), begin: vi.fn(), read: vi.fn(), create: vi.fn(), renew: vi.fn(),
   cookies: new Map<string,string>(), orgs: vi.fn(), config: vi.fn() }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: (name: string) => mock.cookies.has(name) ? { value: mock.cookies.get(name) } : undefined }) }));
-vi.mock("../lib/auth", () => ({ sessionMember: mock.member }));
+vi.mock("../lib/auth", () => ({ sessionMember: mock.member, mayUse: (member: unknown, level: string) => !!member && level === "member" }));
 vi.mock("../lib/db", () => ({ pool: { query: mock.query } }));
 vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ writeVerifiedAccountToken: mock.writeToken }));
 vi.mock("@lares/agent-kit/member-store", () => ({ currentSession: mock.currentSession }));
