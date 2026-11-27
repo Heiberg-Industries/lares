@@ -949,7 +949,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
             if (dirtyNow.current) { setUncertain(true); return; }
             void savedDefinition(p.initial!.definition.name)
               .then((read) => {
-                if (!read.ok) { setUncertain(true); return; }
+                // Edited while the read was on its way: never overwrite those edits; ask for a fresh read instead.
+                if (!read.ok || dirtyNow.current) { setUncertain(true); return; }
                 const nextDefinition = JSON.parse(read.result.definition) as AgentDefinition;
                 setDefinition(nextDefinition);
                 setDuties(read.result.duties);
