@@ -204,8 +204,9 @@ page. An **admin** sees the agents and can use the shared pages (connections, to
 quiet hours and delivery, alert routing), but cannot create or edit an agent, set up an agent's
 chat app, answer an approval, let a tool run without asking, or open **Members**, **Backups** or
 **General**. A **member** sees only **Chat**, **Your accounts** and **Your membership**. The owner
-picks Admin or Member for each person on this page, and can also invite someone directly as an
-admin. A change takes effect the next time that person opens a page. Giving a second person the
+switches a person between Admin and Member on this page, and can also invite someone directly as
+an admin. People invited with limited access, or as an owner, have no such choice. A change takes
+effect the next time that person opens a page. Giving a second person the
 owner role does not make them the owner here: they use the console as a member.
 
 ## General
