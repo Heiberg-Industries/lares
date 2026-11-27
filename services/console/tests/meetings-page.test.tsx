@@ -11,8 +11,8 @@ vi.mock("../lib/credentials", () => ({ getCredentialView: m.credential }));
 vi.mock("../lib/meeting-followup-status", () => ({ getFollowupStatus: m.status }));
 vi.mock("../lib/meeting-series", () => ({ listAutoSendSeries: m.series }));
 vi.mock("../lib/agents", () => ({ listAgents: m.agents }));
-vi.mock("../components/MeetingsSourceControl", () => ({ MeetingsSourceControl: ({ notion, requestsOff }: { notion: string; requestsOff: { name: string }[] | null }) =>
-  <section>SOURCE notion:{notion} off:{requestsOff ? requestsOff.map((a) => a.name).join("+") : "none"}</section> }));
+vi.mock("../components/MeetingsSourceControl", () => ({ MeetingsSourceControl: ({ notion, requestsOff, nobodyMayUse }: { notion: string; requestsOff: { name: string }[] | null; nobodyMayUse: boolean }) =>
+  <section>SOURCE notion:{notion} off:{requestsOff ? requestsOff.map((a) => a.name).join("+") : "none"} nobody:{String(nobodyMayUse)}</section> }));
 vi.mock("../components/MeetingSeriesRow", () => ({ MeetingSeriesRow: ({ name }: { name: string }) => <li>SERIES {name}</li> }));
 vi.mock("../components/KeepPageFresh", () => ({ KeepPageFresh: ({ active }: { active: boolean }) => <i>fresh:{String(active)}</i> }));
 import MeetingsPage from "../app/meetings/page";
@@ -30,6 +30,8 @@ beforeEach(() => {
 });
 
 it("tells the source when no chief of staff answers Notion requests, so a lookup would never be picked up", async () => {
+  // The key's state cannot be read (not the owner): every chief of staff counts.
+  m.credential.mockResolvedValue({ kind: "administrator-required" });
   expect(await show()).toContain("off:none");
   m.chiefs.mockResolvedValue([{ name: "chief", displayName: "Ada", answersRequests: false }, { name: "second", displayName: "Bea", answersRequests: true }]);
   expect(await show()).toContain("off:none");
@@ -37,6 +39,16 @@ it("tells the source when no chief of staff answers Notion requests, so a lookup
   expect(await show()).toContain("off:chief");
   m.chiefs.mockRejectedValue(new Error("down"));
   expect(await show()).toContain("off:none");
+});
+
+it("says nobody can look a database up when Notion is connected but no agent may use it, instead of a schedule warning", async () => {
+  m.credential.mockResolvedValue(status({ grants: [], consumers: [] }));
+  const t = await show();
+  expect(t).toContain("nobody:true"); expect(t).toContain("off:none");
+  m.credential.mockResolvedValue(status({ activeRevision: null, state: "not-configured", grants: [], consumers: [] }));
+  expect(await show()).toContain("nobody:false");
+  m.credential.mockResolvedValue({ kind: "administrator-required" });
+  expect(await show()).toContain("nobody:false");
 });
 
 it("with the key on one agent and the schedule on another, warns about the agent that has the key", async () => {

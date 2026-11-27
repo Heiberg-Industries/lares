@@ -27,8 +27,10 @@ export default async function MeetingsPage() {
   // use Notion answers requests, naming those agents; otherwise only when no chief of staff does.
   const users = credential.kind === "status" ? notionUsers(credential.status) : null;
   const keyed = users && chiefs ? chiefs.filter((c) => users.granted.includes(c.name) || users.byConfig.includes(c.name)) : null;
-  const candidates = keyed && keyed.length > 0 ? keyed : chiefs;
-  const requestsOff = candidates && candidates.length > 0 && !candidates.some((c) => c.answersRequests) ? candidates : null;
+  // Notion is connected but no chief of staff may use it: nobody can look a database up yet.
+  const nobodyMayUse = credential.kind === "status" && !!credential.status.activeRevision && keyed !== null && keyed.length === 0;
+  const candidates = keyed ?? chiefs;
+  const requestsOff = !nobodyMayUse && candidates && candidates.length > 0 && !candidates.some((c) => c.answersRequests) ? candidates : null;
   // Only the owner can read the key's state; for anyone else nothing is claimed about it.
   const notion: NotionConnected = credential.kind !== "status" ? "unknown"
     : credential.status.activeRevision && credential.status.state === "applied" ? "connected" : "not-connected";
@@ -38,7 +40,7 @@ export default async function MeetingsPage() {
     <Page className="lares-stack">
       <PageHeader title="Meetings" description="Where your meeting notes come from, and the follow-up emails an agent writes from them." />
 
-      <MeetingsSourceControl view={source} initialLookup={lookup} notion={notion} names={names} requestsOff={requestsOff} />
+      <MeetingsSourceControl view={source} initialLookup={lookup} notion={notion} names={names} requestsOff={requestsOff} nobodyMayUse={nobodyMayUse} />
 
       <Card role="region" aria-labelledby="followups-heading">
         <CardHeader>

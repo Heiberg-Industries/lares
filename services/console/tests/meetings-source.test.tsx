@@ -117,6 +117,12 @@ it("keeps Stop reading meeting notes while a lookup found another database that 
   expect(screen.getByRole("button", { name: "Stop reading meeting notes" })).toBeTruthy();
 });
 
+it("says when no agent may use Notion yet, and links to the Notion page", () => {
+  show({ nobodyMayUse: true });
+  expect(document.body.textContent).toContain("No agent may use Notion yet, so nobody can look the database up.");
+  expect(screen.getByText("Switch one on on the Notion page").getAttribute("href")).toBe("/integrations/notion");
+});
+
 it("says when no chief of staff answers Notion requests, and links to where that is switched on", () => {
   show({ requestsOff: [{ name: "chief", displayName: "Ada" }] });
   expect(document.body.textContent).toContain("Finding a database needs the Clipping requests schedule, which is switched off for Ada.");
