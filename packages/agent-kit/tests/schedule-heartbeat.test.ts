@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 
 import {
   scheduleKey, tickKey, recordSchedulePass, recordScheduleTick,
-  recordRunStarted, recordRunFinished, recordRunFailed, recordRunSkipped, readScheduleRun,
+  recordRunStarted, recordRunFinished, recordRunFailed, recordRunSkipped, readScheduleRun, readScheduleRuns,
 } from "../src/schedule-heartbeat.js";
 
 /**
@@ -143,6 +143,16 @@ describe("schedule-heartbeat: the job's last outcome", () => {
     expect(done!.updatedAt.getTime()).toBeGreaterThanOrEqual(started!.updatedAt.getTime());
   });
 
+  it("reads several jobs' outcomes at once, one per job that has one; each job keeps its own", async () => {
+    await recordRunStarted(pool, "first-agent/voice-learn", { agent: "first-agent" });
+    await recordRunFinished(pool, "other-agent/voice-learn", { agent: "other-agent", counts: { kept: 4 } });
+    const runs = await readScheduleRuns(pool, ["other-agent/voice-learn", "first-agent/voice-learn", "absent-agent/voice-learn"]);
+    expect(runs.map((r) => [r.job, r.state])).toEqual([["first-agent/voice-learn", "running"], ["other-agent/voice-learn", "finished"]]);
+    expect(runs[1]!.counts).toEqual({ kept: 4 });
+    expect(await readScheduleRuns(pool, [])).toEqual([]);
+    await expect(readScheduleRuns(pool, ["not a key"])).rejects.toThrow(/key/);
+  });
+
   it("drops counts that are not whole numbers ≥ 0 under a plain name", async () => {
     await recordRunFinished(pool, KEY, { counts: { kept: 2, dropped: -1, ratio: 0.5, "bad name": 1 } });
     expect((await readScheduleRun(pool, KEY))!.counts).toEqual({ kept: 2 });
@@ -197,6 +207,47 @@ describe("schedule-heartbeat: the job's last outcome", () => {
     }
     await new Promise((r) => setTimeout(r, 1_500));
     expect((await readScheduleRun(pool, KEY))!.state).toBe("running");
+  }, 20_000);
+
+  it("a write that waited 5 s for a free connection is not made when one comes free: it never lands over a newer outcome", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // One connection, taken: the outcome write queues for it.
+    const small = quiet(new Pool({ connectionString: container.getConnectionUri(), max: 1 }));
+    try {
+      await recordRunStarted(pool, KEY, { agent: "example-agent" });
+      const held = await small.connect();
+      expect(await recordRunFinished(small, KEY, { counts: { kept: 1 } })).toBe(false);
+      // Meanwhile a newer outcome is written (another agent, or this agent's next record).
+      await recordRunFailed(pool, KEY, "newer outcome");
+      held.release();
+      await new Promise((r) => setTimeout(r, 1_500));
+      expect(await readScheduleRun(pool, KEY)).toMatchObject({ state: "failed", detail: "newer outcome" });
+    } finally {
+      await small.end();
+    }
+  }, 20_000);
+
+  it("a write that got its connection late has only the rest of the 5 s on the database: it never lands after the caller gave up", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const small = quiet(new Pool({ connectionString: container.getConnectionUri(), max: 1 }));
+    await recordRunStarted(pool, KEY);
+    const blocker = await pool.connect();
+    try {
+      // The outcome row is locked until after the 5 s, and the only connection is free after 3 s:
+      // with a full 4 s limit on the database, the write would wait for the lock and land at ~6 s.
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM schedule_run WHERE job = $1 FOR UPDATE", [KEY]);
+      const held = await small.connect();
+      setTimeout(() => held.release(), 3_000);
+      setTimeout(() => { blocker.query("COMMIT").catch(() => {}); }, 6_000);
+      expect(await recordRunFinished(small, KEY, { counts: { kept: 1 } })).toBe(false);
+      await new Promise((r) => setTimeout(r, 2_500));
+      expect((await readScheduleRun(pool, KEY))!.state).toBe("running");
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => {});
+      blocker.release();
+      await small.end();
+    }
   }, 20_000);
 
   it("a failing database never throws into the schedule — it warns and resolves false", async () => {

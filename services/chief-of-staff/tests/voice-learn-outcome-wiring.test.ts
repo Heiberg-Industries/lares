@@ -17,6 +17,10 @@ import { closePool } from "@lares/agent-kit/db";
  *   - switched on → recorded "running" before the request is cleared, then the outcome of the run
  *     (here the mailbox cannot be opened, so "skipped: mailbox-unusable"), and the request is taken.
  *
+ * Each agent records under its own name (`<agent>/voice-learn`): the agent under test is called
+ * `first-agent`, and another chief-of-staff agent on the same installation is `other-agent`, whose
+ * record this agent must never write and whose run that is going must still hold the request.
+ *
  * The mailbox, the model gateway and Google are stubbed: no network.
  */
 const here = dirname(fileURLToPath(import.meta.url));
@@ -25,6 +29,10 @@ const BASELINE = readFileSync(join(BOX, "001_baseline.sql"), "utf8");
 const OUTCOMES = readFileSync(join(BOX, "041_schedule_run.sql"), "utf8");
 
 let voiceLearnOn = true;
+/** The definition name of the agent under test. */
+let agentName = "first-agent";
+const OWN = "first-agent/voice-learn";
+const OTHER = "other-agent/voice-learn";
 vi.mock("../lib/definition.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/definition.js")>();
   return {
@@ -35,7 +43,7 @@ vi.mock("../lib/definition.js", async (importOriginal) => {
         ...resolved,
         loaded: {
           ...resolved.loaded,
-          definition: { ...resolved.loaded.definition, schedules: { ...resolved.loaded.definition.schedules, "voice-learn": { on: voiceLearnOn } } },
+          definition: { ...resolved.loaded.definition, name: agentName, schedules: { ...resolved.loaded.definition.schedules, "voice-learn": { on: voiceLearnOn } } },
         },
       };
     },
@@ -46,6 +54,9 @@ vi.mock("../lib/definition.js", async (importOriginal) => {
 let seenAtMailbox: { state: string | null; pending: boolean } | null = null;
 /** When set, the mailbox answer waits for this promise: a run that is still going. */
 let holdMailbox: Promise<void> | null = null;
+/** When set, only the first mailbox lookup waits for `holdMailbox`. */
+let holdFirstOnly = false;
+let mailboxLookups = 0;
 let pool: Pool;
 /** When set, another agent takes the request while this one looks up its hour. */
 let otherAgentClaims = false;
@@ -62,10 +73,11 @@ vi.mock("../lib/schedule-hours.js", async (importOriginal) => {
 vi.mock("../lib/agent-mailbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/agent-mailbox.js")>()),
   agentMailbox: async () => {
-    const run = await pool.query("SELECT state FROM schedule_run WHERE job = 'chief-of-staff/voice-learn'");
+    const run = await pool.query("SELECT state FROM schedule_run WHERE job = $1", [`${agentName}/voice-learn`]);
     const req = await pool.query("SELECT relearn_requested_at FROM voice_profile WHERE id = 'default'");
-    seenAtMailbox = { state: run.rows[0]?.state ?? null, pending: req.rows[0]?.relearn_requested_at != null };
-    if (holdMailbox) await holdMailbox;
+    seenAtMailbox ??= { state: run.rows[0]?.state ?? null, pending: req.rows[0]?.relearn_requested_at != null };
+    mailboxLookups += 1;
+    if (holdMailbox && (!holdFirstOnly || mailboxLookups === 1)) await holdMailbox;
     return { ok: false, reason: "account-not-ok" };
   },
 }));
@@ -79,8 +91,15 @@ async function runOnce(): Promise<void> {
   const { default: schedule } = await import("../agent/schedules/voice-learn.js");
   await schedule.run!(CTX as never);
 }
-const outcome = async () => (await pool.query("SELECT state, reason, agent FROM schedule_run WHERE job = 'chief-of-staff/voice-learn'")).rows[0] ?? null;
+const outcomeOf = async (job: string) => (await pool.query("SELECT state, reason, agent FROM schedule_run WHERE job = $1", [job])).rows[0] ?? null;
+const outcome = () => outcomeOf(OWN);
 const pending = async () => (await pool.query("SELECT relearn_requested_at FROM voice_profile WHERE id = 'default'")).rows[0]?.relearn_requested_at != null;
+/** A chief-of-staff agent's saved definition row, as the keeper keeps it (`status`: valid, invalid or retired). */
+const defineAgent = (name: string, status = "valid") => pool.query(
+  `INSERT INTO agent_definitions (name, definition, hash, status) VALUES ($1, $2, 'fixture-hash', $3)
+   ON CONFLICT DO NOTHING`,
+  [name, JSON.stringify({ name, role: "chief-of-staff" }), status],
+);
 const heartbeatAge = async (key: string) => Number((await pool.query("SELECT extract(epoch from (now() - updated_at)) AS a FROM heartbeat WHERE agent = $1", [key])).rows[0]?.a ?? -1);
 
 beforeAll(async () => {
@@ -96,13 +115,19 @@ beforeEach(async () => {
   process.env["DATABASE_URL"] = container.getConnectionUri();
   process.env["EVE_SCHEDULES_LIVE"] = "1";
   voiceLearnOn = true;
+  agentName = "first-agent";
   seenAtMailbox = null;
   holdMailbox = null;
+  holdFirstOnly = false;
+  mailboxLookups = 0;
   otherAgentClaims = false;
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.resetModules();
   await pool.query("TRUNCATE schedule_run");
+  await pool.query("DELETE FROM agent_definitions WHERE name IN ('first-agent', 'other-agent')");
+  await defineAgent("first-agent");
+  await defineAgent("other-agent");
   await pool.query(`INSERT INTO voice_profile (id) VALUES ('default') ON CONFLICT (id) DO NOTHING`);
   await pool.query("UPDATE voice_profile SET relearn_requested_at = now() WHERE id = 'default'");
   await pool.query("UPDATE heartbeat SET updated_at = now() - interval '1 hour' WHERE agent LIKE 'chief-of-staff/voice-learn%'");
@@ -188,7 +213,7 @@ describe("voice-learn: what a re-learn request becomes", () => {
     try {
       await other.query("BEGIN");
       await other.query("UPDATE voice_profile SET relearn_requested_at = NULL WHERE id = 'default'");
-      await other.query("INSERT INTO schedule_run (job, agent, state) VALUES ('chief-of-staff/voice-learn', 'other-agent', 'running')");
+      await other.query("INSERT INTO schedule_run (job, agent, state) VALUES ('other-agent/voice-learn', 'other-agent', 'running')");
       const tick = runOnce();
       await new Promise((r) => setTimeout(r, 750));
       await other.query("COMMIT");
@@ -196,7 +221,8 @@ describe("voice-learn: what a re-learn request becomes", () => {
     } finally {
       other.release();
     }
-    expect(await outcome()).toMatchObject({ state: "running", agent: "other-agent" });
+    expect(await outcomeOf(OTHER)).toMatchObject({ state: "running", agent: "other-agent" });
+    expect(await outcome()).toBeNull();
   }, 30_000);
 
   it("a request that arrives just as a run ends is left for the next tick, not written over the finished outcome", async () => {
@@ -206,7 +232,7 @@ describe("voice-learn: what a re-learn request becomes", () => {
     const first = schedule.run!(CTX as never);
     await vi.waitFor(() => expect(seenAtMailbox).not.toBeNull());
     // The run has recorded its end; this process has not yet left its run.
-    await pool.query("UPDATE schedule_run SET state = 'finished', counts = '{\"kept\": 3}'::jsonb WHERE job = 'chief-of-staff/voice-learn'");
+    await pool.query("UPDATE schedule_run SET state = 'finished', counts = '{\"kept\": 3}'::jsonb WHERE job = $1", [OWN]);
     await pool.query("UPDATE voice_profile SET relearn_requested_at = now() WHERE id = 'default'");
     await schedule.run!(CTX as never);
     expect(await outcome()).toMatchObject({ state: "finished" });
@@ -216,11 +242,11 @@ describe("voice-learn: what a re-learn request becomes", () => {
   }, 30_000);
 
   it("an outcome row someone else is writing never makes this agent hold the request: it waits for the next tick", async () => {
-    await pool.query("INSERT INTO schedule_run (job, state) VALUES ('chief-of-staff/voice-learn', 'finished')");
+    await pool.query("INSERT INTO schedule_run (job, state) VALUES ($1, 'finished')", [OWN]);
     const blocker = await pool.connect();
     try {
       await blocker.query("BEGIN");
-      await blocker.query("SELECT 1 FROM schedule_run WHERE job = 'chief-of-staff/voice-learn' FOR UPDATE");
+      await blocker.query("SELECT 1 FROM schedule_run WHERE job = $1 FOR UPDATE", [OWN]);
       const started = Date.now();
       await runOnce();
       expect(Date.now() - started).toBeLessThan(3_000);
@@ -259,26 +285,28 @@ describe("voice-learn: what a re-learn request becomes", () => {
   }, 40_000);
 
   it("another agent's run that is going holds the request: no second run, and the request waits", async () => {
-    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('chief-of-staff/voice-learn', 'other-agent', 'running', now())");
+    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('other-agent/voice-learn', 'other-agent', 'running', now())");
     await runOnce();
     expect(seenAtMailbox).toBeNull();
     expect(await pending()).toBe(true);
-    expect(await outcome()).toMatchObject({ state: "running", agent: "other-agent" });
+    expect(await outcomeOf(OTHER)).toMatchObject({ state: "running", agent: "other-agent" });
+    expect(await outcome()).toBeNull();
   }, 30_000);
 
   it("a run that has said nothing for hours is treated as gone: the request is taken and run", async () => {
     await pool.query(`INSERT INTO schedule_run (job, agent, state, started_at, updated_at)
-      VALUES ('chief-of-staff/voice-learn', 'other-agent', 'running', now() - interval '3 hours', now() - interval '3 hours')`);
+      VALUES ('other-agent/voice-learn', 'other-agent', 'running', now() - interval '3 hours', now() - interval '3 hours')`);
     await runOnce();
     expect(seenAtMailbox).toEqual({ state: "running", pending: false });
     expect(await pending()).toBe(false);
   }, 30_000);
 
-  it("switched off here while another agent is learning: its run is kept, not replaced with a skip", async () => {
+  it("switched off here while another agent is learning: its run is kept, and this agent's skip goes on its own record", async () => {
     voiceLearnOn = false;
-    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('chief-of-staff/voice-learn', 'other-agent', 'running', now())");
+    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('other-agent/voice-learn', 'other-agent', 'running', now())");
     await runOnce();
-    expect(await outcome()).toMatchObject({ state: "running", agent: "other-agent" });
+    expect(await outcomeOf(OTHER)).toMatchObject({ state: "running", agent: "other-agent" });
+    expect(await outcome()).toMatchObject({ state: "skipped", reason: "switched-off", agent: "first-agent" });
     expect(await pending()).toBe(true);
   }, 30_000);
 
@@ -296,5 +324,75 @@ describe("voice-learn: what a re-learn request becomes", () => {
     }
     release();
     await first;
+  }, 30_000);
+
+  it("records under this agent's own name, not under a key every agent shares", async () => {
+    await runOnce();
+    expect(await outcomeOf(OWN)).toMatchObject({ state: "skipped", reason: "mailbox-unusable", agent: "first-agent" });
+    expect(await outcomeOf("chief-of-staff/voice-learn")).toBeNull();
+    // The heartbeat is the schedule's, shared by every agent, and keeps its key.
+    expect(await heartbeatAge("chief-of-staff/voice-learn/tick")).toBeLessThan(60);
+  }, 30_000);
+
+  it("two agents learning at once: one agent's outcome never replaces the other's run that is going", async () => {
+    // other-agent takes the request and is still reading mail; first-agent's own weekly pass ends meanwhile.
+    agentName = "other-agent";
+    let release!: () => void;
+    holdMailbox = new Promise<void>((r) => { release = r; });
+    holdFirstOnly = true;
+    const mod = await import("../agent/schedules/voice-learn.js");
+    const first = mod.default.run!(CTX as never);
+    await vi.waitFor(() => expect(seenAtMailbox).not.toBeNull());
+    expect(await outcomeOf(OTHER)).toMatchObject({ state: "running", agent: "other-agent" });
+    await mod.learnAllMailboxes({ agent: "first-agent" });
+    expect(await outcomeOf(OWN)).toMatchObject({ state: "skipped", reason: "mailbox-unusable", agent: "first-agent" });
+    expect(await outcomeOf(OTHER)).toMatchObject({ state: "running", agent: "other-agent" });
+    release();
+    await first;
+    expect(await outcomeOf(OTHER)).toMatchObject({ state: "skipped", reason: "mailbox-unusable", agent: "other-agent" });
+    expect(await outcomeOf(OWN)).toMatchObject({ agent: "first-agent" });
+  }, 30_000);
+
+  it("another agent's covering note (a request its run already answers) holds the request too", async () => {
+    await pool.query(`INSERT INTO schedule_run (job, agent, state, reason, detail)
+      VALUES ('other-agent/voice-learn', 'other-agent', 'skipped', 'already-running', 'Covered.')`);
+    await runOnce();
+    expect(seenAtMailbox).toBeNull();
+    expect(await pending()).toBe(true);
+    expect(await outcome()).toBeNull();
+  }, 30_000);
+
+  it("another agent's record being written right now: this agent does not claim, and leaves the request for the next tick", async () => {
+    await pool.query("INSERT INTO schedule_run (job, agent, state) VALUES ('other-agent/voice-learn', 'other-agent', 'finished')");
+    const blocker = await pool.connect();
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT 1 FROM schedule_run WHERE job = $1 FOR UPDATE", [OTHER]);
+      const started = Date.now();
+      await runOnce();
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(seenAtMailbox).toBeNull();
+      expect(await pending()).toBe(true);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => {});
+      blocker.release();
+    }
+  }, 30_000);
+
+  it("a retired agent's record left as running does not hold the request: the page ignores it, and so does the claim", async () => {
+    // Retiring only marks the definition retired; a run the retirement cut off leaves its record behind.
+    await pool.query("UPDATE agent_definitions SET status = 'retired' WHERE name = 'other-agent'");
+    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('other-agent/voice-learn', 'other-agent', 'running', now())");
+    await runOnce();
+    expect(seenAtMailbox).toEqual({ state: "running", pending: false });
+    expect(await pending()).toBe(false);
+  }, 30_000);
+
+  it("an agent whose definition is invalid still runs on its last valid one: its run that is going holds the request", async () => {
+    await pool.query("UPDATE agent_definitions SET status = 'invalid' WHERE name = 'other-agent'");
+    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('other-agent/voice-learn', 'other-agent', 'running', now())");
+    await runOnce();
+    expect(seenAtMailbox).toBeNull();
+    expect(await pending()).toBe(true);
   }, 30_000);
 });
