@@ -162,6 +162,7 @@ existing pages do not have to change, and a page that wants narrower content use
 | `Alert`, `AlertTitle`, `AlertDescription` | `primitives/alert` | The box under `Notice`. Use it directly only for a message with its own title and description. |
 | `Badge` | `primitives/badge` | A status in a word or two: a pill with a dot. Variants `neutral`, `success`, `warning`, `error`, `info`, `accent`. |
 | `StatusBadge` | `patterns` | The older name for the same pill (`quiet`, `attention`, `success`, `error`). |
+| `RunStatus` | `patterns` | Where a piece of background work is: Requested, Waiting, Running, Finished (with when), Failed (with why) or Skipped (with why, and a link to what fixes it). Keep the page up to date with `useKeepFresh` (`services/console/lib/use-keep-fresh.ts`) while `runStateIsActive` is true. See ADR-0031. |
 | `Tooltip` and its parts | `primitives/tooltip` | A hint for an icon or a clipped word. Never the only place a fact lives: it does not open on a phone. |
 
 `Notice` has five tones, each with one colour and one round icon:

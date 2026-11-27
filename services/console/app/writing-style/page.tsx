@@ -1,5 +1,5 @@
 import { requirePage } from "../../lib/auth";
-import { getVoiceCards, listVoiceExamples } from "../../lib/voice";
+import { getRelearnStatus, getVoiceCards, listVoiceExamples } from "../../lib/voice";
 import { VoiceCardEditor } from "../../components/VoiceCardEditor";
 import { VoiceSettings } from "../../components/VoiceSettings";
 import { ProposedCard } from "../../components/ProposedCard";
@@ -17,6 +17,9 @@ export const dynamic = "force-dynamic";
 export default async function VoicePage() {
   await requirePage("admin");
   const [cards, examples] = await Promise.all([getVoiceCards(), listVoiceExamples()]);
+  // The learn status is the whole job's, not the `default` card's: a run writes its status on the
+  // mailbox's own row and its outcome in the job record, never on `default`.
+  const relearn = await getRelearnStatus(cards);
   const def = cards[0]!;
   const mailboxes = cards.slice(1);
   return (
@@ -30,7 +33,7 @@ export default async function VoicePage() {
         A mailbox with an empty card uses the shared defaults below until it has learned.
       </p>
 
-      <RelearnButton status={def.learnStatus} message={def.learnMessage} />
+      <RelearnButton status={relearn} />
 
       {mailboxes.length === 0 && (
         <EmptyState title="No mailbox cards yet">Press Re-learn from Sent mail to create them.</EmptyState>

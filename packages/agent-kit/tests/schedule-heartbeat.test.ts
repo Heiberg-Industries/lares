@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 
 import {
   scheduleKey, tickKey, recordSchedulePass, recordScheduleTick,
+  recordRunStarted, recordRunFinished, recordRunFailed, recordRunSkipped, readScheduleRun,
 } from "../src/schedule-heartbeat.js";
 
 /**
@@ -17,6 +18,7 @@ import {
  */
 const here = dirname(fileURLToPath(import.meta.url));
 const MIGRATION = readFileSync(join(here, "..", "..", "..", "services", "box", "sql", "001_baseline.sql"), "utf8");
+const OUTCOMES = readFileSync(join(here, "..", "..", "..", "services", "box", "sql", "041_schedule_run.sql"), "utf8");
 
 const ageSeconds = async (pool: Pool, key: string): Promise<number | undefined> => {
   const { rows } = await pool.query(
@@ -33,6 +35,7 @@ describe("schedule-heartbeat ", () => {
     container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
     pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(MIGRATION);
+    await pool.query(OUTCOMES);
   }, 120_000);
 
   afterAll(async () => { await pool.end(); await container.stop(); });
@@ -99,4 +102,101 @@ describe("schedule-heartbeat ", () => {
     await expect(recordSchedulePass(pool, "digest")).rejects.toThrow(/key/);
     expect(spy).not.toHaveBeenCalled();
   });
+});
+
+/**
+ * The outcome record next to the heartbeat: what the last run did and why. Same real Postgres, same
+ * real migration file, and the same never-throw contract as a stamp.
+ */
+describe("schedule-heartbeat: the job's last outcome", () => {
+  let container: StartedPostgreSqlContainer;
+  let pool: Pool;
+  const KEY = "chief-of-staff/voice-learn";
+  const heartbeatAge = () => ageSeconds(pool, KEY);
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
+    await pool.query(MIGRATION);
+    await pool.query(OUTCOMES);
+    await pool.query("update heartbeat set updated_at = now() - interval '1 hour' where agent like 'chief-of-staff/%'");
+  }, 120_000);
+
+  afterAll(async () => { await pool.end(); await container.stop(); });
+
+  beforeEach(async () => { vi.restoreAllMocks(); await pool.query("TRUNCATE schedule_run"); });
+
+  it("has no outcome before the first run", async () => {
+    expect(await readScheduleRun(pool, KEY)).toBeNull();
+  });
+
+  it("records a start, then a finish with counts, keeping when it started", async () => {
+    expect(await recordRunStarted(pool, KEY, { agent: "example-agent" })).toBe(true);
+    const started = await readScheduleRun(pool, KEY);
+    expect(started).toMatchObject({ job: KEY, agent: "example-agent", state: "running", reason: "", detail: "", counts: {} });
+    expect(started!.startedAt).toBeInstanceOf(Date);
+
+    expect(await recordRunFinished(pool, KEY, { counts: { kept: 12, dropped: 3 } })).toBe(true);
+    const done = await readScheduleRun(pool, KEY);
+    expect(done).toMatchObject({ state: "finished", agent: "example-agent", counts: { kept: 12, dropped: 3 } });
+    expect(done!.startedAt?.getTime()).toBe(started!.startedAt?.getTime());
+    expect(done!.updatedAt.getTime()).toBeGreaterThanOrEqual(started!.updatedAt.getTime());
+  });
+
+  it("drops counts that are not whole numbers ≥ 0 under a plain name", async () => {
+    await recordRunFinished(pool, KEY, { counts: { kept: 2, dropped: -1, ratio: 0.5, "bad name": 1 } });
+    expect((await readScheduleRun(pool, KEY))!.counts).toEqual({ kept: 2 });
+  });
+
+  it("records a failure with its message", async () => {
+    await recordRunStarted(pool, KEY);
+    await recordRunFailed(pool, KEY, "gateway 500");
+    expect(await readScheduleRun(pool, KEY)).toMatchObject({ state: "failed", reason: "", detail: "gateway 500" });
+  });
+
+  it("records a skip with its reason code and sentence, and clears the start", async () => {
+    await recordRunStarted(pool, KEY);
+    await recordRunSkipped(pool, KEY, "switched-off", "Voice Learn is switched off for this agent.");
+    expect(await readScheduleRun(pool, KEY)).toMatchObject({
+      state: "skipped", reason: "switched-off", detail: "Voice Learn is switched off for this agent.", startedAt: null,
+    });
+  });
+
+  it("refuses a malformed reason code or key before touching the database", async () => {
+    const spy = vi.spyOn(pool, "query");
+    await expect(recordRunSkipped(pool, KEY, "Switched Off", "x")).rejects.toThrow(/reason/);
+    await expect(recordRunStarted(pool, "voice-learn")).rejects.toThrow(/key/);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("shortens a very long message instead of failing the write", async () => {
+    await recordRunFailed(pool, KEY, "x".repeat(5_000));
+    expect((await readScheduleRun(pool, KEY))!.detail).toHaveLength(2_000);
+  });
+
+  it("never moves the heartbeat: monitoring reads only what the schedule stamps", async () => {
+    const before = await heartbeatAge();
+    await recordRunStarted(pool, KEY);
+    await recordRunSkipped(pool, KEY, "switched-off", "Switched off.");
+    await recordRunFinished(pool, KEY);
+    expect(before).toBeGreaterThan(3500);
+    expect(await heartbeatAge()).toBeGreaterThan(3500);
+  });
+
+  it("a failing database never throws into the schedule — it warns and resolves false", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dead = quiet(new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" }));
+    try {
+      expect(await recordRunStarted(dead, KEY)).toBe(false);
+      expect(await recordRunSkipped(dead, KEY, "no-mailbox", "No mailbox.")).toBe(false);
+    } finally { await dead.end(); }
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/chief-of-staff\/voice-learn/);
+  });
+
+  it("a hung database is bounded — resolves false after the 5 s cap", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hung = { query: () => new Promise<never>(() => {}) };
+    expect(await recordRunFinished(hung, KEY)).toBe(false);
+  }, 10_000);
 });

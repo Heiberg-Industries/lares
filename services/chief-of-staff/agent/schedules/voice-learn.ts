@@ -22,20 +22,39 @@
  * That button is the second trigger, and it is not decoration: the console writes
  * `relearn_requested_at` (`services/console/app/actions/voice.ts`) and this schedule polls
  * it. Without the poll the button would silently do nothing —
- * so the tick claims the request (clears it first, then runs) and a manual re-learn lands
+ * so the tick claims the request (clears it, then runs) and a manual re-learn lands
  * within a minute instead of waiting for Sunday.
+ *
+ * WHAT THE CONSOLE SEES. Every outcome is also recorded as the job's last outcome
+ * (`recordRun*`, `@lares/agent-kit/schedule-heartbeat`; reason codes in
+ * `@lares/agent-kit/voice-learn-outcome`), so the Writing style page can say "asked for", "running",
+ * "finished, with counts", "failed, with why" or "skipped, with why" instead of looking dead:
+ *   - a request while the schedule is switched off (in the definition, or on the whole server) is
+ *     answered "skipped" and LEFT pending, so it runs once the switch is on. It is not taken: a
+ *     second agent that has the schedule on may still pick it up. The heartbeat is not touched —
+ *     a closed gate still stamps nothing, so monitoring still pages;
+ *   - the run is recorded "running" BEFORE the request is cleared, so the page never sees a moment
+ *     with neither a request nor a run;
+ *   - no mailbox, an unusable mailbox and no model for comparing texts are "skipped" with their
+ *     reason; a request that arrives while a run is going is taken and answered by that run.
  */
 import { defineSchedule } from "eve/schedules";
 
 import { getPool } from "@lares/agent-kit/db";
 import { purposeModel } from "@lares/agent-kit/gateway-status";
 import { type GmailClient } from "../../lib/google.js";
-import { agentMailbox } from "../../lib/agent-mailbox.js";
+import { agentMailbox, mailboxRefusalSentence } from "../../lib/agent-mailbox.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
 import { makeGatewayEmbedder } from "../../lib/embeddings-gateway.js";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
-import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedule-heartbeat";
+import { scheduleGate } from "@lares/agent-kit/schedule-gate";
+import type { AgentDefinition } from "@lares/agent-kit/definition";
+import {
+  readScheduleRun, recordRunFailed, recordRunFinished, recordRunSkipped, recordRunStarted,
+  recordSchedulePass, recordScheduleTick,
+} from "@lares/agent-kit/schedule-heartbeat";
+import { VOICE_LEARN_SKIPS, type VoiceLearnSkip } from "@lares/agent-kit/voice-learn-outcome";
 import { dowIn, slotIn } from "../../lib/recurrence.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
@@ -109,10 +128,21 @@ const SENT_READ_BATCH = 20;
 const SENT_READ_PAUSE_MS = 3_000;
 const QUOTA_BACKOFF_MS = 65_000;
 
+/** When the console asked for a re-learn that nobody has taken yet, or null. */
+async function pendingRequestAt(): Promise<Date | null> {
+  const { rows } = await getPool().query<{ relearn_requested_at: Date | string | null }>(
+    `SELECT relearn_requested_at FROM voice_profile WHERE id = 'default'`,
+  );
+  const at = rows[0]?.relearn_requested_at;
+  return at ? new Date(at) : null;
+}
+
 /** Claim a console-requested re-learn: returns true if one was pending. Clearing BEFORE the
- *  run (not after) is deliberate — a run that fails must not re-fire every minute against a
+ *  learning (not after) is deliberate — a run that fails must not re-fire every minute against a
  *  billed gateway, which is the shape of a past spend leak. The failure is recorded on
- *  the profile as `learn_status = 'error'`; the human re-presses the button. */
+ *  the profile as `learn_status = 'error'` and as the job's outcome; the human re-presses the
+ *  button. The run is recorded as started before this is called, so the console goes straight
+ *  from "asked for" to "running". */
 async function claimRelearnRequest(): Promise<boolean> {
   const { rowCount } = await getPool().query(
     `UPDATE voice_profile SET relearn_requested_at = NULL
@@ -135,13 +165,18 @@ async function claimRelearnRequest(): Promise<boolean> {
  * mailbox "error" for that would be noise. Not completing the pass keeps freshness monitoring
  * honest.
  */
-export async function learnAllMailboxes(): Promise<boolean> {
+export async function learnAllMailboxes(opts: { agent?: string } = {}): Promise<boolean> {
   const cfg = await readConfig();
+  const skip = (reason: VoiceLearnSkip, sentence: string) => recordRunSkipped(getPool(), HEARTBEAT_KEY, reason, sentence, opts);
   // The mailbox the agent's owner chose (reads only here). No mailbox chosen is a normal install:
   // skip, said once (agentMailbox). A chosen-but-stale one skips too, and does not count as a
   // completed pass. A long deadline: a paced read of a year of Sent mail takes minutes.
   const am = await agentMailbox("voice-learn", { workMs: 45 * 60_000 });
-  if (!am.ok) return am.reason === "none";
+  if (!am.ok) {
+    if (am.reason === "none") await skip(VOICE_LEARN_SKIPS.noMailbox, "No mailbox is chosen for this agent, so there is no Sent mail to learn from.");
+    else await skip(VOICE_LEARN_SKIPS.mailboxUnusable, `The chosen mailbox cannot be used right now: ${mailboxRefusalSentence(am.reason)}.`);
+    return am.reason === "none";
+  }
   const mailboxes = [am.mailbox];
 
   const embedModel = process.env["EMBED_MODEL"] ?? purposeModel("embed");
@@ -153,13 +188,17 @@ export async function learnAllMailboxes(): Promise<boolean> {
     console.warn(
       `voice-learn: the gateway did not answer for ${embedModel} (${reason}); this installation may have no embedding model yet — skipping voice learning this pass`,
     );
+    await skip(VOICE_LEARN_SKIPS.noCompareModel, `There is no model for comparing texts: ${embedModel} did not answer.`);
     return false;
   }
 
   let anySucceeded = false;
+  let kept = 0, dropped = 0, failed = 0, lastFailure = "";
   for (const mailbox of mailboxes) {
     try {
-      const { kept, dropped } = await runVoiceLearn({
+      // Running, per mailbox. The address is not written into the outcome: it holds no person data.
+      await recordRunStarted(getPool(), HEARTBEAT_KEY, { ...opts, detail: "Reading Sent mail." });
+      const result = await runVoiceLearn({
         mailbox,
         listSentMessages: () => listSentMessages(cfg, am.gmail),
         embedder,
@@ -168,19 +207,53 @@ export async function learnAllMailboxes(): Promise<boolean> {
         setProposed: (p) => setProposedFor(mailbox, p),
         setStatus: (status, message) => setStatusFor(mailbox, status, message),
       });
-      console.log(`voice-learn: ${mailbox} — kept ${kept}, dropped ${dropped}`);
+      console.log(`voice-learn: ${mailbox} — kept ${result.kept}, dropped ${result.dropped}`);
+      kept += result.kept; dropped += result.dropped;
       anySucceeded = true;
     } catch (err) {
       // One mailbox's failure must not cost the other its refresh. runVoiceLearn has already
       // recorded 'error' with the message on the profile, so this is visible in the console.
       console.error(`voice-learn: ${mailbox} FAILED — other mailboxes continue`, err);
+      failed += 1;
+      lastFailure = err instanceof Error ? err.message : String(err);
     }
   }
+  if (anySucceeded) await recordRunFinished(getPool(), HEARTBEAT_KEY, { ...opts, counts: { kept, dropped, ...(failed ? { failed } : {}) } });
+  else if (failed) await recordRunFailed(getPool(), HEARTBEAT_KEY, lastFailure || "Learning failed.", opts);
   return anySucceeded;
 }
 
 let lastSlot: string | null = null;
 let running = false;
+
+/**
+ * The schedule is switched off (in the definition, or for the whole server) and the owner asked for
+ * a re-learn: say so, once per request, as the job's outcome. Never runs anything, never stamps the
+ * heartbeat, and never takes the request — it stays pending and runs once the switch is on, and an
+ * agent that has the schedule on may still pick it up. Best effort: a failure here is a warning.
+ */
+let offWarning = "";
+async function answerRequestWhileOff(definition: AgentDefinition): Promise<void> {
+  if (scheduleEnabled(definition, "voice-learn")) return;
+  try {
+    const requestedAt = await pendingRequestAt();
+    if (!requestedAt) return;
+    const [reason, sentence] = scheduleGate()
+      ? [VOICE_LEARN_SKIPS.switchedOff, "Voice Learn is switched off for this agent, so it did not run."]
+      : [VOICE_LEARN_SKIPS.schedulesOff, "Schedules are switched off on this server, so it did not run."];
+    const last = await readScheduleRun(getPool(), HEARTBEAT_KEY);
+    if (last?.state === "skipped" && last.reason === reason && last.updatedAt >= requestedAt) return;
+    await recordRunSkipped(getPool(), HEARTBEAT_KEY, reason, sentence, { agent: definition.name });
+    offWarning = "";
+  } catch (err) {
+    // Said once per different failure, not every minute: a dark box may have no database at all.
+    const said = err instanceof Error ? err.message : String(err);
+    if (said !== offWarning) {
+      offWarning = said;
+      console.warn(`voice-learn: could not record why a requested re-learn did not run (the schedule is switched off): ${said}`);
+    }
+  }
+}
 
 /** — the row input-freshness.sh reads; pinned to this filename by the conformance test. */
 export const HEARTBEAT_KEY = "chief-of-staff/voice-learn";
@@ -189,13 +262,28 @@ export default defineSchedule({
   cron: "* * * * *",
   async run() {
     const { loaded } = await thisAgent(undefined);
+    const agent = loaded.definition.name;
+    await answerRequestWhileOff(loaded.definition);
     if (!scheduleEnabled(loaded.definition, "voice-learn")) return;
     await recordScheduleTick(getPool(), HEARTBEAT_KEY);
-    if (running) return;                       // a previous run is still paging mail
+    if (running) {                             // a previous run is still paging mail
+      // A request that arrives now is answered by the run that is going: taken, and said so.
+      // Best effort: this tick has no work of its own to lose.
+      try {
+        if (await claimRelearnRequest()) {
+          await recordRunSkipped(getPool(), HEARTBEAT_KEY, VOICE_LEARN_SKIPS.alreadyRunning,
+            "A learning run was already going, so it was not started twice.", { agent });
+        }
+      } catch (err) {
+        console.warn("voice-learn: could not answer a re-learn request that came in during a run", err);
+      }
+      return;
+    }
 
     // A human pressing "re-learn" wins over the clock — checked first so an on-demand run is
-    // not swallowed by the weekly slot bookkeeping.
-    const requested = await claimRelearnRequest();
+    // not swallowed by the weekly slot bookkeeping. Only looked at here; taken below, once the
+    // run is recorded as started.
+    const requested = (await pendingRequestAt()) !== null;
 
     const now = new Date();
     // The owner clock, resolved once per tick and cached for five minutes (lib/owner-clock.ts).
@@ -211,7 +299,15 @@ export default defineSchedule({
     running = true;
     try {
       console.log(`voice-learn: starting (${requested ? "console re-learn request" : "weekly slot"})`);
-      const completed = await learnAllMailboxes();
+      await recordRunStarted(getPool(), HEARTBEAT_KEY, { agent, detail: requested ? "Asked for in the console." : "The weekly run." });
+      if (requested) await claimRelearnRequest();
+      let completed: boolean;
+      try {
+        completed = await learnAllMailboxes({ agent });
+      } catch (err) {
+        await recordRunFailed(getPool(), HEARTBEAT_KEY, err instanceof Error ? err.message : String(err), { agent });
+        throw err;
+      }
       if (completed) await recordSchedulePass(getPool(), HEARTBEAT_KEY);
     } finally {
       running = false;
