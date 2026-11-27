@@ -22,9 +22,9 @@ export async function decide(input: { id: string; actionId: string }): Promise<D
 
 /** Reads again what came of an answer the agent had not confirmed yet. Sends nothing; the page asks every few
  *  seconds until the answer is confirmed or the action failed. */
-export async function checkDecision(input: { id: string }): Promise<DecideResult> {
+export async function checkDecision(input: { id: string; callId?: string }): Promise<DecideResult> {
   const member = await actingAddress("admin");
   if (!member) throw new Error("unauthenticated");
   if (typeof input?.id !== "string") return { ok: false, reason: "gone", message: "That item could not be found." };
-  return checkWaiting(member, input.id, waitingDeps);
+  return checkWaiting(member, input.id, waitingDeps, typeof input.callId === "string" ? { callId: input.callId } : {});
 }

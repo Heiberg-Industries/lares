@@ -181,6 +181,8 @@ let warnedNoPrincipal = false;
  * should double whatever they add before deciding it is affordable.
  */
 const OBLIGATION_TIMEOUT_MS = Number(process.env["OBLIGATION_TIMEOUT_MS"]) || 43_000;
+/** The deadline scan's look at the chosen mailbox before the gather: only to say why it is skipped. */
+const MAILBOX_CHECK_TIMEOUT_MS = 10_000;
 
 /**
  * The Slack scan's OWN budget, well under
@@ -874,7 +876,9 @@ async function briefPass(mode: PassMode, c: PassContext): Promise<TestPassResult
   // gather tries (and fails) on its own; the gather still runs exactly as before.
   const scan = mode.kind === "slot" ? { job: deadlineScanJob(loaded.definition.name), agent: loaded.definition.name, found: 0, unsaved: 0, skipped: false } : null;
   if (scan) {
-    const chosen = await chosenMailbox().catch(() => null);
+    // Bounded like every other read in this pass: a lookup that stalls (no free database connection,
+    // say) must not hold the brief up. Unknown here, the gather below tries and records what happens.
+    const chosen = await withTimeout(chosenMailbox(), MAILBOX_CHECK_TIMEOUT_MS, "morning-brief: mailbox check").catch(() => null);
     if (chosen && !chosen.ok) {
       scan.skipped = true;
       if (noMailbox(chosen)) await recordRunSkipped(pool, scan.job, DEADLINE_SCAN_SKIPS.noMailbox, "No mailbox is chosen for this agent, so there was no mail to scan.", { agent: scan.agent });

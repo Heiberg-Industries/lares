@@ -671,16 +671,30 @@ describe("deciding", () => {
 
   it("an answer not confirmed yet is read again until it is: sends nothing more, and says what came of it", async () => {
     const f = fake({ streams: waiting(), after: "nothing" });
-    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true });
+    const sent = await decideWaiting(OWNER, id, "approve", f.deps);
+    // The call the approval is about comes back, so each re-check reads only the stream's tail.
+    expect(sent).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true, callId: "call-req-1" });
+    const hint = { callId: "call-req-1" };
     // Still nothing in the conversation: still unconfirmed, and nothing is sent again.
-    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true });
+    expect(await checkWaiting(OWNER, id, f.deps, hint)).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true, callId: "call-req-1" });
     // eve accepted it: approved, the action not reported yet.
     f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), resolved("req-1", "accepted")];
-    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true });
+    expect(await checkWaiting(OWNER, id, f.deps, hint)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true, callId: "call-req-1" });
     // The action ran.
     f.streams.wrun_tg = [...(f.streams.wrun_tg as unknown[]), ran("call-req-1", "completed")];
-    expect(await checkWaiting(OWNER, id, f.deps)).toEqual({ ok: true, outcome: "approved", message: "Approved, and example carried it out. Its reply appears in the Telegram conversation this came from." });
+    expect(await checkWaiting(OWNER, id, f.deps, hint)).toEqual({ ok: true, outcome: "approved", message: "Approved, and example carried it out. Its reply appears in the Telegram conversation this came from." });
     expect(f.posts).toHaveLength(1);
+    // Every re-check read the tail only, never the whole conversation again.
+    const checks = f.streamUrls.slice(-3);
+    for (const url of checks) expect(url).toMatch(/\/stream\?includeTailIndex=1&follow=false&startIndex=-500$/);
+  });
+
+  it("a re-check finds the action's result in the tail with the call id it was handed, and ignores a malformed one", async () => {
+    // A conversation so long that the card itself is out of the tail: only the call id finds the result.
+    const filler = Array.from({ length: 600 }, (_, i) => line("2026-10-15T11:05:00.000Z", { type: "message.appended", data: { n: i } } as Line["facts"][number]));
+    const f = fake({ streams: { wrun_tg: [...asked("req-1", "Send it", "2026-10-15T11:00:00.000Z"), ...filler, resolved("req-1", "accepted"), ran("call-req-1", "completed")] } });
+    expect(await checkWaiting(OWNER, id, f.deps, { callId: "call-req-1" })).toMatchObject({ ok: true, outcome: "approved", message: expect.stringContaining("carried it out") });
+    expect(await checkWaiting(OWNER, id, f.deps, { callId: "bad id\n" })).toMatchObject({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true });
   });
 
   it("a re-check that finds the action failed says so, and a denial reads as denied", async () => {
@@ -721,7 +735,7 @@ describe("deciding", () => {
 
   it("Approve accepted and nothing run yet: the careful sentence, not a claim of success", async () => {
     const f = fake({ streams: waiting(), after: "resolve" });
-    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true });
+    expect(await decideWaiting(OWNER, id, "approve", f.deps)).toEqual({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true, callId: "call-req-1" });
   });
 
   it("Deny: answers with the framework's own 'deny', and says the agent will not do it", async () => {

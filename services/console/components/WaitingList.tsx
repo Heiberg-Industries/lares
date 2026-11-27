@@ -29,7 +29,7 @@ export interface WaitingListProps {
   readonly now: number;
   readonly onDecide: (input: { id: string; actionId: string }) => Promise<DecideResult>;
   /** Reads again what came of an answer that came back `unconfirmed`. Without it the page does not follow up. */
-  readonly onCheck?: (input: { id: string }) => Promise<DecideResult>;
+  readonly onCheck?: (input: { id: string; callId?: string }) => Promise<DecideResult>;
   /** Said instead of the usual words when nothing is listed. For a person who is not the owner. */
   readonly emptyNote?: string;
 }
@@ -123,7 +123,8 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide, onC
     if (!onCheck) return;
     for (const d of open) {
       let result: DecideResult;
-      try { result = await onCheck({ id: d.item.id }); } catch {
+      const callId = d.result.ok ? d.result.callId : undefined;
+      try { result = await onCheck({ id: d.item.id, ...(callId ? { callId } : {}) }); } catch {
         // Nothing learned, but the page must still see the time pass, or the ten-minute limit never ends it.
         setDecided((all) => (all[d.item.id] ? { ...all, [d.item.id]: { ...all[d.item.id]! } } : all));
         continue;

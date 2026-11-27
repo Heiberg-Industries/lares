@@ -74,10 +74,10 @@ vi.mock("../lib/calendar-fanout.js", async (importOriginal) => ({
   listEventsEverywhere: async () => [],
 }));
 
-const mailbox = vi.hoisted(() => ({ result: { ok: true } as { ok: boolean; reason?: string } }));
+const mailbox = vi.hoisted(() => ({ result: { ok: true } as { ok: boolean; reason?: string }, stall: false }));
 vi.mock("../lib/chosen-mailbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/chosen-mailbox.js")>()),
-  chosenMailbox: async () => mailbox.result,
+  chosenMailbox: () => (mailbox.stall ? new Promise(() => {}) : Promise.resolve(mailbox.result)),
 }));
 
 /** What the gather does: record this many due notices, or throw. */
@@ -119,6 +119,7 @@ async function tick(instant: string): Promise<void> {
   await (await morning()).run!(ctx);
 }
 const BRIEF_MINUTE = "2026-09-16T06:00:00Z"; // 08:00 Berlin
+const realImmediate = setImmediate;
 const JOB = "chief-of-staff/deadline-scan";
 
 beforeEach(() => {
@@ -127,6 +128,7 @@ beforeEach(() => {
   process.env["EVE_SCHEDULES_LIVE"] = "1";
   process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
   mailbox.result = { ok: true };
+  mailbox.stall = false;
   candidateWriteFails.value = false;
   gather = { notices: 0 };
   queue = [];
@@ -189,6 +191,21 @@ describe("the mail scan for due notices records what it did", () => {
     await tick(BRIEF_MINUTE);
     expect(outcome.skipped.mock.calls[0]!.slice(1, 4)).toEqual([JOB, DEADLINE_SCAN_SKIPS.mailboxUnusable,
       "The chosen mailbox cannot be used right now: the chosen account was disconnected or needs to be connected again."]);
+  });
+
+  it("a mailbox check that stalls never holds the brief up: the scan runs and is recorded", async () => {
+    mailbox.stall = true;
+    gather = { notices: 1 };
+    let done = false;
+    const pass = tick(BRIEF_MINUTE).then(() => { done = true; });
+    // The pass reads its definition for real first; step the fake clock until it is through.
+    for (let i = 0; i < 200 && !done; i++) {
+      await new Promise((r) => realImmediate(r));
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await pass;
+    expect(outcome.started).toHaveBeenCalledTimes(1);
+    expect(outcome.finished.mock.calls[0]!.slice(1)).toEqual([JOB, { agent: "chief-of-staff", counts: { found: 1 } }]);
   });
 
   it("a test brief records nothing: it is not the day's scan", async () => {
