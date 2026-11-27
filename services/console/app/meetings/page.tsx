@@ -5,6 +5,7 @@ import { getMeetingsLookupView } from "../../lib/clipping";
 import { getCredentialView } from "../../lib/credentials";
 import { getFollowupStatus } from "../../lib/meeting-followup-status";
 import { listAgents } from "../../lib/agents";
+import { notionAgents } from "../../lib/notion-agents";
 import { MeetingSeriesRow } from "../../components/MeetingSeriesRow";
 import { MeetingsSourceControl, type NotionConnected } from "../../components/MeetingsSourceControl";
 import { KeepPageFresh } from "../../components/KeepPageFresh";
@@ -16,9 +17,12 @@ export const dynamic = "force-dynamic";
 /** Meetings: where the meeting notes come from, then the follow-ups an agent writes from them. */
 export default async function MeetingsPage() {
   await requirePage("admin");
-  const [source, lookup, credential, status, series, agents] = await Promise.all([
+  const [source, lookup, credential, status, series, agents, chiefs] = await Promise.all([
     getMeetingsSourceView(), getMeetingsLookupView(), getCredentialView(), getFollowupStatus(), listAutoSendSeries(), listAgents(),
+    notionAgents().catch(() => null),
   ]);
+  // The lookup is answered by a chief of staff's "Clipping requests" schedule: say so when none has it on.
+  const requestsOff = chiefs && chiefs.length > 0 && !chiefs.some((c) => c.answersRequests) ? chiefs : null;
   // Only the owner can read the key's state; for anyone else nothing is claimed about it.
   const notion: NotionConnected = credential.kind !== "status" ? "unknown"
     : credential.status.activeRevision && credential.status.state === "applied" ? "connected" : "not-connected";
@@ -28,7 +32,7 @@ export default async function MeetingsPage() {
     <Page className="lares-stack">
       <PageHeader title="Meetings" description="Where your meeting notes come from, and the follow-up emails an agent writes from them." />
 
-      <MeetingsSourceControl view={source} initialLookup={lookup} notion={notion} names={names} />
+      <MeetingsSourceControl view={source} initialLookup={lookup} notion={notion} names={names} requestsOff={requestsOff} />
 
       <Card role="region" aria-labelledby="followups-heading">
         <CardHeader>

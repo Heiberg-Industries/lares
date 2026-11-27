@@ -26,7 +26,7 @@ export const SCHEDULE_EXPLANATIONS: Readonly<Record<string, string>> = Object.fr
   reminders: "About every minute, delivers reminders that have come due, at the time you set. During do-not-disturb they wait and arrive when it ends.",
   reping: "Every 30 minutes, nudges you when someone writes again about a message you have not answered. There is a daily limit, so it cannot flood you.",
   "telegram-handover": "Every night at midnight, writes a short summary of the day's Telegram conversation, so tomorrow's first message starts with the context.",
-  "clipping-requests": "About every minute, answers what you asked on the Clipping page, such as reading a Notion list, testing its columns or importing now.",
+  "clipping-requests": "About every minute, answers what you asked of Notion on the Clipping and Meetings pages, such as reading a Notion list, testing its columns, importing now or finding your meetings database.",
   "conversation-prune": "Off unless you turn it on. Every night at 04:00, deletes conversation history older than your retention period. Sends you nothing.",
   dream: "Every night (3:00 by default), reads the day's conversations, decides what is worth remembering and saves it as notes. Anything it is unsure about waits as a suggestion for you. Sends you nothing.",
   "voice-learn": "Every Sunday at 4:00 by default, learns how you write from your sent mail, so drafts sound like you. Runs once a week for each connected mailbox.",

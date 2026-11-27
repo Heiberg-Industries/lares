@@ -48,13 +48,16 @@ function lookupLine(view: MeetingsLookupView): { tone: "info" | "error"; text: s
 
 const isFound = (r: unknown): r is MeetingsDatabaseResult => !!r && typeof r === "object" && "dataSources" in r && !("suggested" in r);
 
-export function MeetingsSourceControl({ view, initialLookup, notion, names = {} }: {
+export function MeetingsSourceControl({ view, initialLookup, notion, names = {}, requestsOff = null }: {
   /** The saved setting; null when it could not be read. */
   view: MeetingsSourceView | null;
   initialLookup: MeetingsLookupView;
   notion: NotionConnected;
   /** Agent definition name → display name, for the agents a save restarted. */
   names?: Record<string, string>;
+  /** When no chief of staff has its "Clipping requests" schedule on, nobody answers a lookup: the
+   *  agents to switch it on for. Null when one has it on (or it could not be read). */
+  requestsOff?: { name: string; displayName: string }[] | null;
 }) {
   const list = (agents: string[]) => agents.map((a) => names[a] ?? a).join(", ");
   const [current, setCurrent] = useState(view?.value ?? null);
@@ -145,6 +148,10 @@ export function MeetingsSourceControl({ view, initialLookup, notion, names = {} 
             <Button type="submit" variant="outline" disabled={pending || busy || link.trim() === ""}>Find database</Button>
           </form>
           <p className="lares-muted">In Notion, open the database, choose Share, then Copy link, and paste it here. The chief of staff looks it up with the Notion key; nothing is saved until you choose it.</p>
+          {requestsOff && requestsOff.length > 0 && <Notice tone="needs-you">
+            Finding a database needs the Clipping requests schedule, which is switched off for {requestsOff.map((a) => a.displayName).join(", ")}.{" "}
+            <Link href={`/agents/${encodeURIComponent(requestsOff[0]!.name)}/edit`}>Switch it on in Edit agent</Link>
+          </Notice>}
           {line && <Notice tone={line.tone === "error" ? "needs-you" : "info"}>{line.text}</Notice>}
           {offer && picked && <div className="lares-stack" role="group" aria-label="What was found">
             {offer.dataSources.length > 1

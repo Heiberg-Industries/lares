@@ -104,6 +104,12 @@ it("keeps Stop reading meeting notes while a lookup found another database that 
   expect(screen.getByRole("button", { name: "Stop reading meeting notes" })).toBeTruthy();
 });
 
+it("says when no chief of staff answers Notion requests, and links to where that is switched on", () => {
+  show({ requestsOff: [{ name: "chief", displayName: "Ada" }] });
+  expect(document.body.textContent).toContain("Finding a database needs the Clipping requests schedule, which is switched off for Ada.");
+  expect(screen.getByText("Switch it on in Edit agent").getAttribute("href")).toBe("/agents/chief/edit");
+});
+
 it("shows the keeper's refusal word for word", async () => {
   const sentence = "Only the installation's owner can change the meetings source.";
   vi.mocked(setMeetingsSource).mockResolvedValue({ ok: false, error: { message: sentence, outcomeMayBeUnknown: false } } as never);

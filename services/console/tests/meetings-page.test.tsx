@@ -2,7 +2,8 @@
 import React from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-const m = vi.hoisted(() => ({ guard: vi.fn(), source: vi.fn(), lookup: vi.fn(), credential: vi.fn(), status: vi.fn(), series: vi.fn(), agents: vi.fn() }));
+const m = vi.hoisted(() => ({ guard: vi.fn(), source: vi.fn(), lookup: vi.fn(), credential: vi.fn(), status: vi.fn(), series: vi.fn(), agents: vi.fn(), chiefs: vi.fn() }));
+vi.mock("../lib/notion-agents", () => ({ notionAgents: m.chiefs }));
 vi.mock("../lib/auth", () => ({ requirePage: m.guard }));
 vi.mock("../lib/meetings-source", () => ({ getMeetingsSourceView: m.source }));
 vi.mock("../lib/clipping", () => ({ getMeetingsLookupView: m.lookup }));
@@ -10,7 +11,8 @@ vi.mock("../lib/credentials", () => ({ getCredentialView: m.credential }));
 vi.mock("../lib/meeting-followup-status", () => ({ getFollowupStatus: m.status }));
 vi.mock("../lib/meeting-series", () => ({ listAutoSendSeries: m.series }));
 vi.mock("../lib/agents", () => ({ listAgents: m.agents }));
-vi.mock("../components/MeetingsSourceControl", () => ({ MeetingsSourceControl: ({ notion }: { notion: string }) => <section>SOURCE notion:{notion}</section> }));
+vi.mock("../components/MeetingsSourceControl", () => ({ MeetingsSourceControl: ({ notion, requestsOff }: { notion: string; requestsOff: { name: string }[] | null }) =>
+  <section>SOURCE notion:{notion} off:{requestsOff ? requestsOff.map((a) => a.name).join("+") : "none"}</section> }));
 vi.mock("../components/MeetingSeriesRow", () => ({ MeetingSeriesRow: ({ name }: { name: string }) => <li>SERIES {name}</li> }));
 vi.mock("../components/KeepPageFresh", () => ({ KeepPageFresh: ({ active }: { active: boolean }) => <i>fresh:{String(active)}</i> }));
 import MeetingsPage from "../app/meetings/page";
@@ -24,6 +26,17 @@ beforeEach(() => {
   m.credential.mockResolvedValue(status());
   m.status.mockResolvedValue({ state: "finished", when: "today at 11:55", why: "Checked the meeting notes: nothing new to follow up.", active: false });
   m.series.mockResolvedValue([]); m.agents.mockResolvedValue([]);
+  m.chiefs.mockResolvedValue([{ name: "chief", displayName: "Ada", answersRequests: true }]);
+});
+
+it("tells the source when no chief of staff answers Notion requests, so a lookup would never be picked up", async () => {
+  expect(await show()).toContain("off:none");
+  m.chiefs.mockResolvedValue([{ name: "chief", displayName: "Ada", answersRequests: false }, { name: "second", displayName: "Bea", answersRequests: true }]);
+  expect(await show()).toContain("off:none");
+  m.chiefs.mockResolvedValue([{ name: "chief", displayName: "Ada", answersRequests: false }]);
+  expect(await show()).toContain("off:chief");
+  m.chiefs.mockRejectedValue(new Error("down"));
+  expect(await show()).toContain("off:none");
 });
 
 it("is called Meetings, opens to admins, and has its two sections in order", async () => {
