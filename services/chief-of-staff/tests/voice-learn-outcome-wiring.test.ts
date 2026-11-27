@@ -273,4 +273,28 @@ describe("voice-learn: what a re-learn request becomes", () => {
     expect(seenAtMailbox).toEqual({ state: "running", pending: false });
     expect(await pending()).toBe(false);
   }, 30_000);
+
+  it("switched off here while another agent is learning: its run is kept, not replaced with a skip", async () => {
+    voiceLearnOn = false;
+    await pool.query("INSERT INTO schedule_run (job, agent, state, started_at) VALUES ('chief-of-staff/voice-learn', 'other-agent', 'running', now())");
+    await runOnce();
+    expect(await outcome()).toMatchObject({ state: "running", agent: "other-agent" });
+    expect(await pending()).toBe(true);
+  }, 30_000);
+
+  it("a second press during the same run is covered by that run too", async () => {
+    let release!: () => void;
+    holdMailbox = new Promise<void>((r) => { release = r; });
+    const { default: schedule } = await import("../agent/schedules/voice-learn.js");
+    const first = schedule.run!(CTX as never);
+    await vi.waitFor(() => expect(seenAtMailbox).not.toBeNull());
+    for (let press = 0; press < 2; press += 1) {
+      await pool.query("UPDATE voice_profile SET relearn_requested_at = now() WHERE id = 'default'");
+      await schedule.run!(CTX as never);
+      expect(await pending(), `press ${press + 1}`).toBe(false);
+      expect(await outcome()).toMatchObject({ state: "skipped", reason: "already-running" });
+    }
+    release();
+    await first;
+  }, 30_000);
 });

@@ -199,7 +199,7 @@ async function claimAndRecordStart(agent: string, detail: string): Promise<boole
     // Another agent's run that is going holds the request until it ends: a second run would page a
     // mailbox and bill the gateway twice for one press. A run that has said nothing for longer than a
     // learn can take is treated as gone, so a crashed run does not hold requests for ever.
-    if (await anotherRunGoing(db)) return false;
+    if ((await runNow(db)) !== "idle") return false;
     await db.query(CLEAR_REQUEST);
     await recordInSavepoint(db, () => recordRunStarted(db, HEARTBEAT_KEY, { agent, detail }));
     return true;
@@ -210,11 +210,17 @@ async function claimAndRecordStart(agent: string, detail: string): Promise<boole
  *  45 minutes; the console reads the same silence as "stopped"). */
 const RUN_SILENT_MS = 2 * 60 * 60_000;
 
-/** Is a run going, by the job's shared outcome (locked for this transaction)? The lock is not waited
- *  for: an outcome row someone else holds is being written right now, so the request waits for the
- *  next tick instead of this transaction holding the request row while it waits. An outcome that
- *  cannot be read for any other reason (an older database) never blocks a claim. */
-async function anotherRunGoing(db: PoolClient): Promise<boolean> {
+/**
+ * What the job's shared outcome says right now, with its row locked for this transaction:
+ *   "going"  — a run is going: `running`, or a request already covered by one (`already-running`),
+ *              written in the last two hours;
+ *   "idle"   — nothing is running (no row, a finished, failed or skipped run, or a silent one);
+ *   "locked" — someone else holds the row: its outcome is being written right now. The lock is not
+ *              waited for, so this transaction never holds the request row while it waits; the
+ *              request is left for the next tick.
+ * An outcome that cannot be read for any other reason (an older database) reads as "idle".
+ */
+async function runNow(db: PoolClient): Promise<"going" | "idle" | "locked"> {
   await db.query("SAVEPOINT run_check");
   try {
     const { rows } = await db.query<{ going: boolean }>(
@@ -224,10 +230,10 @@ async function anotherRunGoing(db: PoolClient): Promise<boolean> {
       [HEARTBEAT_KEY, VOICE_LEARN_SKIPS.alreadyRunning, RUN_SILENT_MS / 1000],
     );
     await db.query("RELEASE SAVEPOINT run_check");
-    return rows[0]?.going === true;
+    return rows[0]?.going === true ? "going" : "idle";
   } catch (err) {
     await db.query("ROLLBACK TO SAVEPOINT run_check");
-    return (err as { code?: string }).code === LOCK_NOT_AVAILABLE;
+    return (err as { code?: string }).code === LOCK_NOT_AVAILABLE ? "locked" : "idle";
   }
 }
 
@@ -236,15 +242,16 @@ const LOCK_NOT_AVAILABLE = "55P03";
 
 /**
  * A request that arrives while this agent's run is going is answered by that run: taken, and said
- * so — but only while the job's outcome still says "running". If the run has just recorded its end,
+ * so — but only while the job's outcome still says a run is going (`running`, or the note of an
+ * earlier request this run already covers). If the run has just recorded its end,
  * the request is left for the next tick, so a finished outcome is never replaced by a covering note.
  * The run's own end waits on the outcome row's lock, so it always lands after this note.
  */
 async function answerRequestDuringRun(agent: string): Promise<void> {
   await inRequestTransaction(async (db) => {
     if (!(await lockRequest(db))) return;
-    const { rows } = await db.query<{ state: string }>(`SELECT state FROM schedule_run WHERE job = $1 FOR UPDATE`, [HEARTBEAT_KEY]);
-    if (rows[0]?.state !== "running") return;
+    // Going covers a second press during the same run too: the first one's note says already-running.
+    if ((await runNow(db)) !== "going") return;
     await db.query(CLEAR_REQUEST);
     await recordInSavepoint(db, () => recordRunSkipped(db, HEARTBEAT_KEY, VOICE_LEARN_SKIPS.alreadyRunning,
       "A learning run was already going, so it was not started twice.", { agent }));
@@ -347,6 +354,9 @@ async function answerRequestWhileOff(definition: AgentDefinition): Promise<void>
     await inRequestTransaction(async (db) => {
       const requestedAt = await lockRequest(db);
       if (!requestedAt) return;
+      // A run that is going (another agent's) is never replaced by this agent's skip: the page keeps
+      // showing it, and no agent reads the job as idle and starts a second run.
+      if ((await runNow(db)) !== "idle") return;
       const last = await readScheduleRun(db, HEARTBEAT_KEY);
       if (last?.state === "skipped" && last.reason === reason && last.updatedAt >= requestedAt) return;
       await recordInSavepoint(db, () => recordRunSkipped(db, HEARTBEAT_KEY, reason, sentence, { agent: definition.name }));
