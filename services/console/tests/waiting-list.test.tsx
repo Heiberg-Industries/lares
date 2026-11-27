@@ -207,3 +207,14 @@ it("checks that keep failing still end after ten minutes, with the plain sentenc
     await waitFor(() => expect(detail.textContent).toContain("It has not confirmed it after ten minutes"));
   } finally { clock.mockRestore(); }
 });
+
+// Real time: the page asks again after its own five seconds (`useKeepFresh`).
+it("keeps the call id from the answer when a later check comes back without one", { timeout: 20_000 }, async () => {
+  const onDecide = vi.fn(async (): Promise<DecideResult> => ({ ok: true, outcome: "sent", message: "Your answer reached example. Waiting for it to confirm.", unconfirmed: true, callId: "call-a" }));
+  const onCheck = vi.fn(async (): Promise<DecideResult> => ({ ok: true, outcome: "sent", message: "Your answer reached example. Waiting for it to confirm.", unconfirmed: true }));
+  render(<WaitingList items={[item("a")]} unreadable={[]} now={NOW} onDecide={onDecide} onCheck={onCheck} />);
+  const detail = screen.getByRole("article", { name: "Selected item" });
+  await userEvent.click(within(detail).getByRole("button", { name: "Approve" }));
+  await waitFor(() => expect(onCheck).toHaveBeenCalledTimes(2), { timeout: 14_000 });
+  for (const call of onCheck.mock.calls as unknown as [{ id: string; callId?: string }][]) expect(call[0]).toEqual({ id: "approval:a", callId: "call-a" });
+});

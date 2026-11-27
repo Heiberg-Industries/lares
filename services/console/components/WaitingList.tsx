@@ -129,7 +129,9 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide, onC
         setDecided((all) => (all[d.item.id] ? { ...all, [d.item.id]: { ...all[d.item.id]! } } : all));
         continue;
       }
-      setDecided((all) => (all[d.item.id] ? { ...all, [d.item.id]: { ...all[d.item.id]!, result } } : all));
+      // A later answer that does not carry the call id keeps the one this item already has.
+      const kept = result.ok && !result.callId && callId ? { ...result, callId } : result;
+      setDecided((all) => (all[d.item.id] ? { ...all, [d.item.id]: { ...all[d.item.id]!, result: kept } } : all));
     }
   });
 

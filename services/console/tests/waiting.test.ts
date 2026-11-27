@@ -697,6 +697,11 @@ describe("deciding", () => {
     expect(await checkWaiting(OWNER, id, f.deps, { callId: "bad id\n" })).toMatchObject({ ok: true, outcome: "approved", message: APPROVED_PENDING, unconfirmed: true });
   });
 
+  it("a re-check whose read fails keeps the call id it was handed, so the next check can still find the result", async () => {
+    const f = fake({ streams: waiting(), streamStatus: { wrun_tg: 500 } });
+    expect(await checkWaiting(OWNER, id, f.deps, { callId: "call-req-1" })).toEqual({ ok: true, outcome: "sent", message: SENT_UNCONFIRMED("example"), unconfirmed: true, callId: "call-req-1" });
+  });
+
   it("a re-check that finds the action failed says so, and a denial reads as denied", async () => {
     const f = fake({ streams: waiting(), after: "resolve" });
     expect(await decideWaiting(OWNER, id, "approve", f.deps)).toMatchObject({ unconfirmed: true });

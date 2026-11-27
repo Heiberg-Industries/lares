@@ -849,8 +849,8 @@ const approvals: WaitingSource = {
       seen = readApprovals(await sessionFacts(agent, sessionId, password, deps, { startIndex: OUTCOME_TAIL, door: conversation.door }));
     } catch {
       if (conversation.ended) return { ok: false, reason: "gone", message: "That conversation has ended and can no longer be read, so what came of your answer is not known here." };
-      // Not an outcome: the page asks again on its next check.
-      return { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true };
+      // Not an outcome: the page asks again on its next check, with the call id it was handed.
+      return { ok: true, outcome: "sent", message: SENT_UNCONFIRMED(agent.name), unconfirmed: true, ...(callHint ? { callId: callHint } : {}) };
     }
     const callId = callHint ?? seen.calls.get(interactionId) ?? "";
     const follow = callId ? { callId } : {};
