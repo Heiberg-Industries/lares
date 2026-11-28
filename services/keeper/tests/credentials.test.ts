@@ -3,7 +3,7 @@ import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Credentials, registerCredentialActions } from '../lib/credentials.js';
+import { Credentials, PREPARE_BUDGET_MS, registerCredentialActions } from '../lib/credentials.js';
 import { CredentialFiles } from '../lib/credential-files.js';
 import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, initialCredentialRecord, type CredentialRecord, type CredentialConfig } from '../lib/credential-state.js';
 import type { CredentialJournal, CredentialStore } from '../lib/credential-store.js';
@@ -407,6 +407,21 @@ it('never retains two pending candidates and exposes fixed test states tied to t
   store.record={...store.record,phase:'pending-apply',test:{...store.record.test!,outcome:'passed'}};
   expect(await service.status(admin)).toMatchObject({state:'pending-apply'});
   expect(readFileSync(join(dir,readdirSync(dir)[0]),'utf8')).toBe(secret);
+});
+it('a key test waits for the proxy route at most the preparation budget, then goes ahead', async () => {
+  active();
+  vi.useFakeTimers();
+  try {
+    const prepare = vi.fn(() => new Promise<void>(() => {}));
+    vi.mocked(tester.test).mockResolvedValue({ outcome: 'unavailable' });
+    service = new Credentials(config, store, files, inventory, { ...tester, prepare }); resetActions(); registerCredentialActions(service);
+    const answer = runAction('credential.test_save', { ...testInput(1), token: 'replacement-without-prefix' }, admin);
+    await vi.advanceTimersByTimeAsync(PREPARE_BUDGET_MS - 1);
+    expect(tester.test).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(answer).resolves.toMatchObject({ test: { outcome: 'unavailable' } });
+    expect(tester.test).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
 });
 it('prepares the keeper\'s proxy route before each explicit test, outside the credential lock, and never for status', async () => {
   active();
