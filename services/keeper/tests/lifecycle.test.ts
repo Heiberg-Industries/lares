@@ -1152,6 +1152,77 @@ it('holds an agent change\'s seal until the startup re-apply is done, so an olde
  }finally{firewall.mockRestore();log.mockRestore();}
 });
 
+it('opens the keeper\'s own Notion key check in the proxy on a fresh install, before any agent exists',async()=>{
+ // A fresh install: the install-time deny-all proxy file, no agent, outside custody on with its route on the keeper's address.
+ config.egress.legacyConsumers=[{name:'outside-route',address:'172.18.0.24',hosts:[]}];
+ const stored=(await pool.query("SELECT * FROM agent_definitions WHERE name='bookkeeper'")).rows[0];
+ await pool.query('DELETE FROM agent_definitions');
+ writeFileSync(join(config.egressDir,'squid.conf'),'http_port 8888\nhttp_access deny all\n');
+ const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async()=>{}};
+ const fresh=()=>new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const squid=()=>readFileSync(join(config.egressDir,'squid.conf'),'utf8');
+ const allow='http_access allow CONNECT keeper_check_src keeper_check_dst SSL_ports';
+ const log=vi.spyOn(console,'log').mockImplementation(()=>{}),error=vi.spyOn(console,'error').mockImplementation(()=>{});
+ try{
+  // Startup seals (outside custody is on) and that seal already carries the rule; the test step then changes nothing.
+  let l=fresh();await l.resealAtStart();
+  expect(events).toEqual(['parse-squid','parse-nft','apply-nft','reload-squid']);
+  expect(squid()).toContain('acl keeper_check_src src 172.18.0.24');
+  expect(squid()).toContain('acl keeper_check_dst dstdomain api.notion.com');
+  expect(squid()).toContain(allow);
+  expect(squid()).not.toContain('http_access allow CONNECT src_');
+  events=[];await l.prepareKeeperChecks();expect(events).toEqual([]);
+  // A startup seal that never reloaded the proxy: the first key test seals once, then not again.
+  writeFileSync(join(config.egressDir,'squid.conf'),'http_port 8888\nhttp_access deny all\n');
+  l=fresh();events=[];fail='reload-squid';await l.resealAtStart();fail=undefined;
+  expect(events.at(-1)).toBe('reload-squid');
+  events=[];await l.prepareKeeperChecks();
+  expect(events).toEqual(['parse-squid','parse-nft','apply-nft','reload-squid']);
+  expect(squid()).toContain(allow);
+  events=[];await l.prepareKeeperChecks();expect(events).toEqual([]);
+  // A seal that fails then is logged, never thrown: the test goes ahead and reports what it meets.
+  l=fresh();fail='parse-squid';events=[];await l.prepareKeeperChecks();fail=undefined;
+  expect(String(error.mock.calls.at(-1)![0])).toContain("could not open the keeper's own key checks");
+  // An agent's own rules are unchanged by it: the agent never gets the keeper's host.
+  await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,$2,$3::jsonb,now(),'valid')",[stored.name,stored.hash,JSON.stringify(stored.definition)]);
+  l=fresh();await l.create('bookkeeper',definition);
+  expect(squid()).toContain(allow);
+  expect(squid().split('\n').find(line=>line.startsWith('acl dst_bookkeeper '))).not.toContain('api.notion.com');
+ }finally{log.mockRestore();error.mockRestore();}
+});
+it('plans the key-check fallback seal only once a running definition change is done, so it never installs a stale seal',async()=>{
+ const {withDefinitionNamespace}=await import('../lib/definition-namespace.js');
+ config.egress.legacyConsumers=[{name:'outside-route',address:'172.18.0.24',hosts:[]}];
+ const stored=(await pool.query("SELECT * FROM agent_definitions WHERE name='bookkeeper'")).rows[0];
+ await pool.query('DELETE FROM agent_definitions');
+ const withRoute:DockerBoundary={...docker,acknowledgeOutsideStage:async()=>{}};
+ const fresh=()=>new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  outsideCustody:{routeConsumerName:'outside-route'} as never},withRoute,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const log=vi.spyOn(console,'log').mockImplementation(()=>{});
+ try{
+  let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});
+  // A definition change holds the namespace and creates an agent once released.
+  const change=withDefinitionNamespace(pool,async()=>{
+   await gate;
+   await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,$2,$3::jsonb,now(),'valid')",[stored.name,stored.hash,JSON.stringify(stored.definition)]);
+   await fresh().create('bookkeeper',definition);
+  });
+  const fallback=fresh().prepareKeeperChecks();
+  await new Promise(r=>setTimeout(r,200));
+  release();await change;await fallback;
+  const squid=readFileSync(join(config.egressDir,'squid.conf'),'utf8');
+  expect(squid).toContain('acl src_bookkeeper src');
+  expect(squid).toContain('http_access allow CONNECT keeper_check_src keeper_check_dst SSL_ports');
+ }finally{log.mockRestore();}
+});
+it('opens nothing for the keeper without outside custody, which is what names its address',async()=>{
+ const l=lifecycle();await l.prepareKeeperChecks();
+ expect(events).toEqual([]);
+ await l.create('bookkeeper',definition);
+ expect(readFileSync(join(config.egressDir,'squid.conf'),'utf8')).not.toContain('keeper_check');
+});
+
 // After a reboot Docker leaves agents whose runtime folder was missing at that moment off for good.
 async function bootServer(names:string[]){
  config.runtime.gatewayKeys=Object.fromEntries(names.map(n=>[n,join(root,'secrets','key-'+n)]));
@@ -1415,6 +1486,48 @@ it('hands a chief of staff the agent settings chosen in the console, which win o
  expect(env.LARES_ARTICLE_AREA).toBeUndefined();
  expect(env.LARES_CONSOLE_URL).toBe('https://console.example.com');
  expect(env.DIGEST_SLACK_TARGET).toBe('U0123ABCD'); // untouched keys keep the file's value
+ await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
+});
+it('gives a chief of staff the install address as the console address when none is saved; one saved by hand wins',async()=>{
+ const chief=await chiefFixture();
+ await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
+ const withOrigin=(origin?:string)=>new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),
+  ...(origin?{publicDoorOrigin:origin}:{})},docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ let l=withOrigin('https://lares.example.org');await l.create('bookkeeper',chief);
+ expect(composeEnv().LARES_CONSOLE_URL).toBe('https://lares.example.org');
+ expect(l.environmentDefault('LARES_CONSOLE_URL')).toBe('https://lares.example.org');
+ expect(l.environmentDefault('TELEGRAM_BOT_USERNAME')).toBeUndefined();
+ // Saved by hand: that address. Saved empty: the install address again.
+ await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agent_env.console_url','\"https://console.example.com\"'::jsonb,'test')");
+ await l.reconcile('bookkeeper',chief);expect(composeEnv().LARES_CONSOLE_URL).toBe('https://console.example.com');
+ await pool.query("UPDATE settings SET value='\"\"'::jsonb WHERE key='agent_env.console_url'");
+ await l.reconcile('bookkeeper',chief);expect(composeEnv().LARES_CONSOLE_URL).toBe('https://lares.example.org');
+ // No install domain known (an older keeper.json): nothing is invented.
+ l=withOrigin();await l.reconcile('bookkeeper',chief);expect(composeEnv().LARES_CONSOLE_URL).toBeUndefined();
+ l=withOrigin('http://lares.example.org');await l.reconcile('bookkeeper',chief);expect(composeEnv().LARES_CONSOLE_URL).toBeUndefined();
+ await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
+});
+it('reads an installation-file fallback from the agent\'s own role defaults',async()=>{
+ const binding=(url:string)=>({role:'creative',environment:{LARES_CONSOLE_URL:url},mounts:[],secrets:{}});
+ config.defaultBindings={'chief-of-staff':{...binding('https://chief.example.org'),role:'chief-of-staff'},creative:binding('https://creative.example.org')} as any;
+ const l=lifecycle();
+ expect(l.environmentFallback('writer','LARES_CONSOLE_URL','creative')).toBe('https://creative.example.org');
+ expect(l.environmentFallback('chief','LARES_CONSOLE_URL','chief-of-staff')).toBe('https://chief.example.org');
+ expect(l.environmentFallback('chief','LARES_CONSOLE_URL')).toBe('https://chief.example.org');
+ config.bindings={writer:binding('https://own.example.org')} as any;
+ expect(l.environmentFallback('writer','LARES_CONSOLE_URL','creative')).toBe('https://own.example.org');
+});
+it('gives a creative agent the console address too, since its Slack cards link to the console',async()=>{
+ await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),publicDoorOrigin:'https://lares.example.org'},
+  docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ await l.create('bookkeeper',definition); // the creative template
+ expect(composeEnv().LARES_CONSOLE_URL).toBe('https://lares.example.org');
+ // The chief-only settings stay off a creative agent.
+ await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agent_env.telegram_bot_username','\"example_bot\"'::jsonb,'test'),('agent_env.console_url','\"https://console.example.com\"'::jsonb,'test')");
+ await l.reconcile('bookkeeper',definition);
+ expect(composeEnv().LARES_CONSOLE_URL).toBe('https://console.example.com');
+ expect(composeEnv().TELEGRAM_BOT_USERNAME).toBeUndefined();
  await pool.query("DELETE FROM settings WHERE key LIKE 'agent_env.%'");
 });
 it('restarts a ready chief once for a changed console agent setting',async()=>{

@@ -1033,6 +1033,25 @@ it('lists every console agent setting with its value and where it comes from', a
     expect(await runAction('settings.agent_environment_get', {}, asOwner('member@example.com'))).toMatchObject({ canChange: false });
 });
 
+it('shows the install address as the console address until one is saved by hand, and again once it is cleared', async () => {
+    await chiefRows('chief-a');
+    resetActions();
+    const environmentDefault = (key: string) => key === 'LARES_CONSOLE_URL' ? 'https://lares.example.org' : undefined;
+    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, backup, ceiling: async () => 2, administrator: OWNER,
+        compose: { ...compose, applyInstallationSettings: async () => 'restarted', environmentDefault } as any,
+        roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }) });
+    const consoleUrl = async () => (await runAction('settings.agent_environment_get', {}, asOwner()) as any).settings.find((s: any) => s.key === 'LARES_CONSOLE_URL');
+    expect(await consoleUrl()).toMatchObject({ value: 'https://lares.example.org', from: 'default' });
+    await runAction('settings.agent_environment_set', { key: 'LARES_CONSOLE_URL', value: 'https://console.example.com' }, asOwner());
+    expect(await consoleUrl()).toMatchObject({ value: 'https://console.example.com', from: 'console' });
+    expect(await runAction('settings.agent_environment_set', { key: 'LARES_CONSOLE_URL', value: '' }, asOwner()))
+        .toMatchObject({ key: 'LARES_CONSOLE_URL', value: 'https://lares.example.org', from: 'default' });
+    expect(await envNow('agent_env.console_url')).toBe('');
+    expect(await consoleUrl()).toMatchObject({ value: 'https://lares.example.org', from: 'default' });
+    // Settings without a default are unchanged by it.
+    expect((await runAction('settings.agent_environment_get', {}, asOwner()) as any).settings.find((s: any) => s.key === 'CRM_BRANDS')).toMatchObject({ value: null, from: 'none' });
+});
+
 it('takes a switch\'s fingerprint from the stored description, never the client\'s, and only for a member who can approve', async () => {
     const { toolPinHash } = await import('@lares/agent-kit/outside-pins');
     const { loaded, access, sessions } = await connectionFixture();

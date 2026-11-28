@@ -83,3 +83,60 @@ it('opens an agent\'s outside tool hosts and validates them like every other hos
     expect(() => generateEgress([{ ...agent, outsideHosts: [host] }])).toThrow();
   }
 });
+
+// The subset of Squid's ordered http_access evaluation the generator emits (as in egress-parity.test.ts).
+function allows(conf: string, source: string, host: string, port = 443): boolean {
+  const acls = new Map<string, { kind: string; values: string[] }>();
+  for (const line of conf.split('\n')) {
+    const t = line.trim().split(/\s+/);
+    if (t[0] === 'acl') acls.set(t[1], { kind: t[2], values: t.slice(3) });
+    if (t[0] !== 'http_access') continue;
+    const matches = t.slice(2).every(name => {
+      if (name === 'all') return true;
+      const acl = acls.get(name)!;
+      if (acl.kind === 'src') return acl.values.includes(source);
+      if (acl.kind === 'port') return acl.values.includes(String(port));
+      if (acl.kind === 'method') return true;
+      return acl.values.some(h => h.startsWith('.') ? host === h.slice(1) || host.endsWith(h) : host === h);
+    });
+    if (matches) return t[1] === 'allow';
+  }
+  return false;
+}
+it('lets the keeper\'s own address reach api.notion.com:443 on a fresh install, and widens nothing else', () => {
+  // A fresh install: no agent yet, the outside route on the keeper's address with no hosts.
+  const keeper = '172.30.0.253';
+  const fresh = { endpoints: {}, legacyConsumers: [{ name: 'outside-route', address: keeper, hosts: [] }],
+    internalNetworks: ['172.30.0.0/24'], directDestinations: [], infrastructureHosts: [] };
+  const without = generateEgress([], fresh);
+  const result = generateEgress([], { ...fresh, keeper: { address: keeper } });
+  expect(result.squid).toContain(`acl keeper_check_src src ${keeper}`);
+  expect(result.squid).toContain('acl keeper_check_dst dstdomain api.notion.com');
+  expect(result.squid).toContain('http_access allow CONNECT keeper_check_src keeper_check_dst SSL_ports');
+  // Before the final deny, exactly one deny, so the outside route's stage header still has its one anchor.
+  expect(result.squid.split('http_access deny all')).toHaveLength(2);
+  expect(result.squid.indexOf('keeper_check_src keeper_check_dst')).toBeLessThan(result.squid.indexOf('http_access deny all'));
+  expect(allows(without.squid, keeper, 'api.notion.com')).toBe(false);
+  expect(allows(result.squid, keeper, 'api.notion.com')).toBe(true);
+  for (const host of ['notion.com', 'www.notion.so', 'files.notion.com', 'api.notion.com.example.org', 'example.org'])
+    expect(allows(result.squid, keeper, host)).toBe(false);
+  expect(allows(result.squid, keeper, 'api.notion.com', 80)).toBe(false);
+  // Only these three lines are new; the firewall is unchanged and no consumer gains a host.
+  const added = result.squid.split('\n').filter(line => !without.squid.split('\n').includes(line));
+  expect(added).toEqual([`acl keeper_check_src src ${keeper}`, 'acl keeper_check_dst dstdomain api.notion.com',
+    'http_access allow CONNECT keeper_check_src keeper_check_dst SSL_ports']);
+  expect(result.nft).toBe(without.nft);
+  expect(result.perAgent).toEqual({});
+});
+it('changes no agent\'s rules and never gives the keeper rule to an agent or managed service address', () => {
+  const keeper = '172.18.0.11';
+  const options = { legacyConsumers: [{ name: 'outside-route', address: keeper, hosts: [] }] };
+  const before = generateEgress([agent], options), after = generateEgress([agent], { ...options, keeper: { address: keeper } });
+  expect(after.perAgent).toEqual(before.perAgent);
+  expect(after.squid.split('\n').filter(line => line.includes('_alpha'))).toEqual(before.squid.split('\n').filter(line => line.includes('_alpha')));
+  expect(allows(after.squid, agent.address, 'api.notion.com')).toBe(false);
+  expect(after.nft).toBe(before.nft);
+  expect(() => generateEgress([agent], { keeper: { address: agent.address } })).toThrow(/keeper's address/);
+  expect(() => generateEgress([], { managedServices: [{ name: 'notion-sync', address: keeper, hosts: [] }], keeper: { address: keeper } })).toThrow(/keeper's address/);
+  for (const address of ['0.0.0.0/0', '172.18.0.11\nhttp_access allow all', 'keeper']) expect(() => generateEgress([], { keeper: { address } })).toThrow();
+});

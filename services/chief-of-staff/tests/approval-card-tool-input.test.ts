@@ -31,6 +31,7 @@ import {
   slackCardPostedWhole,
   layoutSlackCard,
   COMPACT_CARD_BLOCKS,
+  consoleLinkBlocks,
 } from "@lares/agent-kit/slack-approval-card";
 import { approvalCardShape } from "@lares/agent-kit/approval-summary";
 
@@ -555,5 +556,81 @@ describe("the 49 and 50 section boundary", () => {
     const done = render(approval("gmail_send", input, settled("accepted", "approve")), "U0000000000").parts;
     expect(blocksOf(done).length).toBe(blocksOf(open).length);
     expect(blocksOf(done).length).toBeLessThanOrEqual(50);
+  });
+});
+
+describe("every open Slack approval card links to its request in the console when the console address is known", () => {
+  const LINK = "<https://console.example.com/reviews?request=interaction-1|Open in console>";
+  const linkOf = (parts: SlackInteractionCardParts) => {
+    const last = blocksOf(parts).at(-1)!;
+    return last.type === "context" ? (last.elements as { text: string }[])[0]!.text : undefined;
+  };
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("adds one short link as the last block of a whole card, a title-only card and an unsummarised tool's card; eve keeps each", () => {
+    vi.stubEnv("LARES_CONSOLE_URL", "https://console.example.com");
+    for (const [tool, input, types] of [
+      ["gmail_send", MAIL, ["card", "section", "context"]],
+      ["read_url", { url: "https://example.com/a" }, ["card", "context"]],
+      ["some_tool_nobody_summarised", { target: "x" }, ["card", "section", "context"]],
+    ] as const) {
+      const { parts, fallback } = render(approval(tool, input));
+      expect(blocksOf(parts).map((b) => b.type), tool).toEqual(types);
+      expect(linkOf(parts), tool).toBe(LINK);
+      expect(text(parts), tool).not.toBe(text(fallback)); // eve kept our card
+      expect(controlsOf(parts), tool).toEqual(controlsOf(fallback)); // a click does the same
+    }
+    // The record of a posted whole card is unchanged by the link.
+    expect(slackCardPostedWhole("gmail_send", MAIL, render(approval("gmail_send", MAIL)).parts.controls.blocks)).toBe(true);
+  });
+
+  it("a card cut for size keeps its notice as it is, with the link after it, still within 50 blocks", () => {
+    vi.stubEnv("LARES_CONSOLE_URL", "https://console.example.com/");
+    const input = { ...MAIL, bodyText: "x".repeat(200_000) };
+    const { parts } = render(approval("gmail_send", input));
+    const blocks = blocksOf(parts);
+    expect(blocks.length).toBe(50);
+    expect(linkOf(parts)).toBe(LINK);
+    const notice = (blocks.at(-2) as unknown as { text: { text: string } }).text.text;
+    expect(notice).toMatch(/^— shortened — \d+ characters are not shown\.\n/u);
+    expect(notice).toContain("The page for this request: https://console.example.com/reviews?request=interaction-1");
+    expect(buttons(parts)).toEqual([{ label: "Deny", value: "deny" }]);
+  });
+
+  it("keeps the link's block free, so the cut and the Approve decision follow the same layout as the card", () => {
+    // The longest mail whose sections and the card fill one message exactly when no link is drawn.
+    const mail = (n: number) => ({ ...MAIL, bodyText: "word ".repeat(n * 600) });
+    let n = 1;
+    while (slackCardShownWhole("gmail_send", mail(n + 1), {})) n++;
+    const input = mail(n);
+    const withAddress = { LARES_CONSOLE_URL: "https://console.example.com" };
+    expect(layoutSlackCard(approvalCardShape("gmail_send", input).body, COMPACT_CARD_BLOCKS).sections.length).toBeGreaterThan(45);
+    // Without an address it is whole; with one, the link needs a block, so the same mail is cut.
+    expect(slackCardShownWhole("gmail_send", input, {})).toBe(true);
+    expect(slackCardShownWhole("gmail_send", input, withAddress)).toBe(false);
+    expect(layoutSlackCard(Array.from({ length: 49 }, () => ({ kind: "text", text: "a".repeat(3_000) }) as const), COMPACT_CARD_BLOCKS + consoleLinkBlocks(withAddress)).whole).toBe(false);
+    vi.stubEnv("LARES_CONSOLE_URL", "https://console.example.com");
+    expect(slackCardShownWhole("gmail_send", input)).toBe(false);
+    const { parts } = render(approval("gmail_send", input));
+    expect(blocksOf(parts).length).toBeLessThanOrEqual(50);
+    expect(buttons(parts)).toEqual([{ label: "Deny", value: "deny" }]);
+    expect(linkOf(parts)).toBe(LINK);
+  });
+
+  it("an answered card drops the link (Reviews lists only waiting requests) and keeps its sections", () => {
+    vi.stubEnv("LARES_CONSOLE_URL", "https://console.example.com");
+    const open = render(approval("gmail_send", MAIL)).parts;
+    const done = render(approval("gmail_send", MAIL, settled("accepted", "approve")), "U0000000000").parts;
+    expect(blocksOf(done).map((b) => b.type)).toEqual(["card", "section"]);
+    expect(blocksOf(done)[1]).toEqual(blocksOf(open)[1]);
+  });
+
+  it("without a console address no card carries a link", () => {
+    vi.stubEnv("LARES_CONSOLE_URL", "");
+    for (const [tool, input] of [["gmail_send", MAIL], ["read_url", { url: "https://example.com/a" }], ["gmail_send", { ...MAIL, bodyText: "x".repeat(200_000) }]] as const) {
+      const { parts } = render(approval(tool, input));
+      expect(blocksOf(parts).some((b) => b.type === "context"), tool).toBe(false);
+      expect(text(parts), tool).not.toContain("Open in console");
+    }
   });
 });

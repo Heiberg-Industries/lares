@@ -203,7 +203,10 @@ async function main(): Promise<void> {
                 },
             }),
         });
-        registerCredentialActions(new Credentials(config.credentials, credentialStore, credentialFiles, grants => credentialConsumers(pool, config, grants), notionCredentialTester(config.lifecycle?.runtime.proxyUrl),
+        // The key check leaves from the keeper's own address; before each test, make sure the proxy lets it.
+        const notionTester = notionCredentialTester(config.lifecycle?.runtime.proxyUrl);
+        const keeperNotionTester = lifecycle ? { ready: notionTester.ready, test: notionTester.test, prepare: () => lifecycle!.prepareKeeperChecks() } : notionTester;
+        registerCredentialActions(new Credentials(config.credentials, credentialStore, credentialFiles, grants => credentialConsumers(pool, config, grants), keeperNotionTester,
             managed && lifecycle && docker ? new CredentialActivation(credentialFiles, new OwnedCredentialRuntime(pool, config, lifecycle, docker, sync)) : undefined,
             names => deletedAgents(pool, names)));
         if (sync) registerSyncActions({ pool, service: sync, administrator: config.credentials?.administrator, namespaceGuard });

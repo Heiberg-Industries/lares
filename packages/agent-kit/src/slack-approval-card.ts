@@ -13,6 +13,11 @@
  * The body is split across as many sections as it needs, so a long note, draft or calendar change
  * is read in full, with Approve, and the card record says it was shown whole.
  *
+ * EVERY OPEN CARD LINKS TO ITS REQUEST IN THE CONSOLE when the console address is known: one short
+ * "Open in console" link as the last block, to that request's Reviews page. Its block is kept free
+ * in the layout whenever the address is known, so the link never pushes the card over 50 blocks.
+ * An answered card drops the link (Reviews lists only requests that wait).
+ *
  * THE RULE FOR A CARD THAT DOES NOT FIT (the owner's rule D-6): a body that needs more blocks than
  * one message has left is cut, the card says how many characters are not shown and where the whole
  * request can be read, and it offers no Approve. Deny stays. eve rejects a renderer result whose
@@ -44,7 +49,7 @@ import {
 } from "eve/channels/slack";
 import { approvalCardShape, coversApproval, shortenedNotice, type CardBodyPart } from "./approval-summary.js";
 import { placesShowingWhole, waitingPageLink } from "./card-layer.js";
-import { CARD_OUTCOME_TEXT, shortenedCardSentence } from "./card-sentences.js";
+import { CARD_OUTCOME_TEXT, CONSOLE_LINK_TEXT, shortenedCardSentence } from "./card-sentences.js";
 
 /** Slack refuses a section whose text is longer than this (Block Kit: section text, 3,000). */
 export const SLACK_SECTION_TEXT_LIMIT = 3000;
@@ -55,6 +60,14 @@ export const SLACK_BLOCKS_PER_MESSAGE = 50;
 /** The blocks in eve's compact approval card: one `card` block holding the title and the buttons
  *  (`tests/slack-approval-card.test.ts` renders eve's real default and checks this number). */
 export const COMPACT_CARD_BLOCKS = 1;
+
+/** The blocks the "Open in console" link takes under an open card when the console address is
+ *  known (`LARES_CONSOLE_URL`), and 0 when it is not. The layout keeps this room on EVERY card of
+ *  that process, open or answered, so the sections, the cut and the Approve decision
+ *  ({@link slackCardCut}) are the same before and after the answer. */
+export function consoleLinkBlocks(env: NodeJS.ProcessEnv = process.env): number {
+  return waitingPageLink("request", env) === null ? 0 : 1;
+}
 
 /** The notification text (what a phone shows, what a screen reader reads) holds the title and the
  *  start of the body, never more than this; Slack's own limit is 40,000 and advises 4,000. */
@@ -158,6 +171,22 @@ export function layoutSlackCard(body: readonly CardBodyPart[], controlsBlocks: n
 
 const section = (text: string): BlockKitBlock => ({ type: "section", text: { type: "mrkdwn", text } });
 
+/** One short link to this request's page on Reviews, while the request can still be answered there
+ *  (the page lists only requests that wait). Undefined when the console address is not known. */
+function consoleLinkBlock(card: SlackInteractionCard, env: NodeJS.ProcessEnv): BlockKitBlock | undefined {
+  if (card.interaction.status !== "open" || card.interaction.answer !== undefined) return undefined;
+  const link = waitingPageLink(card.interaction.interactionId, env);
+  if (link === null) return undefined;
+  return { type: "context", elements: [{ type: "mrkdwn", text: `<${escapeMrkdwn(link)}|${CONSOLE_LINK_TEXT}>` }] } as BlockKitBlock;
+}
+
+/** The card with the console link as its last block, when there is one and the message has room. */
+function withConsoleLink(card: SlackInteractionCard, parts: SlackInteractionCardParts, env: NodeJS.ProcessEnv): SlackInteractionCardParts {
+  const link = consoleLinkBlock(card, env);
+  if (link === undefined || parts.controls.blocks.length >= SLACK_BLOCKS_PER_MESSAGE) return parts;
+  return { ...parts, controls: { ...parts.controls, blocks: [...parts.controls.blocks, link] } };
+}
+
 /** What the owner is told, in the last section, about a card that did not fit: how much is not
  *  shown and, while it can still be answered, where to read it and that Deny works. */
 function cutNotice(hidden: number, open: boolean, cardId: string, env: NodeJS.ProcessEnv): string {
@@ -173,7 +202,7 @@ function compactCardWith(
   env: NodeJS.ProcessEnv,
 ): SlackInteractionCardParts {
   const parts = next(withoutCallInput(card));
-  const layout = layoutSlackCard(body, parts.controls.blocks.length);
+  const layout = layoutSlackCard(body, parts.controls.blocks.length + consoleLinkBlocks(env));
   // Without the framework patch's hook nothing takes Approve off a card, so a cut card would carry
   // a notice that is false: leave the card to eve.
   if (!layout.whole && typeof globalThis.__eveSlackCardCut !== "function") return next(card);
@@ -184,7 +213,8 @@ function compactCardWith(
   }
   // The notification preview and screen readers get the start of the text too, not the title alone.
   const text = `${parts.controls.text}\n${texts.join("\n")}`.slice(0, NOTIFICATION_TEXT_LIMIT);
-  return { controls: { blocks: [...parts.controls.blocks, ...texts.map(section)], text } };
+  const link = consoleLinkBlock(card, env);
+  return { controls: { blocks: [...parts.controls.blocks, ...texts.map(section), ...(link ? [link] : [])], text } };
 }
 
 /**
@@ -234,7 +264,7 @@ function drawnApprovalCard(
   if (shape.body.length === 0) {
     // A call with no input and no summary: eve's card as it is. A summarised tool whose title says
     // all of it: the compact card alone, without the raw input.
-    return coversApproval(call.name) ? { controls: next(withoutCallInput(card)).controls } : next(card);
+    return withConsoleLink(card, coversApproval(call.name) ? { controls: next(withoutCallInput(card)).controls } : next(card), env);
   }
   return compactCardWith(card, next, shape.body, env);
 }
@@ -244,8 +274,8 @@ function drawnApprovalCard(
  * with nothing cut. The same layout the renderer draws, so the record of a posted card says what
  * the card said.
  */
-export function slackCardShownWhole(toolName: string, input: unknown): boolean {
-  return layoutSlackCard(approvalCardShape(toolName, input).body, COMPACT_CARD_BLOCKS).whole;
+export function slackCardShownWhole(toolName: string, input: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
+  return layoutSlackCard(approvalCardShape(toolName, input).body, COMPACT_CARD_BLOCKS + consoleLinkBlocks(env)).whole;
 }
 
 /**
@@ -255,8 +285,8 @@ export function slackCardShownWhole(toolName: string, input: unknown): boolean {
  * request, so the record must not call it whole. (eve checks a card's buttons against its own, so
  * the buttons cannot tell the two apart.) `blocks` are the posted message's, from eve's state.
  */
-export function slackCardPostedWhole(toolName: string, input: unknown, blocks: unknown): boolean {
-  const layout = layoutSlackCard(approvalCardShape(toolName, input).body, COMPACT_CARD_BLOCKS);
+export function slackCardPostedWhole(toolName: string, input: unknown, blocks: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
+  const layout = layoutSlackCard(approvalCardShape(toolName, input).body, COMPACT_CARD_BLOCKS + consoleLinkBlocks(env));
   if (!layout.whole) return false;
   if (layout.sections.length === 0) return true;
   if (!Array.isArray(blocks)) return false;

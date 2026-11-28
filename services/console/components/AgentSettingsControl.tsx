@@ -13,6 +13,7 @@ const list = (names: string[]) => names.join(", ");
 const SOURCE: Record<AgentSettingView["from"], string> = {
   console: "Saved in the console.",
   "installation file": "Still comes from the installation file; saving here replaces it.",
+  default: "Nothing is saved here, so the agents use this, the installation's own address; saving here replaces it.",
   none: "Not set.",
 };
 /** A CRM track in full for someone who cannot open the editor: its value, what it is for and the
@@ -74,7 +75,7 @@ function AgentSettingRow({ setting, canChange }: { setting: AgentSettingView; ca
     start(async () => {
       const r = await setAgentSetting({ key: setting.key, value: draftText(draft, current) });
       if (!r.ok) { setError(r.error.message); return; }
-      setCurrent(r.result.value); setFrom("console"); setDraft(draftOf(setting.key, r.result.value)); setResult(r.result);
+      setCurrent(r.result.value); setFrom(r.result.from ?? "console"); setDraft(draftOf(setting.key, r.result.value)); setResult(r.result);
     });
   };
   const description = (
@@ -123,7 +124,7 @@ function AgentSettingRow({ setting, canChange }: { setting: AgentSettingView; ca
         {error && <Notice error>{error}</Notice>}
         {result && (
           <Notice tone="success">
-            {result.value ? "Saved." : "Saved: the setting is cleared."}
+            {result.from === "default" ? "Saved: nothing is set here now, so the agents use the installation's own address." : result.value ? "Saved." : "Saved: the setting is cleared."}
             {result.restarted.length > 0 && ` ${list(result.restarted)} restarted.`}
             {result.waiting.length > 0 && ` ${list(result.waiting)} has other changes waiting, so it was left alone; it picks this up when you apply them.`}
             {result.stopped.length > 0 && ` ${list(result.stopped)} is stopped and picks this up when it next starts.`}

@@ -4,6 +4,9 @@ import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, interr
 import type { CredentialJournal, CredentialStore } from './credential-store.js';
 import { CredentialFiles, newCredentialRevision } from './credential-files.js';
 import type { NotionCredentialTester } from './notion-credential.js';
+/** Longest a key test waits for the keeper's proxy route. With the Notion test's own 5 second limit
+ * the whole check stays inside the console's 10 second wait for the keeper. */
+export const PREPARE_BUDGET_MS = 4_000;
 import type { CredentialActivation, CredentialActivationInput, CredentialGrantRequest } from './credential-activation.js';
 
 /** Explicit tests share the foundation's lock and custody. Status and discard never test.
@@ -132,10 +135,22 @@ export class Credentials {
     const saved = await journal.save(intent, next);
     return this.dto(saved, saved.phase as CredentialStatus['state'], null);
   }
+  /** Opens the keeper's own route to Notion before a key test, but never for longer than
+   * PREPARE_BUDGET_MS: right after the keeper starts, the startup seal can hold it far longer than
+   * the console waits for an answer. Past the budget the test goes ahead and reports what it meets;
+   * the preparation finishes on its own and never throws. */
+  private async prepareTest(): Promise<void> {
+    const preparing = this.tester!.prepare?.();
+    if (!preparing) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([preparing, new Promise<void>(resolve => { timer = setTimeout(resolve, PREPARE_BUDGET_MS); })]);
+    clearTimeout(timer);
+  }
   async testSave(value: string, expectedRevision: number, ctx: ActionContext): Promise<CredentialStatus> {
     this.authorize(ctx);
     if (!token.safeParse(value).success) throw new KeeperRefusedError('Invalid credential input');
     this.testReady(ctx);
+    await this.prepareTest();
     return this.store.locked(async journal => {
       const old = await this.current(journal, expectedRevision);
       const consumers = await this.prepared(old);
@@ -153,6 +168,7 @@ export class Credentials {
   async testExisting(target: 'current' | 'pending', expectedRevision: number, ctx: ActionContext): Promise<CredentialStatus> {
     this.authorize(ctx);
     this.testReady(ctx);
+    await this.prepareTest();
     return this.store.locked(async journal => {
       const old = await this.current(journal, expectedRevision);
       const consumers = await this.prepared(old);

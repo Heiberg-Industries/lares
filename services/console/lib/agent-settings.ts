@@ -7,7 +7,9 @@ export interface AgentSettingView {
   label: string;
   description: string;
   value: string | null;
-  from: 'console' | 'installation file' | 'none';
+  /** 'default': nothing is saved, so the agents use this value the keeper derives (the console
+   * address: the installation's own address). */
+  from: 'console' | 'installation file' | 'default' | 'none';
   agentCount: number;
 }
 export interface AgentSettingsView { settings: AgentSettingView[]; canChange: boolean }

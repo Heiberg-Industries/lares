@@ -15,6 +15,14 @@ export interface ConsoleEnvironmentSetting {
     description: string;
     /** Checks what was typed (already trimmed, never empty); returns the one form that is stored. */
     check(raw: string): EnvironmentCheck;
+    /** What the agent gets when neither the console nor the installation file sets a value (or the
+     * console field was saved empty), from facts the keeper already holds. Undefined: nothing. */
+    defaultValue?(installation: InstallationFacts): string | undefined;
+}
+/** What the keeper knows about the installation itself, from keeper.json. */
+export interface InstallationFacts {
+    /** `https://<install domain>`: the console is served at the root of the installation's domain. */
+    publicOrigin?: string;
 }
 const bad = (error: string): EnvironmentCheck => ({ error });
 const json = (raw: string): { parsed: unknown } | { error: string } => {
@@ -82,6 +90,8 @@ function consoleUrl(raw: string): EnvironmentCheck {
     } catch { return bad('That must be an https address with no password, query or fragment, for example https://console.example.com.'); }
 }
 const CHIEF = ['chief-of-staff'] as const;
+/** Every role with a Slack door draws approval cards that link to the console (`slack-approval-card.ts`). */
+const SLACK_ROLES = ['chief-of-staff', 'creative'] as const;
 export const CONSOLE_ENVIRONMENT: readonly ConsoleEnvironmentSetting[] = [
     { key: 'CRM_BRANDS', setting: 'agent_env.crm_brands', roles: CHIEF, section: 'Business data', check: crmBrands,
         label: 'CRM tracks', description: 'The tracks (pipelines) in your CRM, so the agent knows what each one is for and which stages mean a deal is finished. Write each track and stage exactly as your CRM shows it.' },
@@ -97,7 +107,8 @@ export const CONSOLE_ENVIRONMENT: readonly ConsoleEnvironmentSetting[] = [
         label: 'Slack target for the digest', description: 'The Slack user or channel id the digest is sent to. Empty means the first allowed Slack user.' },
     { key: 'TELEGRAM_BOT_USERNAME', setting: 'agent_env.telegram_bot_username', roles: CHIEF, section: 'Telegram', check: telegramBot,
         label: 'Telegram bot username', description: 'The username of your Telegram bot, so the agent can tell when it is mentioned in a group.' },
-    { key: 'LARES_CONSOLE_URL', setting: 'agent_env.console_url', roles: CHIEF, section: 'Console address', check: consoleUrl,
-        label: 'Console address', description: 'Where you open the console, for example https://console.example.com. A Telegram approval card too long for one message links to it.' },
+    { key: 'LARES_CONSOLE_URL', setting: 'agent_env.console_url', roles: SLACK_ROLES, section: 'Console address', check: consoleUrl,
+        defaultValue: ({ publicOrigin }) => { const checked = publicOrigin ? consoleUrl(publicOrigin) : undefined; return checked && 'value' in checked ? checked.value : undefined; },
+        label: 'Console address', description: "Where you open the console, for example https://console.example.com. Empty means the installation's own address. Every Slack approval card links to its request in the console, and so does a Telegram approval card too long for one message." },
 ];
 export const CONSOLE_ENVIRONMENT_BY_KEY: ReadonlyMap<string, ConsoleEnvironmentSetting> = new Map(CONSOLE_ENVIRONMENT.map(s => [s.key, s]));

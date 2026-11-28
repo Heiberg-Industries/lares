@@ -51,6 +51,19 @@ it("clears the setting when the field is emptied", async () => {
   await waitFor(() => expect(document.body.textContent).toContain("cleared"));
 });
 
+it("shows the install address the agents use as the console address, and shows it again when the field is saved empty", async () => {
+  const setting = row({ key: "LARES_CONSOLE_URL", section: "Console address", label: "Console address", value: "https://lares.example.org", from: "default" });
+  render(<AgentSettingsSections canChange settings={[setting]} />);
+  expect(screen.getByLabelText(/Console address \(empty/)).toHaveProperty("value", "https://lares.example.org");
+  expect(document.body.textContent).toContain("the installation's own address");
+  vi.mocked(setAgentSetting).mockResolvedValue({ ok: true, result: { key: "LARES_CONSOLE_URL", value: "https://lares.example.org", from: "default", restarted: [], waiting: [], stopped: [] } } as any);
+  await userEvent.clear(screen.getByLabelText(/Console address \(empty/));
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(setAgentSetting).toHaveBeenCalledWith({ key: "LARES_CONSOLE_URL", value: "" }));
+  await waitFor(() => expect(document.body.textContent).toContain("so the agents use the installation's own address"));
+  expect(screen.getByLabelText(/Console address \(empty/)).toHaveProperty("value", "https://lares.example.org");
+});
+
 it("shows the keeper's refusal word for word", async () => {
   const sentence = "Telegram bot username: That is not a bot username.";
   vi.mocked(setAgentSetting).mockResolvedValue({ ok: false, error: { message: sentence, outcomeMayBeUnknown: false } } as any);
